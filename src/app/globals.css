@@ -1,0 +1,102 @@
+@import url("https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Inter:wght@400;500;600;700&display=swap");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --brand-orange: #F36B21;
+  --brand-charcoal: #151515;
+  --brand-ivory: #FAF8F4;
+  --brand-canvas: #F2EFE9;
+  --brand-border: #E6E1D9;
+  --brand-chilli: #A62921;
+  --brand-muted: #737373;
+}
+
+html,
+body {
+  background-color: var(--brand-ivory);
+  color: var(--brand-charcoal);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+}
+
+* {
+  -webkit-tap-highlight-color: transparent;
+}
+
+::selection {
+  background-color: rgba(243, 107, 33, 0.2);
+  color: var(--brand-charcoal);
+}
+
+/* Scrollbars: quiet */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(21, 21, 21, 0.12);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(21, 21, 21, 0.22);
+  background-clip: padding-box;
+  border: 2px solid transparent;
+}
+
+@layer components {
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg text-sm font-medium transition-all duration-200 whitespace-nowrap;
+  }
+  .btn-primary {
+    @apply btn bg-brand-charcoal text-white h-9 px-4 hover:bg-black active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+  .btn-brand {
+    @apply btn text-white h-9 px-4 active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed;
+    background-color: var(--brand-orange);
+  }
+  .btn-brand:hover {
+    background-color: #E15E17;
+  }
+  .btn-ghost {
+    @apply btn bg-transparent text-brand-charcoal h-9 px-3 hover:bg-brand-canvas;
+  }
+  .btn-outline {
+    @apply btn bg-white text-brand-charcoal h-9 px-4 border border-brand-border hover:bg-brand-canvas;
+  }
+  .btn-danger {
+    @apply btn bg-white text-brand-chilli h-9 px-4 border border-brand-border hover:bg-brand-canvas;
+  }
+  .input {
+    @apply block w-full h-10 px-3 rounded-lg border border-brand-border bg-white text-sm text-brand-charcoal placeholder:text-brand-muted focus:outline-none focus:ring-2 focus:ring-brand-charcoal/10 focus:border-brand-charcoal transition;
+  }
+  .textarea {
+    @apply block w-full px-3 py-2 rounded-lg border border-brand-border bg-white text-sm text-brand-charcoal placeholder:text-brand-muted focus:outline-none focus:ring-2 focus:ring-brand-charcoal/10 focus:border-brand-charcoal transition;
+  }
+  .label {
+    @apply block text-xs font-medium text-brand-charcoal/70 mb-1.5;
+  }
+  .card {
+    @apply bg-white border border-brand-border rounded-2xl;
+  }
+  .metric-card {
+    @apply bg-white border border-brand-border rounded-2xl p-5;
+  }
+  .surface-canvas {
+    background-color: var(--brand-canvas);
+  }
+}
+
+/* Very subtle animation utility */
+.reveal {
+  animation: reveal 250ms ease-out both;
+}
+@keyframes reveal {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}

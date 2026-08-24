@@ -1,0 +1,41 @@
+{
+  "name": "mdf-outreach",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "next": "14.2.5",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "dexie": "4.0.8",
+    "dexie-react-hooks": "1.1.7",
+    "lucide-react": "0.451.0",
+    "zustand": "4.5.4",
+    "clsx": "2.1.1",
+    "tailwind-merge": "2.5.2",
+    "papaparse": "5.4.1",
+    "date-fns": "3.6.0"
+  },
+  "devDependencies": {
+    "@types/node": "20.14.10",
+    "@types/react": "18.3.3",
+    "@types/react-dom": "18.3.0",
+    "@types/papaparse": "5.3.14",
+    "typescript": "5.5.4",
+    "tailwindcss": "3.4.10",
+    "postcss": "8.4.41",
+    "autoprefixer": "10.4.20",
+    "vitest": "2.0.5",
+    "@vitest/ui": "2.0.5",
+    "jsdom": "24.1.1",
+    "fake-indexeddb": "6.0.0",
+    "@types/uuid": "10.0.0",
+    "uuid": "10.0.0"
+  }
+}
