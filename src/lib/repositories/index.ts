@@ -1,29 +1,11 @@
-import {
-  IndexedDBActivityRepository,
-  IndexedDBAssetRepository,
-  IndexedDBBuyerRepository,
-  IndexedDBCampaignRepository,
-  IndexedDBRecipientRepository,
-  IndexedDBSettingsRepository,
-  IndexedDBTemplateRepository,
-  IndexedDBWorkspaceService,
-} from "./indexeddb";
-
-export const buyerRepo = new IndexedDBBuyerRepository();
-export const campaignRepo = new IndexedDBCampaignRepository();
-export const recipientRepo = new IndexedDBRecipientRepository();
-export const templateRepo = new IndexedDBTemplateRepository();
-export const assetRepo = new IndexedDBAssetRepository();
-export const activityRepo = new IndexedDBActivityRepository();
-export const settingsRepo = new IndexedDBSettingsRepository();
-export const workspaceService = new IndexedDBWorkspaceService(
-  buyerRepo,
-  campaignRepo,
-  recipientRepo,
-  templateRepo,
-  assetRepo,
-  activityRepo,
-  settingsRepo,
-);
+// Repository interface barrel.
+//
+// Production code MUST NOT construct repository instances here. Use
+// `serverRepositories()` from `@/lib/repositories/server` inside server
+// components, server actions, and route handlers — that helper enforces
+// auth + membership before every request touches the database.
+//
+// The IndexedDB implementations under `./indexeddb` remain in-tree only
+// for pre-cloud unit tests. They are never imported by production code.
 
 export * from "./interfaces";

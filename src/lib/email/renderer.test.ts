@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { renderEmailHtml, renderEmailText } from "./renderer";
 import { createDefaultTemplate } from "./defaultTemplate";
-import { createDefaultSettings } from "@/lib/demo";
+import { createDefaultSettings } from "@/test/fixtures/demo";
 import type { Buyer } from "@/lib/types";
 
 const now = new Date().toISOString();

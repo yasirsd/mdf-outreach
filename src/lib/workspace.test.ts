@@ -9,7 +9,7 @@ import {
   IndexedDBSettingsRepository,
   IndexedDBWorkspaceService,
 } from "@/lib/repositories/indexeddb";
-import { buildDemoWorkspace } from "@/lib/demo";
+import { buildDemoWorkspace } from "@/test/fixtures/demo";
 import { getDb } from "@/lib/db/dexie";
 
 const buyers = new IndexedDBBuyerRepository();

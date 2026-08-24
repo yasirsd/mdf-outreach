@@ -12,8 +12,7 @@ import {
   CircleDot,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { Onboarding } from "@/components/Onboarding";
-import { useWorkspace } from "./WorkspaceProvider";
+import { SignOutButton } from "@/components/auth/SignOutButton";
 
 const NAV = [
   { href: "/", label: "Overview", icon: LayoutDashboard },
@@ -24,11 +23,8 @@ const NAV = [
   { href: "/settings", label: "Settings", icon: SettingsIcon },
 ];
 
-export function AppShell({ children }: { children: React.ReactNode }) {
+export function AppShell({ children, userEmail }: { children: React.ReactNode; userEmail?: string }) {
   const pathname = usePathname();
-  const { ready, settings } = useWorkspace();
-
-  const showOnboarding = ready && settings && !settings.onboardingComplete;
 
   return (
     <div className="min-h-screen flex bg-brand-ivory">
@@ -83,15 +79,23 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <CircleDot size={10} className="text-emerald-500" />
             MDF Workspace
           </div>
-          <div className="mt-1 text-[12px] text-brand-charcoal/80">Local · Saved in this browser</div>
+          <div className="mt-1 text-[12px] text-brand-charcoal/80">Cloud · Supabase</div>
+          {userEmail && (
+            <div className="mt-4 pt-4 border-t border-brand-border/60">
+              <div className="text-[11.5px] text-brand-charcoal/80 truncate" title={userEmail}>
+                {userEmail}
+              </div>
+              <div className="mt-2">
+                <SignOutButton />
+              </div>
+            </div>
+          )}
         </div>
       </aside>
 
       <main className="flex-1 min-w-0">
         <div className="min-h-screen">{children}</div>
       </main>
-
-      {showOnboarding && <Onboarding />}
     </div>
   );
 }

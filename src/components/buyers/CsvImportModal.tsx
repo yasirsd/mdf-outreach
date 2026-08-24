@@ -3,8 +3,7 @@
 import { useMemo, useRef, useState } from "react";
 import { Modal } from "@/components/ui/Modal";
 import { parseCsvFile, mapCsvToBuyers, type CsvMapping, type CsvParseResult } from "@/lib/csv";
-import { buyerRepo } from "@/lib/repositories";
-import { logActivity } from "@/lib/activity";
+import { bulkImportBuyersAction } from "@/app/(app)/buyers/actions";
 import { toast } from "@/components/ui/Toast";
 import type { Buyer } from "@/lib/types";
 import { Upload, FileText, CheckCircle2, AlertTriangle } from "lucide-react";
@@ -74,58 +73,35 @@ export function CsvImportModal({ open, onClose }: Props) {
   const valid = drafts.filter((d) => d.valid);
   const invalid = drafts.filter((d) => !d.valid);
 
-  async function computeDupes(): Promise<{ readyBuyers: Buyer[]; dupBuyers: Array<{ draft: Buyer; existingId: string }> }> {
-    const readyBuyers: Buyer[] = [];
-    const dupBuyers: Array<{ draft: Buyer; existingId: string }> = [];
-    const seen = new Set<string>();
-    for (const d of valid) {
-      const email = d.buyer.email;
-      if (seen.has(email)) continue;
-      seen.add(email);
-      const existing = await buyerRepo.findByEmail(email);
-      if (existing) dupBuyers.push({ draft: d.buyer, existingId: existing.id });
-      else readyBuyers.push(d.buyer);
-    }
-    return { readyBuyers, dupBuyers };
-  }
-
   const [dupPreview, setDupPreview] = useState<{ ready: number; dupes: number } | null>(null);
 
   async function goToPreview() {
-    const { readyBuyers, dupBuyers } = await computeDupes();
-    setDupPreview({ ready: readyBuyers.length, dupes: dupBuyers.length });
+    // Duplicate detection is handled server-side. Preview shows total valid.
+    setDupPreview({ ready: valid.length, dupes: 0 });
     setStep("preview");
   }
 
   async function commitImport() {
     setImporting(true);
-    const { readyBuyers, dupBuyers } = await computeDupes();
-    let imported = 0;
-    let updated = 0;
-    let skipped = 0;
-    if (readyBuyers.length) {
-      await buyerRepo.bulkPut(readyBuyers);
-      imported = readyBuyers.length;
+    try {
+      const uniqueByEmail = new Map<string, Buyer>();
+      for (const d of valid) uniqueByEmail.set(d.buyer.email.toLowerCase(), d.buyer);
+      const result = await bulkImportBuyersAction(Array.from(uniqueByEmail.values()), dupMode);
+      toast.success(
+        `${result.added} imported${result.updated ? ` · ${result.updated} updated` : ""}${result.skipped ? ` · ${result.skipped} skipped` : ""}`,
+      );
+      setResult({
+        imported: result.added,
+        updated: result.updated,
+        skipped: result.skipped,
+        invalid: invalid.length + result.errors.length,
+      });
+      setStep("done");
+    } catch {
+      toast.error("Import failed. Please try again.");
+    } finally {
+      setImporting(false);
     }
-    if (dupBuyers.length) {
-      if (dupMode === "update") {
-        for (const { draft, existingId } of dupBuyers) {
-          const { id: _drop, createdAt: _c, ...rest } = draft;
-          await buyerRepo.update(existingId, rest);
-          updated++;
-        }
-      } else {
-        skipped = dupBuyers.length;
-      }
-    }
-    await logActivity(
-      "buyers.imported",
-      `${imported} buyer${imported === 1 ? "" : "s"} imported${updated ? ` · ${updated} updated` : ""}${skipped ? ` · ${skipped} skipped` : ""}`,
-    );
-    toast.success(`${imported + updated} buyer${imported + updated === 1 ? "" : "s"} imported`);
-    setResult({ imported, updated, skipped, invalid: invalid.length });
-    setImporting(false);
-    setStep("done");
   }
 
   function handleClose() {

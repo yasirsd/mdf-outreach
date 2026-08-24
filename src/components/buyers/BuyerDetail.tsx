@@ -7,8 +7,7 @@ import type { Buyer, BuyerStatus } from "@/lib/types";
 import { BUYER_STATUS_LABELS, BUYER_STATUS_ORDER } from "@/lib/types";
 import { StatusPill } from "@/components/StatusPill";
 import { formatDateTime } from "@/lib/utils";
-import { buyerRepo } from "@/lib/repositories";
-import { logActivity } from "@/lib/activity";
+import { deleteBuyerAction, updateBuyerStatusAction } from "@/app/(app)/buyers/actions";
 import { toast } from "@/components/ui/Toast";
 
 interface Props {
@@ -23,23 +22,27 @@ export function BuyerDetail({ buyer, onEdit, onClose }: Props) {
 
   async function changeStatus(s: BuyerStatus) {
     setStatus(s);
-    await buyerRepo.update(buyer.id, { status: s });
-    await logActivity(
-      "buyer.status",
-      `${buyer.company || buyer.firstName + " " + buyer.lastName} marked as ${BUYER_STATUS_LABELS[s]}`,
-      { type: "buyer", id: buyer.id },
-    );
-    toast.success("Status updated");
+    try {
+      await updateBuyerStatusAction(buyer.id, s);
+      toast.success("Status updated");
+    } catch {
+      toast.error("Could not update status");
+      setStatus(buyer.status);
+    }
   }
 
   async function del() {
     if (!confirm(`Delete ${buyer.company || buyer.firstName || "this buyer"}? This cannot be undone.`))
       return;
     setDeleting(true);
-    await buyerRepo.delete(buyer.id);
-    await logActivity("buyer.deleted", `Removed buyer ${buyer.company || buyer.email}`);
-    toast.success("Buyer removed");
-    onClose();
+    try {
+      await deleteBuyerAction(buyer.id);
+      toast.success("Buyer removed");
+      onClose();
+    } catch {
+      toast.error("Could not remove buyer");
+      setDeleting(false);
+    }
   }
 
   const name = [buyer.firstName, buyer.lastName].filter(Boolean).join(" ") || "—";
