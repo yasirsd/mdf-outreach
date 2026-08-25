@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { MdfWordmark } from "@/components/brand/MdfWordmark";
 import { signOutAction } from "@/app/login/actions";
 
 export const metadata: Metadata = {
@@ -8,21 +9,24 @@ export const metadata: Metadata = {
 
 export default function AccessDeniedPage() {
   return (
-    <div className="min-h-screen bg-brand-ivory flex items-center justify-center px-6 py-12">
+    <div
+      className="min-h-screen flex items-center justify-center px-6 py-12"
+      style={{ backgroundColor: "var(--app-bg)" }}
+    >
       <div className="w-full max-w-[440px] text-center">
-        <div className="w-11 h-11 rounded-xl bg-brand-charcoal grid place-items-center mx-auto mb-5">
-          <span className="font-serif font-semibold text-white text-[19px] leading-none pt-0.5">M</span>
+        <div className="flex justify-center mb-6">
+          <MdfWordmark tone="light" height={36} />
         </div>
-        <h1 className="font-serif text-[26px] tracking-[-0.015em] text-brand-charcoal">
+        <h1 className="text-[22px] font-semibold tracking-tight text-text-primary">
           Access not authorized
         </h1>
-        <p className="mt-3 text-[13.5px] text-brand-muted leading-relaxed">
+        <p className="mt-3 text-[13.5px] text-text-secondary leading-relaxed">
           This account is not authorized for MDF Outreach.
           <br />
           If you believe this is a mistake, contact your MDF administrator.
         </p>
         <form action={signOutAction} className="mt-8">
-          <button type="submit" className="btn-outline mx-auto">
+          <button type="submit" className="btn-secondary mx-auto">
             Sign out
           </button>
         </form>

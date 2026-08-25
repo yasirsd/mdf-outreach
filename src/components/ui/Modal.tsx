@@ -36,31 +36,45 @@ export function Modal({
   return (
     <div
       className={cn(
-        "fixed inset-0 z-50 flex items-center justify-center px-4 transition-opacity duration-200",
+        "fixed inset-0 z-50 flex items-center justify-center px-4 transition-opacity duration-220",
         open ? "opacity-100 pointer-events-auto" : "opacity-0 pointer-events-none",
       )}
       aria-hidden={!open}
+      role="dialog"
+      aria-modal={open ? "true" : undefined}
     >
-      <div className="absolute inset-0 bg-brand-charcoal/30 backdrop-blur-[2px]" onClick={onClose} />
+      <div
+        className="absolute inset-0 backdrop-blur-[3px]"
+        style={{ backgroundColor: "rgba(0,0,0,0.55)" }}
+        onClick={onClose}
+      />
       <div
         className={cn(
-          "relative w-full bg-white border border-brand-border rounded-2xl shadow-panel flex flex-col max-h-[92vh]",
+          "relative w-full flex flex-col max-h-[92vh] shadow-panel transition-transform duration-220",
           width,
-          open ? "translate-y-0" : "translate-y-2",
+          open ? "translate-y-0" : "translate-y-3",
         )}
+        style={{
+          backgroundColor: "var(--app-surface)",
+          border: "1px solid var(--app-border)",
+          borderRadius: "var(--radius-dialog)",
+        }}
       >
-        <div className="px-6 py-5 border-b border-brand-border flex items-start justify-between gap-4">
-          <div>
+        <div
+          className="px-6 py-5 flex items-start justify-between gap-4"
+          style={{ borderBottom: "1px solid var(--app-border)" }}
+        >
+          <div className="min-w-0">
             {title && (
-              <div className="font-serif text-[22px] leading-tight tracking-[-0.015em] text-brand-charcoal">
+              <div className="text-[17px] font-semibold leading-tight tracking-tight text-text-primary">
                 {title}
               </div>
             )}
-            {subtitle && <div className="mt-1 text-[13px] text-brand-muted">{subtitle}</div>}
+            {subtitle && <div className="mt-1 text-[12.5px] text-text-muted">{subtitle}</div>}
           </div>
           <button
             onClick={onClose}
-            className="text-brand-muted hover:text-brand-charcoal p-1 -m-1 rounded-md hover:bg-brand-canvas"
+            className="text-text-muted hover:text-text-primary p-1 -m-1 rounded-md hover:bg-app-hover focus-ring-quiet"
             aria-label="Close"
           >
             <X size={18} />
@@ -68,7 +82,13 @@ export function Modal({
         </div>
         <div className="flex-1 overflow-y-auto">{children}</div>
         {actions && (
-          <div className="border-t border-brand-border px-6 py-4 flex items-center justify-end gap-2">
+          <div
+            className="px-6 py-4 flex items-center justify-end gap-2"
+            style={{
+              borderTop: "1px solid var(--app-border)",
+              backgroundColor: "var(--app-sidebar)",
+            }}
+          >
             {actions}
           </div>
         )}

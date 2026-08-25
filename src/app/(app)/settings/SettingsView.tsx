@@ -2,7 +2,8 @@
 
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { AlertTriangle, Download } from "lucide-react";
+import { AlertTriangle, Download, Wrench } from "lucide-react";
+import { resetMasterLibraryAction, verifyMasterLibraryAction } from "@/app/(app)/actions";
 import { PageContainer, PageHeader } from "@/components/ui/Page";
 import { useWorkspace } from "@/components/WorkspaceProvider";
 import type { AssetRecord, AssetSlot, WorkspaceSettings } from "@/lib/types";
@@ -180,18 +181,36 @@ export function SettingsView({ initialSettings, initialAssets }: Props) {
           {tab === "data" && <DataSection />}
 
           {tab === "developer" && (
-            <Section title="Developer" description="Advanced information for operators.">
-              <div className="rounded-xl border border-brand-border bg-white p-5 text-[13.5px] text-brand-charcoal/85 space-y-3">
+            <Section
+              title="Developer"
+              description="Administrative maintenance actions and environment info."
+            >
+              <MasterLibraryRepair />
+
+              <div
+                className="rounded-[12px] p-5 text-[13px] space-y-3"
+                style={{
+                  backgroundColor: "var(--app-surface)",
+                  border: "1px solid var(--app-border)",
+                  color: "var(--text-secondary)",
+                }}
+              >
                 <div>
-                  <strong className="text-brand-charcoal">Storage:</strong> Supabase (RLS enforced per workspace).
+                  <strong className="text-text-primary">Storage:</strong> Supabase (RLS enforced
+                  per workspace).
                 </div>
                 <div>
-                  <strong className="text-brand-charcoal">Email provider:</strong> SimulationEmailProvider (no network calls).
+                  <strong className="text-text-primary">Email provider:</strong>{" "}
+                  SimulationEmailProvider (no network calls).
                 </div>
                 <div>
-                  <strong className="text-brand-charcoal">Live sending:</strong> Not connected in this phase.
+                  <strong className="text-text-primary">Live sending:</strong> Not connected in
+                  this phase.
                 </div>
-                <div className="pt-3 border-t border-brand-border text-brand-muted">
+                <div
+                  className="pt-3 text-text-muted"
+                  style={{ borderTop: "1px solid var(--app-border)" }}
+                >
                   Phase 2 will introduce Gmail live sending — configuration will appear here.
                 </div>
               </div>
@@ -214,9 +233,11 @@ function Section({
 }) {
   return (
     <div>
-      <div className="mb-6">
-        <div className="font-serif text-[24px] tracking-[-0.015em] text-brand-charcoal">{title}</div>
-        <div className="mt-1 text-[13.5px] text-brand-muted">{description}</div>
+      <div className="mb-5">
+        <div className="text-[18px] font-semibold tracking-tight text-text-primary">{title}</div>
+        <div className="mt-1 text-[12.5px] text-text-secondary leading-relaxed max-w-2xl">
+          {description}
+        </div>
       </div>
       <div className="space-y-4">{children}</div>
     </div>
@@ -315,29 +336,49 @@ function AssetsSection({
 
   return (
     <Section title="Assets" description="Preview images and production URLs for the email.">
-      <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-[13px] text-amber-900 flex gap-2">
-        <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+      <div
+        className="rounded-[10px] p-4 text-[12.5px] flex gap-2 leading-relaxed"
+        style={{
+          backgroundColor: "rgba(252,211,77,0.08)",
+          border: "1px solid rgba(252,211,77,0.28)",
+          color: "#FCD34D",
+        }}
+      >
+        <AlertTriangle size={15} className="mt-0.5 shrink-0" />
         <div>
-          Local preview images look great in the app but cannot be delivered by email.
-          Add a public HTTPS <strong>Production URL</strong> for each asset before Phase 2 live sending.
+          Local preview images look great in the app but cannot be delivered by email. Add a
+          public HTTPS <strong>Production URL</strong> for each asset before live sending.
         </div>
       </div>
       <div className="grid grid-cols-1 gap-3">
         {SLOTS.map(({ slot, label, hint }) => {
           const a = bySlot[slot];
           return (
-            <div key={slot} className="rounded-xl border border-brand-border bg-white p-4 flex items-start gap-4">
-              <div className="w-16 h-16 rounded-md bg-brand-canvas border border-brand-border overflow-hidden shrink-0">
+            <div
+              key={slot}
+              className="rounded-[10px] p-4 flex items-start gap-4"
+              style={{
+                backgroundColor: "var(--app-surface)",
+                border: "1px solid var(--app-border)",
+              }}
+            >
+              <div
+                className="w-16 h-16 rounded-md overflow-hidden shrink-0"
+                style={{
+                  backgroundColor: "var(--app-elevated)",
+                  border: "1px solid var(--app-border)",
+                }}
+              >
                 {a?.localDataUrl && (
                   /* eslint-disable-next-line @next/next/no-img-element */
                   <img src={a.localDataUrl} alt={label} className="w-full h-full object-cover" />
                 )}
               </div>
               <div className="flex-1 min-w-0">
-                <div className="text-[13px] font-medium text-brand-charcoal">{label}</div>
-                <div className="text-[12px] text-brand-muted mb-2">{hint}</div>
+                <div className="text-[13px] font-medium text-text-primary">{label}</div>
+                <div className="text-[11.5px] text-text-muted mb-2.5">{hint}</div>
                 <div className="grid md:grid-cols-2 gap-2">
-                  <label className="btn-outline text-[12px] h-8 cursor-pointer">
+                  <label className="btn-secondary text-[11.5px] h-8 cursor-pointer">
                     Upload local preview
                     <input
                       type="file"
@@ -367,6 +408,99 @@ function AssetsSection({
   );
 }
 
+function MasterLibraryRepair() {
+  const router = useRouter();
+  const [busy, setBusy] = useState<"verify" | "reset" | null>(null);
+
+  async function verify() {
+    setBusy("verify");
+    try {
+      const result = await verifyMasterLibraryAction();
+      if (result.created === 0) {
+        toast.success(`All ${result.total} master templates are present.`);
+      } else {
+        toast.success(
+          `Repaired ${result.created} of ${result.total} MDF master templates.`,
+        );
+      }
+      router.refresh();
+    } catch {
+      toast.error("Could not verify library");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function reset() {
+    const yes = confirm(
+      "Restore every MDF master template to the current approved library design? This bumps their version and replaces the content. Campaigns are not affected — each campaign holds its own snapshot.",
+    );
+    if (!yes) return;
+    setBusy("reset");
+    try {
+      const result = await resetMasterLibraryAction();
+      toast.success(
+        `Library restored to approved version — ${result.updated} updated${
+          result.created ? `, ${result.created} created` : ""
+        }.`,
+      );
+      router.refresh();
+    } catch {
+      toast.error("Could not restore library");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <div
+      className="rounded-[12px] divide-y"
+      style={{
+        backgroundColor: "var(--app-surface)",
+        border: "1px solid var(--app-border)",
+        borderColor: "var(--app-border)",
+      }}
+    >
+      <div className="p-5 flex items-start justify-between gap-4 flex-wrap">
+        <div>
+          <div className="text-[13.5px] font-medium text-text-primary">
+            Verify master template library
+          </div>
+          <div className="text-[12.5px] text-text-secondary mt-1 leading-relaxed max-w-xl">
+            Confirms the 8 approved MDF master templates are present in this workspace and
+            restores any that are missing. Never overwrites existing templates.
+          </div>
+        </div>
+        <button
+          className="btn-secondary shrink-0"
+          onClick={verify}
+          disabled={busy !== null}
+        >
+          <Wrench size={13} /> {busy === "verify" ? "Verifying…" : "Verify library"}
+        </button>
+      </div>
+      <div
+        className="p-5 flex items-start justify-between gap-4 flex-wrap"
+        style={{ borderTop: "1px solid var(--app-border)" }}
+      >
+        <div>
+          <div className="text-[13.5px] font-medium text-text-primary">
+            Restore approved version
+          </div>
+          <div className="text-[12.5px] text-text-secondary mt-1 leading-relaxed max-w-xl">
+            Overwrites every master template with the current approved library content and bumps
+            its version number. Existing campaigns keep their own snapshots and are unaffected.
+            Use after a redesign of the master library.
+          </div>
+        </div>
+        <button className="btn-ghost shrink-0" onClick={reset} disabled={busy !== null}>
+          {busy === "reset" ? "Restoring…" : "Restore approved version"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function DataSection() {
   const [busy, setBusy] = useState(false);
 
@@ -390,21 +524,31 @@ function DataSection() {
 
   return (
     <Section title="Data" description="Workspace data lives in Supabase. Export a backup any time.">
-      <div className="rounded-xl border border-brand-border bg-white divide-y divide-brand-border">
+      <div
+        className="rounded-[12px] divide-y"
+        style={{
+          backgroundColor: "var(--app-surface)",
+          border: "1px solid var(--app-border)",
+          borderColor: "var(--app-border)",
+        }}
+      >
         <div className="p-5 flex items-start justify-between gap-4">
           <div>
-            <div className="text-[14px] font-medium text-brand-charcoal">Export workspace backup</div>
-            <div className="text-[13px] text-brand-muted mt-1">
-              A single JSON file with buyers, campaigns, templates, recipients, activity, and settings from your workspace.
+            <div className="text-[13.5px] font-medium text-text-primary">
+              Export workspace backup
+            </div>
+            <div className="text-[12.5px] text-text-secondary mt-1 leading-relaxed">
+              A single JSON file with buyers, campaigns, templates, recipients, activity, and
+              settings from your workspace.
             </div>
           </div>
-          <button className="btn-primary" onClick={exportBackup} disabled={busy}>
-            <Download size={14} /> {busy ? "Exporting…" : "Export"}
+          <button className="btn-primary shrink-0" onClick={exportBackup} disabled={busy}>
+            <Download size={13} /> {busy ? "Exporting…" : "Export"}
           </button>
         </div>
-        <div className="p-5">
-          <div className="text-[14px] font-medium text-brand-charcoal">Import / restore</div>
-          <div className="text-[13px] text-brand-muted mt-1">
+        <div className="p-5" style={{ borderTop: "1px solid var(--app-border)" }}>
+          <div className="text-[13.5px] font-medium text-text-primary">Import / restore</div>
+          <div className="text-[12.5px] text-text-secondary mt-1 leading-relaxed">
             Backup restore is not exposed in the app. Contact your MDF administrator to restore
             from a backup file via the Supabase Dashboard.
           </div>

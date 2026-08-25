@@ -17,8 +17,8 @@ export function CampaignTabs({ campaignId }: { campaignId: string }) {
   const pathname = usePathname() ?? "";
   const base = `/campaigns/${campaignId}`;
   return (
-    <div className="border-b border-brand-border mb-8">
-      <nav className="flex gap-1 -mb-px">
+    <div className="mb-8" style={{ borderBottom: "1px solid var(--app-border)" }}>
+      <nav className="flex gap-0.5 -mb-px" aria-label="Campaign sections">
         {TABS.map((t) => {
           const href = `${base}${t.path}`;
           const isActive =
@@ -28,14 +28,22 @@ export function CampaignTabs({ campaignId }: { campaignId: string }) {
             <Link
               key={t.key}
               href={href}
+              aria-current={isActive ? "page" : undefined}
               className={cn(
-                "px-3 py-2.5 text-[13.5px] font-medium border-b-2 transition-colors",
+                "px-3 py-2.5 text-[12.5px] font-medium transition-colors relative focus-ring-quiet",
                 isActive
-                  ? "text-brand-charcoal border-brand-charcoal"
-                  : "text-brand-muted border-transparent hover:text-brand-charcoal",
+                  ? "text-text-primary"
+                  : "text-text-muted hover:text-text-secondary",
               )}
             >
               {t.label}
+              {isActive && (
+                <span
+                  aria-hidden
+                  className="absolute left-3 right-3 -bottom-px h-[2px] rounded-full"
+                  style={{ backgroundColor: "var(--brand-orange)" }}
+                />
+              )}
             </Link>
           );
         })}

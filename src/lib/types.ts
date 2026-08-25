@@ -76,6 +76,17 @@ export interface Campaign {
   createdAt: string;
   updatedAt: string;
   isDemo?: boolean;
+  /** Product theme this campaign belongs to (used to gate compatible templates). */
+  themeKey?: string;
+  /** Which variant of the master template this campaign started from. */
+  templateVariant?: TemplateVariant;
+  /**
+   * Campaign-specific snapshot of email sections. When present, the renderer
+   * uses these instead of loading from the master template. Editing a
+   * campaign's email mutates only this snapshot — the shared master is
+   * always left untouched.
+   */
+  emailSections?: EmailSection[];
 }
 
 export interface CampaignRecipient {
@@ -106,6 +117,9 @@ export interface EmailSection {
   data: Record<string, string>;
 }
 
+export type TemplateStatus = "draft" | "approved" | "archived";
+export type TemplateVariant = "signature" | "direct";
+
 export interface EmailTemplate {
   id: string;
   name: string;
@@ -114,6 +128,14 @@ export interface EmailTemplate {
   createdAt: string;
   updatedAt: string;
   isDemo?: boolean;
+  /** Product theme key from the ProductTheme registry (optional for legacy). */
+  themeKey?: string;
+  /** Template variant — controls section rhythm / renderer choice. */
+  variant?: TemplateVariant;
+  /** Semantic version for the frozen production content. */
+  version?: number;
+  /** Lifecycle status. Only approved templates should eventually be sent live. */
+  status?: TemplateStatus;
 }
 
 export type AssetSlot =

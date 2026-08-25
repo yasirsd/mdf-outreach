@@ -1,8 +1,18 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
-import { Building2, Globe, MapPin, Mail, Phone, MessageCircle, Edit2, Trash2, Send } from "lucide-react";
+import { useEffect, useState } from "react";
+import {
+  Building2,
+  Globe,
+  MapPin,
+  Mail,
+  Phone,
+  MessageCircle,
+  Edit2,
+  Trash2,
+  Send,
+} from "lucide-react";
 import type { Buyer, BuyerStatus } from "@/lib/types";
 import { BUYER_STATUS_LABELS, BUYER_STATUS_ORDER } from "@/lib/types";
 import { StatusPill } from "@/components/StatusPill";
@@ -19,6 +29,10 @@ interface Props {
 export function BuyerDetail({ buyer, onEdit, onClose }: Props) {
   const [status, setStatus] = useState<BuyerStatus>(buyer.status);
   const [deleting, setDeleting] = useState(false);
+
+  useEffect(() => {
+    setStatus(buyer.status);
+  }, [buyer.id, buyer.status]);
 
   async function changeStatus(s: BuyerStatus) {
     setStatus(s);
@@ -49,23 +63,29 @@ export function BuyerDetail({ buyer, onEdit, onClose }: Props) {
 
   return (
     <div>
-      <div className="px-6 pt-6 pb-4">
-        <div className="text-[11px] uppercase tracking-[0.14em] text-brand-muted">
+      <div className="px-6 pt-6 pb-5">
+        <div className="text-[10.5px] tracking-[0.14em] uppercase text-text-muted font-medium">
           {buyer.country || "—"}
           {buyer.city ? ` · ${buyer.city}` : ""}
         </div>
-        <div className="mt-2 font-serif text-[28px] leading-tight tracking-[-0.015em] text-brand-charcoal">
+        <div className="mt-2 text-[22px] font-semibold tracking-tight text-text-primary leading-tight">
           {buyer.company || name}
         </div>
         {buyer.company && (
-          <div className="mt-1 text-[14px] text-brand-charcoal/70">{name}</div>
+          <div className="mt-1 text-[13px] text-text-secondary">{name}</div>
         )}
-        <div className="mt-4 flex flex-wrap items-center gap-3">
+        <div className="mt-4 flex flex-wrap items-center gap-2.5">
           <StatusPill status={status} />
           <select
-            className="text-[12px] px-2 py-1 rounded-md border border-brand-border bg-white text-brand-charcoal/80"
+            className="text-[11.5px] px-2 py-1 rounded-md focus-ring-quiet"
             value={status}
             onChange={(e) => changeStatus(e.target.value as BuyerStatus)}
+            style={{
+              backgroundColor: "var(--app-elevated)",
+              color: "var(--text-secondary)",
+              border: "1px solid var(--app-border-strong)",
+            }}
+            aria-label="Change status"
           >
             {BUYER_STATUS_ORDER.map((s) => (
               <option key={s} value={s}>
@@ -76,82 +96,80 @@ export function BuyerDetail({ buyer, onEdit, onClose }: Props) {
         </div>
       </div>
 
-      <div className="px-6 py-4 border-t border-brand-border grid grid-cols-1 gap-3">
-        <Row icon={<Mail size={14} />} label="Email">
-          <a href={`mailto:${buyer.email}`} className="text-brand-charcoal hover:underline">
+      <div
+        className="px-6 py-4 grid grid-cols-1 gap-3"
+        style={{ borderTop: "1px solid var(--app-border)" }}
+      >
+        <Row icon={<Mail size={13} />} label="Email">
+          <a
+            href={`mailto:${buyer.email}`}
+            className="text-text-primary hover:text-brand-orange transition-colors"
+          >
             {buyer.email}
           </a>
         </Row>
-        {buyer.phone && (
-          <Row icon={<Phone size={14} />} label="Phone">
-            {buyer.phone}
-          </Row>
-        )}
+        {buyer.phone && <Row icon={<Phone size={13} />} label="Phone">{buyer.phone}</Row>}
         {buyer.whatsapp && (
-          <Row icon={<MessageCircle size={14} />} label="WhatsApp">
-            {buyer.whatsapp}
-          </Row>
+          <Row icon={<MessageCircle size={13} />} label="WhatsApp">{buyer.whatsapp}</Row>
         )}
         {buyer.website && (
-          <Row icon={<Globe size={14} />} label="Website">
+          <Row icon={<Globe size={13} />} label="Website">
             <a
               href={buyer.website}
               target="_blank"
               rel="noreferrer"
-              className="text-brand-charcoal hover:underline"
+              className="text-text-primary hover:text-brand-orange transition-colors"
             >
               {buyer.website.replace(/^https?:\/\//, "")}
             </a>
           </Row>
         )}
         {(buyer.country || buyer.city) && (
-          <Row icon={<MapPin size={14} />} label="Location">
+          <Row icon={<MapPin size={13} />} label="Location">
             {[buyer.city, buyer.country].filter(Boolean).join(", ")}
           </Row>
         )}
         {buyer.buyerType && (
-          <Row icon={<Building2 size={14} />} label="Buyer type">
-            {buyer.buyerType}
-          </Row>
+          <Row icon={<Building2 size={13} />} label="Buyer type">{buyer.buyerType}</Row>
         )}
       </div>
 
       {buyer.productInterest && (
-        <div className="px-6 py-4 border-t border-brand-border">
-          <div className="text-[11px] tracking-[0.14em] uppercase text-brand-muted mb-1.5">Product interest</div>
-          <div className="text-[14px] text-brand-charcoal">{buyer.productInterest}</div>
-        </div>
+        <MetaBlock label="Product interest" style={{ borderTop: "1px solid var(--app-border)" }}>
+          {buyer.productInterest}
+        </MetaBlock>
       )}
 
       {buyer.notes && (
-        <div className="px-6 py-4 border-t border-brand-border">
-          <div className="text-[11px] tracking-[0.14em] uppercase text-brand-muted mb-1.5">Notes</div>
-          <div className="text-[14px] text-brand-charcoal/85 whitespace-pre-wrap leading-relaxed">
-            {buyer.notes}
-          </div>
-        </div>
+        <MetaBlock label="Notes" style={{ borderTop: "1px solid var(--app-border)" }}>
+          <div className="whitespace-pre-wrap leading-relaxed">{buyer.notes}</div>
+        </MetaBlock>
       )}
 
-      <div className="px-6 py-4 border-t border-brand-border">
-        <div className="text-[11px] tracking-[0.14em] uppercase text-brand-muted mb-1.5">History</div>
-        <div className="text-[12.5px] text-brand-muted">
+      <MetaBlock label="History" style={{ borderTop: "1px solid var(--app-border)" }}>
+        <div className="text-[12px] text-text-muted">
           Added {formatDateTime(buyer.createdAt)}
-          {buyer.lastContactedAt && <> · Last contacted {formatDateTime(buyer.lastContactedAt)}</>}
+          {buyer.lastContactedAt && (
+            <> · Last contacted {formatDateTime(buyer.lastContactedAt)}</>
+          )}
+          {buyer.nextFollowUpAt && (
+            <> · Next follow-up {formatDateTime(buyer.nextFollowUpAt)}</>
+          )}
         </div>
-      </div>
+      </MetaBlock>
 
-      <div className="px-6 py-5 border-t border-brand-border flex flex-wrap gap-2">
-        <button className="btn-outline" onClick={onEdit}>
-          <Edit2 size={14} /> Edit
+      <div
+        className="px-6 py-4 flex flex-wrap gap-2"
+        style={{ borderTop: "1px solid var(--app-border)" }}
+      >
+        <button className="btn-secondary" onClick={onEdit}>
+          <Edit2 size={13} /> Edit
         </button>
-        <Link
-          href="/campaigns"
-          className="btn-outline"
-        >
-          <Send size={14} /> Add to campaign
+        <Link href="/campaigns" className="btn-secondary">
+          <Send size={13} /> Add to campaign
         </Link>
         <button className="btn-danger ml-auto" onClick={del} disabled={deleting}>
-          <Trash2 size={14} /> {deleting ? "Removing…" : "Remove"}
+          <Trash2 size={13} /> {deleting ? "Removing…" : "Remove"}
         </button>
       </div>
     </div>
@@ -169,11 +187,32 @@ function Row({
 }) {
   return (
     <div className="flex items-start gap-3">
-      <div className="mt-0.5 text-brand-muted">{icon}</div>
+      <div className="mt-0.5 text-text-muted">{icon}</div>
       <div className="min-w-0 flex-1">
-        <div className="text-[11px] tracking-[0.14em] uppercase text-brand-muted">{label}</div>
-        <div className="mt-0.5 text-[13.5px] text-brand-charcoal truncate">{children}</div>
+        <div className="text-[10.5px] tracking-[0.14em] uppercase text-text-muted font-medium">
+          {label}
+        </div>
+        <div className="mt-0.5 text-[13px] text-text-primary truncate">{children}</div>
       </div>
+    </div>
+  );
+}
+
+function MetaBlock({
+  label,
+  children,
+  style,
+}: {
+  label: string;
+  children: React.ReactNode;
+  style?: React.CSSProperties;
+}) {
+  return (
+    <div className="px-6 py-4" style={style}>
+      <div className="text-[10.5px] tracking-[0.14em] uppercase text-text-muted font-medium mb-1.5">
+        {label}
+      </div>
+      <div className="text-[13px] text-text-primary">{children}</div>
     </div>
   );
 }

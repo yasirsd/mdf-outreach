@@ -88,6 +88,84 @@ export function buyerToRow(
   };
 }
 
+// Partial-safe patch mapper. Only produces columns for fields explicitly
+// present in the patch (using hasOwnProperty). Prevents partial updates
+// like "just change status" from wiping every other column with defaults.
+export function buyerToPatchRow(
+  patch: Partial<Buyer>,
+): Partial<Omit<BuyerRow, "id" | "workspace_id" | "created_at" | "updated_at">> {
+  const row: Record<string, unknown> = {};
+  const has = (k: keyof Buyer) => Object.prototype.hasOwnProperty.call(patch, k);
+  if (has("firstName")) row.first_name = patch.firstName ?? "";
+  if (has("lastName")) row.last_name = patch.lastName ?? "";
+  if (has("company")) row.company = patch.company ?? "";
+  if (has("email")) row.email = patch.email ?? "";
+  if (has("phone")) row.phone = patch.phone ?? null;
+  if (has("whatsapp")) row.whatsapp = patch.whatsapp ?? null;
+  if (has("website")) row.website = patch.website ?? null;
+  if (has("country")) row.country = patch.country ?? "";
+  if (has("city")) row.city = patch.city ?? null;
+  if (has("buyerType")) row.buyer_type = patch.buyerType ?? null;
+  if (has("productInterest")) row.product_interest = patch.productInterest ?? null;
+  if (has("source")) row.source = patch.source ?? null;
+  if (has("notes")) row.notes = patch.notes ?? null;
+  if (has("status")) row.status = patch.status;
+  if (has("lastContactedAt")) row.last_contacted_at = patch.lastContactedAt ?? null;
+  if (has("nextFollowUpAt")) row.next_follow_up_at = patch.nextFollowUpAt ?? null;
+  return row as Partial<Omit<BuyerRow, "id" | "workspace_id" | "created_at" | "updated_at">>;
+}
+
+export function campaignToPatchRow(
+  patch: Partial<Campaign>,
+): Partial<Omit<CampaignRow, "id" | "workspace_id" | "created_at" | "updated_at">> {
+  const row: Record<string, unknown> = {};
+  const has = (k: keyof Campaign) => Object.prototype.hasOwnProperty.call(patch, k);
+  if (has("name")) row.name = patch.name ?? "";
+  if (has("country")) row.country = patch.country ?? "";
+  if (has("product")) row.product = patch.product ?? "";
+  if (has("description")) row.description = patch.description ?? null;
+  if (has("templateId")) row.template_id = patch.templateId || null;
+  if (has("status")) row.status = patch.status;
+  if (has("subject")) row.subject = patch.subject ?? "";
+  if (has("preheader")) row.preheader = patch.preheader ?? "";
+  if (has("fromName")) row.from_name = patch.fromName ?? "";
+  if (has("replyTo")) row.reply_to = patch.replyTo ?? null;
+  if (has("themeKey")) row.theme_key = patch.themeKey ?? null;
+  if (has("templateVariant")) row.template_variant = patch.templateVariant ?? null;
+  if (has("emailSections")) row.email_sections = patch.emailSections ?? null;
+  return row as Partial<Omit<CampaignRow, "id" | "workspace_id" | "created_at" | "updated_at">>;
+}
+
+export function recipientToPatchRow(
+  patch: Partial<CampaignRecipient>,
+): Partial<
+  Omit<CampaignRecipientRow, "id" | "workspace_id" | "campaign_id" | "buyer_id" | "created_at">
+> {
+  const row: Record<string, unknown> = {};
+  const has = (k: keyof CampaignRecipient) => Object.prototype.hasOwnProperty.call(patch, k);
+  if (has("status")) row.status = patch.status;
+  if (has("preparedAt")) row.prepared_at = patch.preparedAt ?? null;
+  if (has("simulatedSentAt")) row.simulated_sent_at = patch.simulatedSentAt ?? null;
+  return row as Partial<
+    Omit<CampaignRecipientRow, "id" | "workspace_id" | "campaign_id" | "buyer_id" | "created_at">
+  >;
+}
+
+export function templateToPatchRow(
+  patch: Partial<EmailTemplate>,
+): Partial<Omit<EmailTemplateRow, "id" | "workspace_id" | "created_at" | "updated_at">> {
+  const row: Record<string, unknown> = {};
+  const has = (k: keyof EmailTemplate) => Object.prototype.hasOwnProperty.call(patch, k);
+  if (has("name")) row.name = patch.name ?? "";
+  if (has("label")) row.label = patch.label ?? null;
+  if (has("sections")) row.sections = patch.sections ?? [];
+  if (has("themeKey")) row.theme_key = patch.themeKey ?? null;
+  if (has("variant")) row.variant = patch.variant ?? null;
+  if (has("version")) row.version = patch.version ?? 1;
+  if (has("status")) row.status = patch.status ?? "draft";
+  return row as Partial<Omit<EmailTemplateRow, "id" | "workspace_id" | "created_at" | "updated_at">>;
+}
+
 export interface CampaignRow {
   id: string;
   workspace_id: string;
@@ -101,6 +179,9 @@ export interface CampaignRow {
   preheader: string;
   from_name: string;
   reply_to: string | null;
+  theme_key: string | null;
+  template_variant: "signature" | "direct" | null;
+  email_sections: EmailSection[] | null;
   created_at: string;
   updated_at: string;
 }
@@ -118,6 +199,9 @@ export function campaignFromRow(r: CampaignRow): Campaign {
     preheader: r.preheader,
     fromName: r.from_name,
     replyTo: r.reply_to ?? undefined,
+    themeKey: r.theme_key ?? undefined,
+    templateVariant: r.template_variant ?? undefined,
+    emailSections: r.email_sections ?? undefined,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
@@ -140,6 +224,10 @@ export function campaignToRow(
     preheader: c.preheader ?? "",
     from_name: c.fromName ?? "",
     reply_to: c.replyTo ?? null,
+    theme_key: c.themeKey ?? null,
+    template_variant:
+      (c.templateVariant as "signature" | "direct" | undefined) ?? null,
+    email_sections: c.emailSections ?? null,
   };
 }
 
@@ -187,6 +275,10 @@ export interface EmailTemplateRow {
   name: string;
   label: string | null;
   sections: EmailSection[];
+  theme_key: string | null;
+  variant: "signature" | "direct" | null;
+  version: number;
+  status: "draft" | "approved" | "archived";
   created_at: string;
   updated_at: string;
 }
@@ -197,6 +289,10 @@ export function templateFromRow(r: EmailTemplateRow): EmailTemplate {
     name: r.name,
     label: r.label ?? undefined,
     sections: r.sections ?? [],
+    themeKey: r.theme_key ?? undefined,
+    variant: r.variant ?? undefined,
+    version: r.version ?? 1,
+    status: r.status ?? "draft",
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
@@ -212,6 +308,10 @@ export function templateToRow(
     name: t.name ?? "",
     label: t.label ?? null,
     sections: t.sections ?? [],
+    theme_key: t.themeKey ?? null,
+    variant: (t.variant as "signature" | "direct" | undefined) ?? null,
+    version: t.version ?? 1,
+    status: (t.status as "draft" | "approved" | "archived" | undefined) ?? "draft",
   };
 }
 

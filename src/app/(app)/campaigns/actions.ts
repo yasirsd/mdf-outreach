@@ -4,27 +4,46 @@ import { revalidatePath } from "next/cache";
 import { randomUUID } from "node:crypto";
 import { serverRepositories } from "@/lib/repositories/server";
 import { logActivity } from "@/lib/activity";
-import type { Campaign, CampaignRecipient, EmailTemplate } from "@/lib/types";
+import { isProductKey } from "@/lib/email/themes/catalogue";
+import type {
+  Campaign,
+  CampaignRecipient,
+  EmailSection,
+  EmailTemplate,
+  TemplateVariant,
+} from "@/lib/types";
 
 function isUuid(s: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s);
 }
 
+function snapshotSections(sections: EmailSection[]): EmailSection[] {
+  // Deep copy so future master edits never leak into a campaign snapshot.
+  return sections.map((s) => ({
+    id: `${s.type}-${Math.random().toString(36).slice(2, 8)}`,
+    type: s.type,
+    visible: s.visible,
+    data: { ...s.data },
+  }));
+}
+
 export async function createCampaignAction(input: Partial<Campaign>): Promise<Campaign> {
   const { repos } = await serverRepositories();
   const now = new Date().toISOString();
+  const themeKey = isProductKey(input.themeKey ?? "") ? input.themeKey : undefined;
   const c: Campaign = {
     id: randomUUID(),
     name: input.name || `${input.country ?? ""} — ${input.product ?? ""}`.trim() || "New campaign",
     country: input.country ?? "",
     product: input.product ?? "",
     description: input.description ?? "",
-    templateId: input.templateId ?? "",
+    templateId: "",
     status: input.status ?? "draft",
     subject: input.subject ?? "",
     preheader: input.preheader ?? "",
     fromName: input.fromName ?? "",
     replyTo: input.replyTo ?? "",
+    themeKey,
     createdAt: now,
     updatedAt: now,
   };
@@ -38,7 +57,10 @@ export async function createCampaignAction(input: Partial<Campaign>): Promise<Ca
   return created;
 }
 
-export async function updateCampaignAction(id: string, patch: Partial<Campaign>): Promise<Campaign> {
+export async function updateCampaignAction(
+  id: string,
+  patch: Partial<Campaign>,
+): Promise<Campaign> {
   const { repos } = await serverRepositories();
   const { createdAt: _c, updatedAt: _u, id: _i, ...clean } = patch;
   const updated = await repos.campaigns.update(id, clean);
@@ -61,6 +83,71 @@ export async function deleteCampaignAction(id: string): Promise<void> {
   }
   revalidatePath("/campaigns");
   revalidatePath("/");
+}
+
+/**
+ * Copies the master template into the campaign as a snapshot. The master
+ * itself is NEVER modified. Compatibility (product theme match) is
+ * enforced server-side — a Guntur campaign cannot adopt a Mango template.
+ */
+export async function useTemplateForCampaignAction(
+  campaignId: string,
+  templateId: string,
+): Promise<Campaign> {
+  const { repos } = await serverRepositories();
+  const [campaign, template] = await Promise.all([
+    repos.campaigns.get(campaignId),
+    repos.templates.get(templateId),
+  ]);
+  if (!campaign) throw new Error("Campaign not found");
+  if (!template) throw new Error("Template not found");
+  if (campaign.themeKey && template.themeKey && campaign.themeKey !== template.themeKey) {
+    throw new Error(
+      `Template is for a different product (${template.themeKey}) than this campaign (${campaign.themeKey}).`,
+    );
+  }
+  const patch: Partial<Campaign> = {
+    templateId: template.id,
+    themeKey: template.themeKey ?? campaign.themeKey,
+    templateVariant: template.variant as TemplateVariant | undefined,
+    emailSections: snapshotSections(template.sections ?? []),
+  };
+  const updated = await repos.campaigns.update(campaignId, patch);
+  await logActivity(
+    repos,
+    "campaign.template.selected",
+    `${updated.name} → ${template.name}`,
+    { type: "campaign", id: campaignId },
+  );
+  revalidatePath(`/campaigns/${campaignId}`);
+  revalidatePath(`/campaigns/${campaignId}/email`);
+  revalidatePath(`/campaigns/${campaignId}/preview`);
+  revalidatePath(`/campaigns/${campaignId}/send`);
+  return updated;
+}
+
+/**
+ * Persists the campaign's own edited email sections. Mutates the campaign
+ * snapshot only — never touches the shared master template.
+ */
+export async function saveCampaignEmailAction(
+  campaignId: string,
+  sections: EmailSection[],
+): Promise<Campaign> {
+  const { repos } = await serverRepositories();
+  const updated = await repos.campaigns.update(campaignId, {
+    emailSections: sections,
+  });
+  await logActivity(
+    repos,
+    "campaign.email.updated",
+    `${updated.name} email updated`,
+    { type: "campaign", id: campaignId },
+  );
+  revalidatePath(`/campaigns/${campaignId}`);
+  revalidatePath(`/campaigns/${campaignId}/email`);
+  revalidatePath(`/campaigns/${campaignId}/preview`);
+  return updated;
 }
 
 export async function addRecipientsAction(
@@ -135,6 +222,11 @@ export async function markRecipientSimulatedSentAction(
   return r;
 }
 
+/**
+ * @deprecated Campaign editing now saves to the campaign snapshot instead
+ * of the master template. Kept only for cases where a real admin edit to
+ * the master library is intentional; not called from normal campaign flow.
+ */
 export async function saveTemplateAction(template: EmailTemplate): Promise<EmailTemplate> {
   const { repos } = await serverRepositories();
   const existing = template.id && isUuid(template.id) ? await repos.templates.get(template.id) : undefined;

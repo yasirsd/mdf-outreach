@@ -2,36 +2,9 @@
 
 import { revalidatePath } from "next/cache";
 import { serverRepositories } from "@/lib/repositories/server";
-import { createDefaultSettings } from "@/lib/workspace/defaults";
-import { createDefaultTemplate } from "@/lib/email/defaultTemplate";
-import type { WorkspaceSettings } from "@/lib/types";
 import { logActivity } from "@/lib/activity";
-import { randomUUID } from "node:crypto";
-
-/**
- * Initialize workspace_settings + a default email template on first access.
- * Idempotent — every subsequent call returns the existing settings.
- */
-export async function ensureSettingsAction(): Promise<WorkspaceSettings> {
-  const { repos } = await serverRepositories();
-  const existing = await repos.settings.get();
-  if (existing) return existing;
-
-  const defaults = { ...createDefaultSettings(), onboardingComplete: true };
-  const saved = await repos.settings.put(defaults);
-
-  // Seed a single blank template shell so the campaign editor has something
-  // to point at. This is chrome, not fictional business data.
-  const templates = await repos.templates.list();
-  if (templates.length === 0) {
-    const t = createDefaultTemplate();
-    t.id = randomUUID();
-    t.isDemo = false;
-    await repos.templates.create(t);
-  }
-
-  return saved;
-}
+import { ensureMasterLibrary, resetMasterLibrary } from "@/lib/workspace/ensure";
+import type { WorkspaceSettings } from "@/lib/types";
 
 export async function saveSettingsAction(next: WorkspaceSettings): Promise<WorkspaceSettings> {
   const { repos } = await serverRepositories();
@@ -44,4 +17,47 @@ export async function saveSettingsAction(next: WorkspaceSettings): Promise<Works
   await logActivity(repos, "settings.updated", "Workspace settings updated");
   revalidatePath("/", "layout");
   return saved;
+}
+
+/**
+ * Administrative maintenance action. Ensures the 8 approved master
+ * templates exist in the workspace. Safe to run repeatedly — never
+ * duplicates or overwrites existing masters.
+ *
+ * Exposed only in Settings → Developer, not in the normal Templates UX.
+ */
+export async function verifyMasterLibraryAction(): Promise<{ created: number; total: number }> {
+  const { repos } = await serverRepositories();
+  const result = await ensureMasterLibrary(repos);
+  if (result.created > 0) {
+    await logActivity(
+      repos,
+      "library.repaired",
+      `MDF master library repaired — ${result.created} template${result.created === 1 ? "" : "s"} restored`,
+    );
+  }
+  revalidatePath("/templates");
+  revalidatePath("/settings");
+  return result;
+}
+
+/**
+ * Administrative reset action: overwrite every master with the current
+ * library definition. Bumps `version` and does NOT touch campaigns.
+ */
+export async function resetMasterLibraryAction(): Promise<{
+  created: number;
+  updated: number;
+  total: number;
+}> {
+  const { repos } = await serverRepositories();
+  const result = await resetMasterLibrary(repos);
+  await logActivity(
+    repos,
+    "library.reset",
+    `MDF master library reset — ${result.created} created, ${result.updated} updated to new approved version`,
+  );
+  revalidatePath("/templates");
+  revalidatePath("/settings");
+  return result;
 }

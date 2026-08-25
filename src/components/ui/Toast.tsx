@@ -49,23 +49,27 @@ export function ToastHost() {
           t.kind === "success" ? CheckCircle2 : t.kind === "error" ? AlertCircle : Info;
         const color =
           t.kind === "success"
-            ? "text-emerald-600"
+            ? "#4ADE80"
             : t.kind === "error"
-              ? "text-brand-chilli"
-              : "text-brand-charcoal";
+              ? "#EF6C5C"
+              : "var(--brand-orange)";
         return (
           <div
             key={t.id}
-            className="reveal pointer-events-auto flex items-start gap-3 bg-white border border-brand-border rounded-xl shadow-panel px-4 py-3 min-w-[280px] max-w-sm"
+            className="reveal pointer-events-auto flex items-start gap-3 rounded-[12px] shadow-panel px-4 py-3 min-w-[280px] max-w-sm"
+            style={{
+              backgroundColor: "var(--app-elevated)",
+              border: "1px solid var(--app-border-strong)",
+            }}
           >
-            <Icon size={18} className={`mt-0.5 shrink-0 ${color}`} />
-            <div className="text-sm text-brand-charcoal flex-1 leading-snug">{t.message}</div>
+            <Icon size={16} className="mt-0.5 shrink-0" style={{ color }} />
+            <div className="text-[13px] text-text-primary flex-1 leading-snug">{t.message}</div>
             <button
               onClick={() => dismiss(t.id)}
-              className="text-brand-muted hover:text-brand-charcoal p-0.5 -m-0.5"
+              className="text-text-muted hover:text-text-primary p-0.5 -m-0.5"
               aria-label="Dismiss"
             >
-              <X size={14} />
+              <X size={13} />
             </button>
           </div>
         );

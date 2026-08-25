@@ -20,7 +20,15 @@ export function LoginForm({
       <input type="hidden" name="next" value={next} />
 
       {banner && (
-        <div className="rounded-lg border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-[13px] text-amber-900">
+        <div
+          role="status"
+          className="rounded-[8px] px-3.5 py-2.5 text-[12.5px]"
+          style={{
+            backgroundColor: "rgba(243,107,33,0.08)",
+            border: "1px solid rgba(243,107,33,0.24)",
+            color: "#F8894C",
+          }}
+        >
           {banner}
         </div>
       )}
@@ -28,42 +36,46 @@ export function LoginForm({
       {state.error && (
         <div
           role="alert"
-          className="rounded-lg border border-red-200 bg-red-50 px-3.5 py-2.5 text-[13px] text-red-800"
+          className="rounded-[8px] px-3.5 py-2.5 text-[12.5px]"
+          style={{
+            backgroundColor: "rgba(239,108,92,0.08)",
+            border: "1px solid rgba(239,108,92,0.28)",
+            color: "#F08B7E",
+          }}
         >
           {state.error}
         </div>
       )}
 
-      <div>
-        <label htmlFor="email" className="label">Email</label>
+      <label className="block">
+        <span className="label">Email</span>
         <input
-          id="email"
           name="email"
           type="email"
           autoComplete="email"
           required
           className="input"
+          autoFocus
         />
-      </div>
+      </label>
 
-      <div>
-        <label htmlFor="password" className="label">Password</label>
+      <label className="block">
+        <span className="label">Password</span>
         <input
-          id="password"
           name="password"
           type="password"
           autoComplete="current-password"
           required
           className="input"
         />
-      </div>
+      </label>
 
       <SubmitButton />
 
       <div className="text-center pt-1">
         <Link
           href="/auth/reset-password"
-          className="text-[12.5px] text-brand-muted hover:text-brand-charcoal"
+          className="text-[12px] text-text-muted hover:text-text-secondary transition-colors"
         >
           Forgot password?
         </Link>
@@ -75,11 +87,7 @@ export function LoginForm({
 function SubmitButton() {
   const { pending } = useFormStatus();
   return (
-    <button
-      type="submit"
-      className="btn-brand w-full justify-center"
-      disabled={pending}
-    >
+    <button type="submit" className="btn-primary w-full justify-center" disabled={pending}>
       {pending ? "Signing in…" : "Sign in"}
     </button>
   );

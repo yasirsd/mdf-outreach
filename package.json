@@ -17,6 +17,7 @@
     "date-fns": "3.6.0",
     "dexie": "4.0.8",
     "dexie-react-hooks": "1.1.7",
+    "geist": "^1.7.2",
     "lucide-react": "0.451.0",
     "next": "14.2.35",
     "papaparse": "5.4.1",
@@ -27,6 +28,8 @@
     "zustand": "4.5.4"
   },
   "devDependencies": {
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.6",
     "@types/node": "20.14.10",
     "@types/papaparse": "5.3.14",
     "@types/react": "18.3.3",

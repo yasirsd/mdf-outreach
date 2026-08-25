@@ -26,14 +26,18 @@ import {
   assetFromRow,
   assetToRow,
   buyerFromRow,
+  buyerToPatchRow,
   buyerToRow,
   campaignFromRow,
+  campaignToPatchRow,
   campaignToRow,
   recipientFromRow,
+  recipientToPatchRow,
   recipientToRow,
   settingsFromRow,
   settingsToRow,
   templateFromRow,
+  templateToPatchRow,
   templateToRow,
 } from "./mappers";
 
@@ -80,8 +84,7 @@ class SupabaseBuyerRepository implements BuyerRepository {
   }
 
   async update(id: string, patch: Partial<Buyer>): Promise<Buyer> {
-    const row = buyerToRow({ ...patch, id }, this.workspaceId);
-    const { workspace_id: _ws, id: _id, ...updateFields } = row;
+    const updateFields = buyerToPatchRow(patch);
     const { data, error } = await this.supabase
       .from("buyers")
       .update(updateFields)
@@ -150,8 +153,7 @@ class SupabaseCampaignRepository implements CampaignRepository {
   }
 
   async update(id: string, patch: Partial<Campaign>): Promise<Campaign> {
-    const row = campaignToRow({ ...patch, id }, this.workspaceId);
-    const { workspace_id: _ws, id: _id, ...updateFields } = row;
+    const updateFields = campaignToPatchRow(patch);
     const { data, error } = await this.supabase
       .from("campaigns")
       .update(updateFields)
@@ -199,8 +201,7 @@ class SupabaseRecipientRepository implements RecipientRepository {
   }
 
   async update(id: string, patch: Partial<CampaignRecipient>): Promise<CampaignRecipient> {
-    const row = recipientToRow({ ...patch, id }, this.workspaceId);
-    const { workspace_id: _ws, id: _id, campaign_id: _c, buyer_id: _b, ...fields } = row;
+    const fields = recipientToPatchRow(patch);
     const { data, error } = await this.supabase
       .from("campaign_recipients")
       .update(fields)
@@ -270,8 +271,7 @@ class SupabaseTemplateRepository implements TemplateRepository {
   }
 
   async update(id: string, patch: Partial<EmailTemplate>): Promise<EmailTemplate> {
-    const row = templateToRow({ ...patch, id }, this.workspaceId);
-    const { workspace_id: _ws, id: _id, ...updateFields } = row;
+    const updateFields = templateToPatchRow(patch);
     const { data, error } = await this.supabase
       .from("email_templates")
       .update(updateFields)

@@ -1,26 +1,49 @@
-@import url("https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Inter:wght@400;500;600;700&display=swap");
-
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
+/*
+ * MDF Outreach — dark-first design system.
+ *
+ * Semantic tokens live on :root so components consume `var(--…)` and never
+ * reach for raw hex values. The full palette matches tailwind.config.ts.
+ */
 :root {
+  color-scheme: dark;
+
+  --app-bg: #08090A;
+  --app-sidebar: #0C0D0F;
+  --app-surface: #111216;
+  --app-elevated: #16171B;
+  --app-hover: #1A1B20;
+  --app-border: rgba(255, 255, 255, 0.08);
+  --app-border-strong: rgba(255, 255, 255, 0.13);
+
+  --text-primary: #F5F5F4;
+  --text-secondary: #A1A1AA;
+  --text-muted: #71717A;
+  --text-faint: #52525B;
+
   --brand-orange: #F36B21;
-  --brand-charcoal: #151515;
-  --brand-ivory: #FAF8F4;
-  --brand-canvas: #F2EFE9;
-  --brand-border: #E6E1D9;
+  --brand-orange-hover: #FF7A2E;
+  --brand-orange-muted: #B44C11;
   --brand-chilli: #A62921;
-  --brand-muted: #737373;
+
+  --radius-control: 8px;
+  --radius-card: 12px;
+  --radius-dialog: 16px;
+
+  --focus-ring: 0 0 0 3px rgba(243, 107, 33, 0.35);
+  --focus-ring-quiet: 0 0 0 2px rgba(255, 255, 255, 0.1);
 }
 
 html,
 body {
-  background-color: var(--brand-ivory);
-  color: var(--brand-charcoal);
+  background-color: var(--app-bg);
+  color: var(--text-primary);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11", "ss01";
 }
 
 * {
@@ -28,73 +51,184 @@ body {
 }
 
 ::selection {
-  background-color: rgba(243, 107, 33, 0.2);
-  color: var(--brand-charcoal);
+  background-color: rgba(243, 107, 33, 0.28);
+  color: var(--text-primary);
 }
 
-/* Scrollbars: quiet */
 ::-webkit-scrollbar {
   width: 10px;
   height: 10px;
 }
+::-webkit-scrollbar-track {
+  background: transparent;
+}
 ::-webkit-scrollbar-thumb {
-  background: rgba(21, 21, 21, 0.12);
+  background: rgba(255, 255, 255, 0.08);
   border-radius: 999px;
   border: 2px solid transparent;
   background-clip: padding-box;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(21, 21, 21, 0.22);
+  background: rgba(255, 255, 255, 0.16);
   background-clip: padding-box;
   border: 2px solid transparent;
 }
 
-@layer components {
-  .btn {
-    @apply inline-flex items-center justify-center gap-2 rounded-lg text-sm font-medium transition-all duration-200 whitespace-nowrap;
-  }
-  .btn-primary {
-    @apply btn bg-brand-charcoal text-white h-9 px-4 hover:bg-black active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed;
-  }
-  .btn-brand {
-    @apply btn text-white h-9 px-4 active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed;
-    background-color: var(--brand-orange);
-  }
-  .btn-brand:hover {
-    background-color: #E15E17;
-  }
-  .btn-ghost {
-    @apply btn bg-transparent text-brand-charcoal h-9 px-3 hover:bg-brand-canvas;
-  }
-  .btn-outline {
-    @apply btn bg-white text-brand-charcoal h-9 px-4 border border-brand-border hover:bg-brand-canvas;
-  }
-  .btn-danger {
-    @apply btn bg-white text-brand-chilli h-9 px-4 border border-brand-border hover:bg-brand-canvas;
-  }
-  .input {
-    @apply block w-full h-10 px-3 rounded-lg border border-brand-border bg-white text-sm text-brand-charcoal placeholder:text-brand-muted focus:outline-none focus:ring-2 focus:ring-brand-charcoal/10 focus:border-brand-charcoal transition;
-  }
-  .textarea {
-    @apply block w-full px-3 py-2 rounded-lg border border-brand-border bg-white text-sm text-brand-charcoal placeholder:text-brand-muted focus:outline-none focus:ring-2 focus:ring-brand-charcoal/10 focus:border-brand-charcoal transition;
-  }
-  .label {
-    @apply block text-xs font-medium text-brand-charcoal/70 mb-1.5;
-  }
-  .card {
-    @apply bg-white border border-brand-border rounded-2xl;
-  }
-  .metric-card {
-    @apply bg-white border border-brand-border rounded-2xl p-5;
-  }
-  .surface-canvas {
-    background-color: var(--brand-canvas);
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
   }
 }
 
-/* Very subtle animation utility */
+@layer components {
+  /* Button system */
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-[8px] text-[13px] font-medium tracking-tight transition-colors duration-180 whitespace-nowrap select-none;
+  }
+  .btn-primary {
+    @apply btn h-9 px-4 text-black active:scale-[0.985] disabled:opacity-50 disabled:cursor-not-allowed;
+    background-color: var(--brand-orange);
+    color: #0b0b0b;
+  }
+  .btn-primary:hover {
+    background-color: var(--brand-orange-hover);
+  }
+  .btn-primary:focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
+  }
+  .btn-brand {
+    @apply btn-primary;
+  }
+  .btn-secondary,
+  .btn-outline {
+    @apply btn h-9 px-4 active:scale-[0.985] disabled:opacity-50 disabled:cursor-not-allowed;
+    background-color: transparent;
+    color: var(--text-primary);
+    border: 1px solid var(--app-border-strong);
+  }
+  .btn-secondary:hover,
+  .btn-outline:hover {
+    background-color: var(--app-hover);
+  }
+  .btn-secondary:focus-visible,
+  .btn-outline:focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring-quiet);
+  }
+  .btn-ghost {
+    @apply btn h-9 px-3;
+    background-color: transparent;
+    color: var(--text-secondary);
+  }
+  .btn-ghost:hover {
+    background-color: var(--app-hover);
+    color: var(--text-primary);
+  }
+  .btn-danger {
+    @apply btn h-9 px-4;
+    background-color: transparent;
+    color: #EF6C5C;
+    border: 1px solid var(--app-border-strong);
+  }
+  .btn-danger:hover {
+    background-color: rgba(239, 108, 92, 0.08);
+    border-color: rgba(239, 108, 92, 0.4);
+  }
+
+  /* Form controls */
+  .input {
+    @apply block w-full h-10 px-3 rounded-[8px] text-[13.5px] transition-colors duration-180;
+    background-color: var(--app-elevated);
+    color: var(--text-primary);
+    border: 1px solid var(--app-border);
+  }
+  .input::placeholder {
+    color: var(--text-muted);
+  }
+  .input:hover {
+    border-color: var(--app-border-strong);
+  }
+  .input:focus {
+    outline: none;
+    border-color: var(--brand-orange);
+    box-shadow: 0 0 0 3px rgba(243, 107, 33, 0.15);
+  }
+  .textarea {
+    @apply block w-full px-3 py-2.5 rounded-[8px] text-[13.5px] transition-colors duration-180 leading-relaxed;
+    background-color: var(--app-elevated);
+    color: var(--text-primary);
+    border: 1px solid var(--app-border);
+  }
+  .textarea::placeholder {
+    color: var(--text-muted);
+  }
+  .textarea:focus {
+    outline: none;
+    border-color: var(--brand-orange);
+    box-shadow: 0 0 0 3px rgba(243, 107, 33, 0.15);
+  }
+  .label {
+    @apply block text-[11.5px] font-medium tracking-[0.02em] mb-1.5;
+    color: var(--text-secondary);
+  }
+
+  /* Surfaces */
+  .card {
+    background-color: var(--app-surface);
+    border: 1px solid var(--app-border);
+    border-radius: var(--radius-card);
+  }
+  .card-elevated {
+    background-color: var(--app-elevated);
+    border: 1px solid var(--app-border);
+    border-radius: var(--radius-card);
+  }
+  .metric-card {
+    background-color: var(--app-surface);
+    border: 1px solid var(--app-border);
+    border-radius: var(--radius-card);
+    padding: 1.125rem 1.25rem;
+  }
+  .surface-canvas {
+    background-color: var(--app-surface);
+  }
+
+  /* Interactive rows */
+  .row-hover {
+    transition: background-color 180ms ease;
+  }
+  .row-hover:hover {
+    background-color: var(--app-hover);
+  }
+
+  /* Focus utilities */
+  .focus-ring:focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
+  }
+  .focus-ring-quiet:focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring-quiet);
+  }
+
+  /* Chip / pill */
+  .chip {
+    @apply inline-flex items-center gap-1.5 rounded-full text-[11px] font-medium h-6 px-2.5 tracking-[0.01em];
+    background-color: var(--app-elevated);
+    color: var(--text-secondary);
+    border: 1px solid var(--app-border);
+  }
+  .chip-accent {
+    background-color: rgba(243, 107, 33, 0.12);
+    color: var(--brand-orange);
+    border-color: rgba(243, 107, 33, 0.28);
+  }
+}
+
 .reveal {
-  animation: reveal 250ms ease-out both;
+  animation: reveal 220ms ease-out both;
 }
 @keyframes reveal {
   from { opacity: 0; transform: translateY(4px); }

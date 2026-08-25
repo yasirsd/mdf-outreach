@@ -1,23 +1,24 @@
 import Link from "next/link";
-import { ArrowRight, Plus, Send } from "lucide-react";
+import { ArrowUpRight, Plus, Upload } from "lucide-react";
 import { serverRepositories } from "@/lib/repositories/server";
 import { PageContainer } from "@/components/ui/Page";
 import { formatRelative, greeting } from "@/lib/utils";
+import type { Buyer, Campaign, CampaignRecipient } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
 const CONTACTED_SET = ["contacted", "replied", "interested", "quotation-sent", "negotiating", "converted"];
 const REPLIED_SET = ["replied", "interested", "quotation-sent", "negotiating", "converted"];
 const INTERESTED_SET = ["interested", "quotation-sent", "negotiating", "converted"];
-const READY_SET = ["ready", "qualified", "new"];
 
 export default async function OverviewPage() {
   const { repos } = await serverRepositories();
   const [buyers, campaigns, activity] = await Promise.all([
     repos.buyers.list(),
     repos.campaigns.list(),
-    repos.activity.list(10),
+    repos.activity.list(8),
   ]);
+
   const activeCampaign = campaigns.find((c) => c.status === "active") ?? campaigns[0];
   const recipients = activeCampaign
     ? await repos.recipients.listByCampaign(activeCampaign.id)
@@ -27,32 +28,23 @@ export default async function OverviewPage() {
   const replied = buyers.filter((b) => REPLIED_SET.includes(b.status)).length;
   const interested = buyers.filter((b) => INTERESTED_SET.includes(b.status)).length;
 
-  const cmpReady = recipients.filter((r) => READY_SET.includes(r.status)).length;
-  const cmpContacted = recipients.filter((r) => CONTACTED_SET.includes(r.status)).length;
-  const cmpReplied = recipients.filter((r) => REPLIED_SET.includes(r.status)).length;
-  const cmpInterested = recipients.filter((r) => INTERESTED_SET.includes(r.status)).length;
+  const followUps = buyers
+    .filter((b) => !!b.nextFollowUpAt)
+    .sort((a, b) => (a.nextFollowUpAt ?? "").localeCompare(b.nextFollowUpAt ?? ""))
+    .slice(0, 5);
 
   return (
     <PageContainer>
-      <header className="mb-14">
-        <h1 className="font-serif font-medium text-[52px] leading-[1.02] tracking-[-0.025em] text-brand-charcoal">
+      <header className="mb-8">
+        <h1 className="text-[26px] font-semibold tracking-tight text-text-primary">
           {greeting()}.
         </h1>
-        <p className="mt-4 text-brand-muted text-[16px] leading-relaxed max-w-xl">
+        <p className="mt-1.5 text-[13.5px] text-text-secondary">
           Your export outreach, in one place.
-          {activeCampaign && (
-            <>
-              {" "}
-              <span className="text-brand-charcoal/85">
-                {activeCampaign.country} · {activeCampaign.product}
-              </span>{" "}
-              campaign is ready to continue.
-            </>
-          )}
         </p>
       </header>
 
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-12">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-8">
         <Metric label="Buyers" value={buyers.length} />
         <Metric label="Contacted" value={contacted} />
         <Metric label="Replies" value={replied} />
@@ -60,95 +52,74 @@ export default async function OverviewPage() {
       </div>
 
       {activeCampaign ? (
-        <Link
-          href={`/campaigns/${activeCampaign.id}`}
-          className="group block rounded-2xl bg-brand-charcoal text-white p-8 md:p-10 border border-brand-charcoal hover:shadow-panel transition-shadow"
-        >
-          <div className="flex items-start justify-between gap-6">
-            <div>
-              <div className="text-[11px] tracking-[0.16em] uppercase text-brand-orange">
-                Active Campaign · Export Campaign
-              </div>
-              <div className="mt-4 font-serif text-[36px] font-medium leading-[1.05] tracking-[-0.02em]">
-                {activeCampaign.country}
-                <span className="text-white/40"> · </span>
-                {activeCampaign.product}
-              </div>
-              <div className="mt-2 text-white/60 text-[14px]">{activeCampaign.name}</div>
-            </div>
-            <div className="hidden md:flex items-center gap-2 text-[13px] text-white/70 group-hover:text-white transition-colors">
-              Continue campaign <ArrowRight size={16} />
-            </div>
-          </div>
-
-          <div className="mt-10 grid grid-cols-2 md:grid-cols-5 gap-6 pt-6 border-t border-white/10">
-            <CampaignStat label="Recipients" value={recipients.length} />
-            <CampaignStat label="Ready" value={cmpReady} />
-            <CampaignStat label="Contacted" value={cmpContacted} />
-            <CampaignStat label="Replied" value={cmpReplied} />
-            <CampaignStat label="Interested" value={cmpInterested} accent />
-          </div>
-        </Link>
+        <ActiveCampaignPanel campaign={activeCampaign} recipients={recipients} />
       ) : (
-        <div className="rounded-2xl border border-dashed border-brand-border p-10 text-center bg-white">
-          <div className="text-brand-charcoal font-medium">No active campaign</div>
-          <p className="mt-1 text-sm text-brand-muted">Create your first campaign to get started.</p>
-          <Link href="/campaigns" className="btn-brand mt-5 inline-flex">
-            <Plus size={14} /> New campaign
-          </Link>
-        </div>
+        <EmptyCampaignPanel hasBuyers={buyers.length > 0} />
       )}
 
-      <div className="grid md:grid-cols-2 gap-6 mt-14">
+      <div className="grid md:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)] gap-4 mt-8">
         <section>
-          <div className="flex items-baseline justify-between mb-5">
-            <h2 className="text-[15px] font-semibold text-brand-charcoal tracking-tight">
-              Recent Activity
-            </h2>
-            <Link href="/activity" className="text-[12px] text-brand-muted hover:text-brand-charcoal">
-              View all
-            </Link>
-          </div>
-          <div className="card divide-y divide-brand-border">
-            {activity.length === 0 && (
-              <div className="p-6 text-sm text-brand-muted text-center">
-                No activity yet. Actions you take will appear here.
+          <SectionHeader
+            title="Follow-ups"
+            hint={
+              followUps.length === 0
+                ? "No scheduled follow-ups"
+                : `${followUps.length} scheduled`
+            }
+            href="/buyers"
+            linkLabel="Open buyers"
+          />
+          <div
+            className="rounded-[12px] overflow-hidden"
+            style={{
+              backgroundColor: "var(--app-surface)",
+              border: "1px solid var(--app-border)",
+            }}
+          >
+            {followUps.length === 0 ? (
+              <div className="px-5 py-6 text-[13px] text-text-muted">
+                No follow-ups scheduled. Assign a next follow-up date on a buyer to see it here.
               </div>
+            ) : (
+              <ul className="divide-y" style={{ borderColor: "var(--app-border)" }}>
+                {followUps.map((b) => (
+                  <FollowUpRow key={b.id} buyer={b} />
+                ))}
+              </ul>
             )}
-            {activity.map((a) => (
-              <div key={a.id} className="p-4 flex items-start justify-between gap-3">
-                <div className="text-[13.5px] text-brand-charcoal/90">{a.message}</div>
-                <div className="text-[11.5px] text-brand-muted shrink-0">
-                  {formatRelative(a.at)}
-                </div>
-              </div>
-            ))}
           </div>
         </section>
 
         <section>
-          <div className="flex items-baseline justify-between mb-5">
-            <h2 className="text-[15px] font-semibold text-brand-charcoal tracking-tight">
-              Quick actions
-            </h2>
-          </div>
-          <div className="grid grid-cols-1 gap-3">
-            <QuickAction
-              href="/buyers"
-              title="Add or import buyers"
-              body="Grow your buyer network from a CSV or add one at a time."
-            />
-            <QuickAction
-              href={activeCampaign ? `/campaigns/${activeCampaign.id}/email` : "/campaigns"}
-              title="Design the outreach email"
-              body="Refine the master template, then preview as any buyer."
-            />
-            <QuickAction
-              href={activeCampaign ? `/campaigns/${activeCampaign.id}/send` : "/campaigns"}
-              title="Prepare a campaign"
-              body="Validate personalization and readiness before you send."
-              icon={<Send size={16} className="text-brand-orange" />}
-            />
+          <SectionHeader
+            title="Recent activity"
+            hint={activity.length === 0 ? "Nothing yet" : "Latest events"}
+            href="/activity"
+            linkLabel="View all"
+          />
+          <div
+            className="rounded-[12px] overflow-hidden"
+            style={{
+              backgroundColor: "var(--app-surface)",
+              border: "1px solid var(--app-border)",
+            }}
+          >
+            {activity.length === 0 ? (
+              <div className="px-5 py-6 text-[13px] text-text-muted">
+                Actions you take will appear here.
+              </div>
+            ) : (
+              <ul className="divide-y" style={{ borderColor: "var(--app-border)" }}>
+                {activity.map((a) => (
+                  <li key={a.id} className="px-5 py-3 flex items-start justify-between gap-4">
+                    <div className="text-[13px] text-text-primary/90 leading-snug">{a.message}</div>
+                    <div className="text-[11px] text-text-muted shrink-0 mt-0.5 tabular-nums">
+                      {formatRelative(a.at)}
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
         </section>
       </div>
@@ -159,9 +130,12 @@ export default async function OverviewPage() {
 function Metric({ label, value, accent }: { label: string; value: number; accent?: boolean }) {
   return (
     <div className="metric-card">
-      <div className="text-[11px] tracking-[0.14em] uppercase text-brand-muted">{label}</div>
+      <div className="text-[10.5px] tracking-[0.14em] uppercase text-text-muted font-medium">
+        {label}
+      </div>
       <div
-        className={`mt-3 font-serif font-medium text-[38px] leading-none tracking-[-0.02em] ${accent ? "text-brand-orange" : "text-brand-charcoal"}`}
+        className="mt-2.5 text-[28px] font-semibold leading-none tabular-nums tracking-tight"
+        style={{ color: accent ? "var(--brand-orange)" : "var(--text-primary)" }}
       >
         {value}
       </div>
@@ -169,40 +143,163 @@ function Metric({ label, value, accent }: { label: string; value: number; accent
   );
 }
 
-function CampaignStat({ label, value, accent }: { label: string; value: number; accent?: boolean }) {
-  return (
-    <div>
-      <div className="text-[10.5px] tracking-[0.14em] uppercase text-white/50">{label}</div>
-      <div
-        className={`mt-2 font-serif font-medium text-[26px] leading-none tracking-[-0.02em] ${accent ? "text-brand-orange" : "text-white"}`}
-      >
-        {value}
-      </div>
-    </div>
-  );
-}
-
-function QuickAction({
-  href,
-  title,
-  body,
-  icon,
+function ActiveCampaignPanel({
+  campaign,
+  recipients,
 }: {
-  href: string;
-  title: string;
-  body: string;
-  icon?: React.ReactNode;
+  campaign: Campaign;
+  recipients: CampaignRecipient[];
 }) {
+  const cmpReady = recipients.filter(
+    (r) => r.status === "ready" || r.status === "qualified" || r.status === "new",
+  ).length;
+  const cmpContacted = recipients.filter((r) => CONTACTED_SET.includes(r.status)).length;
+  const cmpReplied = recipients.filter((r) => REPLIED_SET.includes(r.status)).length;
+  const cmpInterested = recipients.filter((r) => INTERESTED_SET.includes(r.status)).length;
+
   return (
     <Link
-      href={href}
-      className="group card p-5 hover:border-brand-charcoal/25 hover:shadow-card transition-all flex items-start gap-3"
+      href={`/campaigns/${campaign.id}`}
+      className="group block rounded-[16px] p-7 md:p-8 transition-all duration-220 focus-ring-quiet"
+      style={{
+        backgroundColor: "var(--app-elevated)",
+        border: "1px solid var(--app-border-strong)",
+      }}
     >
-      <div className="mt-0.5">{icon ?? <ArrowRight size={16} className="text-brand-charcoal/40 group-hover:text-brand-charcoal transition-colors" />}</div>
-      <div className="flex-1">
-        <div className="text-[14px] font-medium text-brand-charcoal">{title}</div>
-        <div className="text-[13px] text-brand-muted mt-1 leading-relaxed">{body}</div>
+      <div className="flex items-start justify-between gap-6">
+        <div className="min-w-0">
+          <div className="text-[10.5px] tracking-[0.16em] uppercase text-brand-orange font-medium">
+            Active campaign
+          </div>
+          <div className="mt-3 text-[22px] font-semibold text-text-primary tracking-tight">
+            {campaign.name}
+          </div>
+          <div className="mt-1 text-[13px] text-text-secondary">
+            {campaign.country} · {campaign.product}
+          </div>
+        </div>
+        <div
+          className="hidden md:inline-flex items-center gap-1.5 text-[12.5px] text-text-muted group-hover:text-text-primary transition-colors"
+        >
+          Continue
+          <ArrowUpRight size={14} />
+        </div>
+      </div>
+
+      <div
+        className="mt-7 grid grid-cols-2 md:grid-cols-5 gap-6 pt-6"
+        style={{ borderTop: "1px solid var(--app-border)" }}
+      >
+        <MiniStat label="Recipients" value={recipients.length} />
+        <MiniStat label="Ready" value={cmpReady} />
+        <MiniStat label="Contacted" value={cmpContacted} />
+        <MiniStat label="Replied" value={cmpReplied} />
+        <MiniStat label="Interested" value={cmpInterested} accent />
       </div>
     </Link>
+  );
+}
+
+function MiniStat({ label, value, accent }: { label: string; value: number; accent?: boolean }) {
+  return (
+    <div>
+      <div className="text-[10.5px] tracking-[0.14em] uppercase text-text-muted font-medium">
+        {label}
+      </div>
+      <div
+        className="mt-2 text-[20px] font-semibold tabular-nums tracking-tight"
+        style={{ color: accent ? "var(--brand-orange)" : "var(--text-primary)" }}
+      >
+        {value}
+      </div>
+    </div>
+  );
+}
+
+function EmptyCampaignPanel({ hasBuyers }: { hasBuyers: boolean }) {
+  return (
+    <div
+      className="rounded-[16px] p-10 md:p-12 text-center"
+      style={{
+        backgroundColor: "var(--app-surface)",
+        border: "1px dashed var(--app-border-strong)",
+      }}
+    >
+      <div className="mx-auto max-w-md">
+        <div className="text-[10.5px] tracking-[0.16em] uppercase text-brand-orange mb-3 font-medium">
+          Get started
+        </div>
+        <h2 className="text-[22px] font-semibold tracking-tight text-text-primary">
+          No active campaign
+        </h2>
+        <p className="mt-2 text-[13.5px] text-text-secondary leading-relaxed">
+          Create your first campaign to begin buyer outreach. A campaign groups a market,
+          product, buyers, and email into one focused effort.
+        </p>
+        <div className="mt-6 flex items-center justify-center gap-2 flex-wrap">
+          <Link href="/campaigns" className="btn-primary">
+            <Plus size={14} /> New campaign
+          </Link>
+          {!hasBuyers && (
+            <Link href="/buyers" className="btn-secondary">
+              <Upload size={14} /> Import buyers
+            </Link>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SectionHeader({
+  title,
+  hint,
+  href,
+  linkLabel,
+}: {
+  title: string;
+  hint?: string;
+  href?: string;
+  linkLabel?: string;
+}) {
+  return (
+    <div className="flex items-baseline justify-between mb-3">
+      <div className="flex items-baseline gap-3">
+        <h2 className="text-[13px] font-semibold text-text-primary tracking-tight">{title}</h2>
+        {hint && <span className="text-[11.5px] text-text-muted">{hint}</span>}
+      </div>
+      {href && linkLabel && (
+        <Link
+          href={href}
+          className="text-[11.5px] text-text-muted hover:text-text-primary transition-colors inline-flex items-center gap-1"
+        >
+          {linkLabel} <ArrowUpRight size={11} />
+        </Link>
+      )}
+    </div>
+  );
+}
+
+function FollowUpRow({ buyer }: { buyer: Buyer }) {
+  const due = buyer.nextFollowUpAt ? new Date(buyer.nextFollowUpAt) : null;
+  const overdue = due && due.getTime() < Date.now();
+  return (
+    <li className="px-5 py-3 flex items-center justify-between gap-4">
+      <div className="min-w-0">
+        <div className="text-[13px] text-text-primary font-medium truncate">
+          {buyer.company || `${buyer.firstName} ${buyer.lastName}`.trim() || buyer.email}
+        </div>
+        <div className="text-[11.5px] text-text-muted truncate">
+          {buyer.country || "—"}
+          {buyer.productInterest ? ` · ${buyer.productInterest}` : ""}
+        </div>
+      </div>
+      <div
+        className="text-[11.5px] shrink-0 tabular-nums"
+        style={{ color: overdue ? "#F08B7E" : "var(--text-muted)" }}
+      >
+        {due ? formatRelative(due.toISOString()) : "—"}
+      </div>
+    </li>
   );
 }
