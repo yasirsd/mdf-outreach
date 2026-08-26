@@ -25,11 +25,15 @@ import { StatusPill } from "@/components/StatusPill";
 import { formatDateTime } from "@/lib/utils";
 import {
   deleteBuyerAction,
+  getBuyerContactHistoryAction,
   suppressBuyerAction,
   unsuppressBuyerAction,
   updateBuyerStatusAction,
+  type BuyerContactHistoryResult,
 } from "@/app/(app)/buyers/actions";
 import { toast } from "@/components/ui/Toast";
+import { SuppressionModal, UnsuppressionModal } from "@/components/buyers/SuppressionModal";
+import { BuyerContactHistory } from "@/components/buyers/BuyerContactHistory";
 
 interface Props {
   buyer: Buyer;
@@ -46,40 +50,35 @@ export function BuyerDetail({ buyer, onEdit, onClose }: Props) {
   >(buyer.suppressionReason);
   const [suppressionBusy, setSuppressionBusy] = useState(false);
 
+  const [suppressModalOpen, setSuppressModalOpen] = useState(false);
+  const [unsuppressModalOpen, setUnsuppressModalOpen] = useState(false);
+  const [history, setHistory] = useState<BuyerContactHistoryResult | null>(null);
+
   useEffect(() => {
     setStatus(buyer.status);
     setSuppressed(!!buyer.suppressed);
     setSuppressionReason(buyer.suppressionReason);
+    setHistory(null);
+    let cancelled = false;
+    getBuyerContactHistoryAction(buyer.id)
+      .then((res) => {
+        if (!cancelled) setHistory(res);
+      })
+      .catch(() => {
+        if (!cancelled) setHistory({ history: [], campaigns: {} });
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [buyer.id, buyer.status, buyer.suppressed, buyer.suppressionReason]);
 
-  async function suppress() {
-    const reason = prompt(
-      "Reason for 'Do not contact': manual / opted_out / invalid_email / other",
-      "manual",
-    );
-    if (!reason) return;
-    const normalized = reason.trim().toLowerCase() as BuyerSuppressionReason;
-    if (
-      normalized !== "manual" &&
-      normalized !== "opted_out" &&
-      normalized !== "invalid_email" &&
-      normalized !== "other"
-    ) {
-      toast.error("Reason must be one of manual / opted_out / invalid_email / other.");
-      return;
-    }
-    if (
-      !confirm(
-        `Mark ${buyer.company || buyer.email} as "Do not contact"? Production Buyer Send will refuse to send to this buyer.`,
-      )
-    ) {
-      return;
-    }
+  async function doSuppress(input: { reason: BuyerSuppressionReason; note?: string }) {
     setSuppressionBusy(true);
     try {
-      await suppressBuyerAction({ id: buyer.id, reason: normalized });
+      await suppressBuyerAction({ id: buyer.id, reason: input.reason, note: input.note });
       setSuppressed(true);
-      setSuppressionReason(normalized);
+      setSuppressionReason(input.reason);
+      setSuppressModalOpen(false);
       toast.success('Marked "Do not contact"');
     } catch {
       toast.error("Could not update suppression");
@@ -88,19 +87,13 @@ export function BuyerDetail({ buyer, onEdit, onClose }: Props) {
     }
   }
 
-  async function unsuppress() {
-    if (
-      !confirm(
-        `Remove suppression for ${buyer.company || buyer.email}? This buyer will become eligible for production Buyer Send again.`,
-      )
-    ) {
-      return;
-    }
+  async function doUnsuppress() {
     setSuppressionBusy(true);
     try {
       await unsuppressBuyerAction(buyer.id);
       setSuppressed(false);
       setSuppressionReason(undefined);
+      setUnsuppressModalOpen(false);
       toast.success("Suppression removed");
     } catch {
       toast.error("Could not remove suppression");
@@ -151,7 +144,7 @@ export function BuyerDetail({ buyer, onEdit, onClose }: Props) {
         )}
         <div className="mt-4 flex flex-wrap items-center gap-2.5">
           <StatusPill status={status} />
-          {suppressed && (
+          {suppressed ? (
             <span
               className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium"
               style={{
@@ -165,6 +158,18 @@ export function BuyerDetail({ buyer, onEdit, onClose }: Props) {
               {suppressionReason
                 ? ` · ${BUYER_SUPPRESSION_REASON_LABELS[suppressionReason]}`
                 : ""}
+            </span>
+          ) : (
+            <span
+              className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium"
+              style={{
+                backgroundColor: "rgba(74,222,128,0.10)",
+                color: "#86EFAC",
+                border: "1px solid rgba(74,222,128,0.24)",
+              }}
+              title="Eligible for production Buyer Send when all preflight checks pass"
+            >
+              <ShieldCheck size={11} /> Active for outreach
             </span>
           )}
           <select
@@ -249,6 +254,18 @@ export function BuyerDetail({ buyer, onEdit, onClose }: Props) {
         </div>
       </MetaBlock>
 
+      <div className="px-6 py-5" style={{ borderTop: "1px solid var(--app-border)" }}>
+        {history === null ? (
+          <div className="text-[12px] text-text-muted">Loading contact history…</div>
+        ) : (
+          <BuyerContactHistory
+            history={history.history}
+            campaigns={history.campaigns}
+            buyerCreatedAt={buyer.createdAt}
+          />
+        )}
+      </div>
+
       <div
         className="px-6 py-4 flex flex-wrap gap-2"
         style={{ borderTop: "1px solid var(--app-border)" }}
@@ -262,7 +279,7 @@ export function BuyerDetail({ buyer, onEdit, onClose }: Props) {
         {suppressed ? (
           <button
             className="btn-secondary"
-            onClick={unsuppress}
+            onClick={() => setUnsuppressModalOpen(true)}
             disabled={suppressionBusy}
             title="Buyer will become eligible for production Buyer Send again"
           >
@@ -271,7 +288,7 @@ export function BuyerDetail({ buyer, onEdit, onClose }: Props) {
         ) : (
           <button
             className="btn-secondary"
-            onClick={suppress}
+            onClick={() => setSuppressModalOpen(true)}
             disabled={suppressionBusy}
             title="Production Buyer Send will refuse to send to this buyer"
           >
@@ -282,6 +299,21 @@ export function BuyerDetail({ buyer, onEdit, onClose }: Props) {
           <Trash2 size={13} /> {deleting ? "Removing…" : "Remove"}
         </button>
       </div>
+
+      <SuppressionModal
+        open={suppressModalOpen}
+        buyer={buyer}
+        onClose={() => setSuppressModalOpen(false)}
+        onConfirm={doSuppress}
+        busy={suppressionBusy}
+      />
+      <UnsuppressionModal
+        open={unsuppressModalOpen}
+        buyer={buyer}
+        onClose={() => setUnsuppressModalOpen(false)}
+        onConfirm={doUnsuppress}
+        busy={suppressionBusy}
+      />
     </div>
   );
 }

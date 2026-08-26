@@ -334,6 +334,7 @@ function SendModeSelector(props: SendModeSelectorProps) {
             gmailSenderEmail={props.buyerSendData.gmailSenderEmail}
             rows={props.buyerSendData.rows}
             summary={props.buyerSendData.summary}
+            deliverySummary={props.buyerSendData.deliverySummary}
             buyersById={props.buyerSendData.buyersById}
             batchMax={props.buyerSendData.batchMax}
             buyerSendEnabled={props.buyerSendData.buyerSendEnabled}

@@ -16,6 +16,19 @@ export interface BuyerReadinessRow {
   buyerId: string;
   status: BuyerReadinessStatus;
   reasons: string[];
+  /**
+   * Most-recent successful buyer-send timestamp for this buyer across
+   * ALL campaigns (not just this one). Used by the recipient-review
+   * "Previous contact" column. Null if never contacted.
+   */
+  previousContactAt?: string | null;
+  /**
+   * True when the most-recent successful send for this buyer was for
+   * THIS campaign (i.e. the buyer is already-sent for the campaign the
+   * operator is looking at). Purely informational; the authoritative
+   * classification is `status === "already-sent"`.
+   */
+  previousContactInThisCampaign?: boolean;
 }
 
 export interface ReadinessInput {
@@ -29,6 +42,13 @@ export interface ReadinessInput {
   alreadySentBuyerIds: Set<string>;
   /** Whether Gmail is connected server-side. Same for every buyer. */
   gmailConnected: boolean;
+  /**
+   * Optional per-buyer "last successful contact" map (across all
+   * campaigns in this workspace). Used to render the "Previous contact"
+   * column in recipient review. If absent, previousContactAt is left
+   * undefined on every row.
+   */
+  lastSuccessfulSendByBuyerId?: Map<string, { at: string; campaignId: string | null }>;
 }
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -49,7 +69,7 @@ export function classifyRecipients(input: ReadinessInput): BuyerReadinessRow[] {
 
   return input.recipients.map((rec) => {
     const buyer = buyerById.get(rec.buyerId);
-    return classifyOne({
+    const row = classifyOne({
       buyer,
       recipient: rec,
       campaign: input.campaign,
@@ -59,6 +79,15 @@ export function classifyRecipients(input: ReadinessInput): BuyerReadinessRow[] {
       alreadySentBuyerIds: input.alreadySentBuyerIds,
       gmailConnected: input.gmailConnected,
     });
+    const last = input.lastSuccessfulSendByBuyerId?.get(rec.buyerId);
+    if (last) {
+      row.previousContactAt = last.at;
+      row.previousContactInThisCampaign = last.campaignId === input.campaign.id;
+    } else {
+      row.previousContactAt = null;
+      row.previousContactInThisCampaign = false;
+    }
+    return row;
   });
 }
 

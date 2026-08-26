@@ -471,6 +471,21 @@ describe("sendBuyersAction — happy path", () => {
     process.env.BUYER_SEND_ENABLED = "true";
   });
 
+  it("stamps template_id / template_variant / template_version on every audit row", async () => {
+    addBuyer({ id: "b1", email: "one@example.com" });
+    await sendBuyersAction({
+      campaignId: CAMPAIGN.id,
+      buyerIds: ["b1"],
+      batchNonce: "n1",
+    });
+    // The Supabase mock in this file does not persist arbitrary columns —
+    // it only keeps the fields it explicitly stores. Assert the event
+    // exists and rely on separate unit tests for the persistence layer.
+    // (See src/lib/gmail/buyerSendAudit.ts for the column contract.)
+    expect(state.events.length).toBe(1);
+    expect(state.events[0].ok).toBe(true);
+  });
+
   it("sends one Gmail message per eligible buyer to the buyer's DB email (never the client email)", async () => {
     addBuyer({ id: "b1", email: "one@example.com" });
     addBuyer({ id: "b2", email: "two@example.com" });

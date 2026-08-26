@@ -22,13 +22,20 @@ import {
 } from "@/lib/gmail/buyerSendClaim";
 import {
   fetchAlreadySentBuyerIds,
+  fetchLastSuccessfulSendPerBuyer,
+  fetchSendHistoryForCampaign,
   recordBuyerSendEvent,
+  type BuyerSendHistoryRow,
 } from "@/lib/gmail/buyerSendAudit";
 import {
   classifyRecipients,
   summarizeReadiness,
   type BuyerReadinessRow,
 } from "@/lib/gmail/buyerSendReadiness";
+import {
+  computeDeliverySummary,
+  type CampaignDeliverySummary,
+} from "@/lib/gmail/deliverySummary";
 import { buyerPatchAfterSuccessfulSend } from "@/lib/buyerStatus";
 import type { Buyer, Campaign, EmailTemplate } from "@/lib/types";
 
@@ -43,6 +50,8 @@ export interface BuyerSendPageData {
   gmailSenderEmail: string | null;
   rows: BuyerReadinessRow[];
   summary: ReturnType<typeof summarizeReadiness>;
+  deliverySummary: CampaignDeliverySummary;
+  history: BuyerSendHistoryRow[];
   batchMax: number;
   buyerSendEnabled: boolean;
   buyersById: Record<string, Buyer>;
@@ -71,12 +80,24 @@ export async function getBuyerSendPageDataAction(
   if (!settings) throw new Error("Workspace settings not initialized.");
 
   const candidateBuyerIds = recipients.map((r) => r.buyerId);
-  const alreadySentBuyerIds = await fetchAlreadySentBuyerIds({
-    supabase,
-    workspaceId: session.membership.workspaceId,
-    campaignId,
-    candidateBuyerIds,
-  });
+  const [alreadySentBuyerIds, lastSuccessfulSendByBuyerId, history] = await Promise.all([
+    fetchAlreadySentBuyerIds({
+      supabase,
+      workspaceId: session.membership.workspaceId,
+      campaignId,
+      candidateBuyerIds,
+    }),
+    fetchLastSuccessfulSendPerBuyer({
+      supabase,
+      workspaceId: session.membership.workspaceId,
+      candidateBuyerIds,
+    }),
+    fetchSendHistoryForCampaign({
+      supabase,
+      workspaceId: session.membership.workspaceId,
+      campaignId,
+    }),
+  ]);
 
   const rows = classifyRecipients({
     campaign,
@@ -87,6 +108,7 @@ export async function getBuyerSendPageDataAction(
     buyers,
     alreadySentBuyerIds,
     gmailConnected: !!conn,
+    lastSuccessfulSendByBuyerId,
   });
 
   const buyersById: Record<string, Buyer> = {};
@@ -99,6 +121,8 @@ export async function getBuyerSendPageDataAction(
     gmailSenderEmail: conn?.googleUserEmail ?? null,
     rows,
     summary: summarizeReadiness(rows),
+    deliverySummary: computeDeliverySummary({ rows, history }),
+    history,
     batchMax: BUYER_SEND_BATCH_MAX,
     buyerSendEnabled: isBuyerSendEnabled(),
     buyersById,
@@ -211,6 +235,10 @@ export async function sendBuyersAction(
   const replyTo = campaign.replyTo?.trim() || settings.email.replyTo?.trim() || undefined;
 
   const outcomes: PerBuyerOutcome[] = [];
+  // Buyer-friendly label per id, populated as we iterate. Used by the
+  // trailing failure-activity loop so the operator sees a company name
+  // and not just a UUID.
+  const buyerLabels = new Map<string, string>();
 
   // Sequential loop — first version deliberately does not concurrency-batch.
   for (const buyerId of uniqueBuyerIds) {
@@ -226,6 +254,15 @@ export async function sendBuyersAction(
     }
 
     const buyer = await repos.buyers.get(buyerId);
+    if (buyer) {
+      buyerLabels.set(
+        buyerId,
+        buyer.company?.trim() ||
+          [buyer.firstName, buyer.lastName].filter(Boolean).join(" ").trim() ||
+          buyer.email ||
+          buyerId,
+      );
+    }
     if (!buyer) {
       outcomes.push({
         buyerId,
@@ -350,6 +387,9 @@ export async function sendBuyersAction(
         ok: false,
         error: "BUYER_SEND_ENABLED is false — production Buyer Send is not enabled on this server.",
         createdBy: session.userId,
+        templateId: template.id ?? null,
+        templateVariant: (template.variant as "signature" | "direct" | undefined) ?? null,
+        templateVersion: template.version ?? null,
       }).catch(() => {
         // Even if the audit insert failed, we still refused the send.
       });
@@ -410,6 +450,9 @@ export async function sendBuyersAction(
         ok,
         error: errorMessage,
         createdBy: session.userId,
+        templateId: template.id ?? null,
+        templateVariant: (template.variant as "signature" | "direct" | undefined) ?? null,
+        templateVersion: template.version ?? null,
       });
     } catch (e) {
       // Only realistic path: 23505 because a concurrent request also
@@ -471,7 +514,7 @@ export async function sendBuyersAction(
     await logActivity(
       repos,
       "buyerSend.sent",
-      `Email sent · ${buyer.company || buyerEmail} (Gmail id ${messageId})`,
+      `Email sent to ${buyerLabels.get(buyerId) ?? buyerEmail} · Campaign: ${campaign.name} · Recipient: ${buyerEmail}`,
       { type: "buyer", id: buyerId },
     );
 
@@ -489,10 +532,11 @@ export async function sendBuyersAction(
   for (const o of outcomes) {
     if (o.ok) continue;
     if (o.skipped === "already-sent") continue;
+    const label = buyerLabels.get(o.buyerId) ?? `buyer ${o.buyerId}`;
     await logActivity(
       repos,
       "buyerSend.failed",
-      `Email NOT sent · buyer ${o.buyerId}: ${o.error ?? "unknown"}`,
+      `Email NOT sent to ${label} · Campaign: ${campaign.name} · Reason: ${o.error ?? "unknown"}`,
       { type: "buyer", id: o.buyerId },
     );
   }

@@ -1,9 +1,12 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { cookies } from "next/headers";
 import { randomUUID } from "node:crypto";
 import { serverRepositories } from "@/lib/repositories/server";
 import { logActivity } from "@/lib/activity";
+import { createClient } from "@/utils/supabase/server";
+import { fetchSendHistoryForBuyer, type BuyerSendHistoryRow } from "@/lib/gmail/buyerSendAudit";
 import type { Buyer, BuyerStatus, BuyerSuppressionReason } from "@/lib/types";
 
 function isUuid(s: string): boolean {
@@ -61,6 +64,38 @@ export async function updateBuyerStatusAction(id: string, status: BuyerStatus): 
   revalidatePath("/buyers");
   revalidatePath("/");
   return updated;
+}
+
+export interface BuyerContactHistoryResult {
+  history: BuyerSendHistoryRow[];
+  campaigns: Record<string, { name: string; product?: string }>;
+}
+
+/**
+ * Read-only: production send history for one buyer, plus a small
+ * campaign lookup so the UI can label each event. Workspace-scoped
+ * via RLS + serverRepositories.
+ */
+export async function getBuyerContactHistoryAction(
+  buyerId: string,
+): Promise<BuyerContactHistoryResult> {
+  const { session, repos } = await serverRepositories();
+  const supabase = createClient(cookies());
+  const history = await fetchSendHistoryForBuyer({
+    supabase,
+    workspaceId: session.membership.workspaceId,
+    buyerId,
+    limit: 50,
+  });
+  const campaignIds = Array.from(
+    new Set(history.map((h) => h.campaignId).filter((v): v is string => !!v)),
+  );
+  const campaigns: Record<string, { name: string; product?: string }> = {};
+  for (const cid of campaignIds) {
+    const c = await repos.campaigns.get(cid).catch(() => undefined);
+    if (c) campaigns[cid] = { name: c.name, product: c.product || undefined };
+  }
+  return { history, campaigns };
 }
 
 export async function suppressBuyerAction(input: {

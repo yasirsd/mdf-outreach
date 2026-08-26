@@ -1,5 +1,13 @@
 # Buyer Send
 
+> **Phase E5 update:** the review → send workflow now runs through a
+> pre-send checklist and a type-`SEND` external-recipient confirmation.
+> Campaign Send has a live Delivery Status card, Campaign → Activity has
+> a filterable Send History table, and Buyer Detail shows per-buyer
+> Contact History. See the "Phase E5 hardening" section below for the
+> operator-facing sequence.
+
+
 Production Buyer Send is the controlled workflow that delivers real,
 individually personalized outreach emails to MDF buyers via the connected
 Gmail sender. It sits alongside Simulation and Real Gmail Test in the
@@ -269,6 +277,117 @@ Only after step 12 passes cleanly is Buyer Send considered live.
 5. Document who enabled it, when, and why, in the campaign audit trail.
 
 ---
+
+## Phase E5 hardening
+
+Everything above still holds; E5 adds:
+
+### Delivery Status card (Campaign → Send → Buyer Send)
+
+Compact stats block driven by `computeDeliverySummary()`
+([src/lib/gmail/deliverySummary.ts](src/lib/gmail/deliverySummary.ts)).
+
+| Metric | Source |
+|---|---|
+| Total recipients | `campaign_recipients` for this campaign |
+| Ready / Blocked / Already sent | Readiness engine |
+| Successful | Distinct buyers with an `ok=true` buyer-send event |
+| Failed | Distinct buyers whose LATEST attempt failed AND have no successful send |
+| Never attempted | Recipients with zero events (of any kind) |
+| Last delivery | Newest `ok=true` `created_at` |
+
+Failed historical attempts and blocked safety-gate attempts do NOT
+count as Already sent — those are audit trail only.
+
+When `ready = 0`, `blocked = 0`, and `alreadySent = totalRecipients > 0`
+the card shows a **Campaign delivery complete** banner. `campaign.status`
+is NOT automatically changed.
+
+### Pre-send checklist + external confirmation
+
+The Send flow now goes: **Review → Checklist → Confirm → Sending**.
+
+- **Checklist** shows the 9 operator-facing items (subject reviewed,
+  preheader, template, imagery, CTA, sender, personalization, no
+  suppressed, no previously-sent). Real enforcement is still the server
+  preflight — this is an awareness layer. The panel also blocks
+  continuation when the *selected* recipients contain a suppressed or
+  previously-sent buyer, showing them by count.
+- Operator MUST tick "I reviewed the selected recipients and confirm
+  they are appropriate contacts for this campaign" to continue.
+- **Confirmation** dialog restates campaign / sender / recipient count /
+  template / subject and asks the operator to **type `SEND`** before the
+  Confirm button becomes clickable. This confirmation is Buyer Send
+  only — Simulation and Real Gmail Test are untouched.
+
+### Send History table (Campaign → Activity)
+
+The Campaign Activity page now leads with a **Send history** table
+sourced from `email_send_events` filtered to `kind='buyer-send'` and
+this campaign. Columns: Time / Company / Contact / Email / Result /
+Gmail ID. Result cell shows a friendly error label plus the retry
+classification (`Safe to retry` / `Review required`) — see below.
+Filter tabs: **All / Sent / Failed**. Below the table is the
+campaign-scoped activity feed (buyer-send events labelled with the
+campaign name so the two feeds line up).
+
+RLS-scoped by workspace — no leakage possible.
+
+### Buyer Contact History (Buyer Detail)
+
+Buyer Detail loads a per-buyer history from `email_send_events` for
+that buyer across ALL campaigns. Each row shows the send outcome plus
+the campaign name. No Gmail inbox reading; no invented activity;
+oldest entry is always "Buyer added" from `buyers.created_at`.
+
+### Failure classification
+
+[src/lib/gmail/failureClassification.ts](src/lib/gmail/failureClassification.ts)
+maps every error string in `email_send_events.error` to:
+
+- `safe-to-retry` — refusals that happened BEFORE Gmail was called, or
+  a definite Gmail rejection with our safety suffix ("No buyer was
+  contacted."). A retry cannot cause a duplicate email.
+- `review-required` — timeouts, unknown transport errors, or Gmail
+  rejections without the safety suffix. Never automatically retried;
+  operator must decide out-of-band.
+
+There is **no** generic "Resend" button. The classification is
+informational — it appears next to failed rows in Send History,
+Contact History, and the progress list. If a retry is genuinely safe,
+the operator removes the audit row in Supabase and starts a new batch.
+Ambiguous rows are left alone.
+
+### Suppression UX
+
+- Buyer Detail shows a prominent chip: **Active for outreach** (green)
+  or **Do not contact — {reason}** (red).
+- "Do not contact" opens a proper modal with reason radios
+  (`Manual` / `Opted out` / `Invalid email` / `Other`) and an
+  optional note. "Other" requires the note.
+- "Remove suppression" opens its own confirmation modal.
+- The note is written into the activity log so subsequent operators
+  see the context. No new schema field.
+- Server-side enforcement is unchanged: readiness classifier + send
+  action both refuse suppressed buyers.
+
+### Audit metadata (migration 0012)
+
+`email_send_events` gained three additive columns —
+`template_id`, `template_variant`, `template_version` — stamped at
+send time. The campaign snapshot in `campaigns.email_sections` can
+change after send; these three columns lock down what was actually
+delivered. Historical rows remain NULL for all three.
+
+The columns are nullable + non-destructive; the migration is safe to
+apply zero-downtime.
+
+### First-live-batch checklist (operator awareness)
+
+The pre-send checklist enumerates the same items the operator should
+have verified. Server preflight is still authoritative — a missed
+checkbox is not the reason a send would be refused, but it prompts the
+operator to check before the safety gate is lifted.
 
 ## What is deliberately NOT implemented (future phases)
 
