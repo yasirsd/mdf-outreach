@@ -31,6 +31,14 @@ export interface RenderOptions {
   settings: WorkspaceSettings;
   assetsBySlot: Record<string, AssetRecord | undefined>;
   productName?: string;
+  /**
+   * `preview` (default): use production URL when present, else fall back to
+   *   local Base64 preview, else render the intentional placeholder.
+   * `send`: never inline Base64. Only assets with a production URL AND
+   *   `status === "production"` are eligible — everything else renders
+   *   the placeholder. Used by the future live-send preflight.
+   */
+  mode?: "preview" | "send";
 }
 
 const FONT_STACK =
@@ -85,9 +93,20 @@ function nl2br(s: string): string {
   return esc(s).replace(/\n/g, "<br />");
 }
 
+// The renderer is fully synchronous, so a module-scoped mode set at the
+// top of renderEmailHtml propagates deterministically through every
+// nested renderer without threading it through 9 function signatures.
+let currentRenderMode: "preview" | "send" = "preview";
+
 function assetSrc(a: AssetRecord | undefined): string {
   if (!a) return "";
-  return a.productionUrl?.trim() || a.localDataUrl || "";
+  const prod = a.productionUrl?.trim();
+  if (currentRenderMode === "send") {
+    // Live send: only production-status hosted URLs are eligible.
+    if (prod && a.status === "production") return prod;
+    return "";
+  }
+  return prod || a.localDataUrl || "";
 }
 
 function resolvePalette(template: EmailTemplate): ProductPalette {
@@ -783,6 +802,7 @@ function renderSection(
 
 export function renderEmailHtml(opts: RenderOptions): string {
   const { template, buyer, settings, assetsBySlot } = opts;
+  currentRenderMode = opts.mode ?? "preview";
   const palette = resolvePalette(template);
   const ctx = buildContext(buyer, opts.productName);
   const preheader = personalize(settings.email.defaultPreheader || "", ctx);

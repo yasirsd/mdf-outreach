@@ -222,6 +222,7 @@ export function createDemoAssets(): AssetRecord[] {
   return slots.map((slot) => ({
     id: `asset-${slot}`,
     slot,
+    status: "draft" as const,
     name: `${slot} placeholder`,
     productionUrl: "",
     localDataUrl: "",

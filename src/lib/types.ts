@@ -138,21 +138,55 @@ export interface EmailTemplate {
   status?: TemplateStatus;
 }
 
+/**
+ * AssetSlot is intentionally an open string set (not a fixed enum) so each
+ * ProductTheme can declare its own slot vocabulary — e.g. `stem` for
+ * Guntur, `orchard` for Mango, `arils` for Pomegranate — without editing
+ * this type. Renderers/product themes are responsible for the slot names
+ * they consume.
+ *
+ * The common baseline slots below cover the current template library.
+ */
 export type AssetSlot =
   | "logo"
   | "hero"
+  | "macro"
+  | "origin"
+  | "packing"
+  | "texture"
+  | "doodle"
+  | "divider"
+  | "variant_1"
+  | "variant_2"
+  | "variant_3"
   | "stem"
   | "stemless"
   | "powder"
-  | "packing"
-  | "origin";
+  | "orchard"
+  | "farm"
+  | "source"
+  | "decorative"
+  | (string & {});
+
+/** Asset lifecycle. Only `production` may be embedded in a live send. */
+export type AssetStatus = "missing" | "draft" | "approved" | "production";
 
 export interface AssetRecord {
   id: string;
+  /** Product family this asset belongs to (from ProductTheme registry). */
+  themeKey?: string;
   slot: AssetSlot;
   name: string;
   productionUrl?: string;
+  /** Legacy Base64 preview. Never used for outbound send. */
   localDataUrl?: string;
+  /** Path within the `email-assets` Supabase Storage bucket. */
+  storagePath?: string;
+  status: AssetStatus;
+  altText?: string;
+  mimeType?: string;
+  fileSize?: number;
+  isDecorative?: boolean;
   updatedAt: string;
 }
 

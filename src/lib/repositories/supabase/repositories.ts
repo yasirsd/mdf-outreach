@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { randomUUID } from "node:crypto";
+import { EMAIL_ASSET_CONFLICT_TARGET } from "@/lib/assets/conflictTargets";
 import type {
   ActivityEvent,
   AssetRecord,
@@ -24,6 +25,7 @@ import {
   activityFromRow,
   activityToRow,
   assetFromRow,
+  assetToPatchRow,
   assetToRow,
   buyerFromRow,
   buyerToPatchRow,
@@ -314,11 +316,38 @@ class SupabaseAssetRepository implements AssetRepository {
     return data ? assetFromRow(data) : undefined;
   }
 
-  async put(a: AssetRecord): Promise<AssetRecord> {
-    const row = assetToRow({ ...a, id: idFor(a.id) }, this.workspaceId);
+  async findBySlot(themeKey: string, slot: string): Promise<AssetRecord | undefined> {
     const { data, error } = await this.supabase
       .from("email_assets")
-      .upsert(row, { onConflict: "workspace_id,slot" })
+      .select("*")
+      .eq("theme_key", themeKey)
+      .eq("slot", slot)
+      .maybeSingle();
+    if (error) throw error;
+    return data ? assetFromRow(data) : undefined;
+  }
+
+  async put(a: AssetRecord): Promise<AssetRecord> {
+    const row = assetToRow({ ...a, id: idFor(a.id) }, this.workspaceId);
+    // Upsert on (workspace, theme_key, slot) when theme_key is present.
+    // NOTE: this string is the single source of truth mirrored in the DB
+    // unique index — see src/lib/assets/conflictTargets.ts.
+    const onConflict = a.themeKey ? EMAIL_ASSET_CONFLICT_TARGET : "id";
+    const { data, error } = await this.supabase
+      .from("email_assets")
+      .upsert(row, { onConflict })
+      .select("*")
+      .single();
+    if (error) throw error;
+    return assetFromRow(data);
+  }
+
+  async patch(id: string, patch: Partial<AssetRecord>): Promise<AssetRecord> {
+    const fields = assetToPatchRow(patch);
+    const { data, error } = await this.supabase
+      .from("email_assets")
+      .update(fields)
+      .eq("id", id)
       .select("*")
       .single();
     if (error) throw error;
@@ -335,7 +364,7 @@ class SupabaseAssetRepository implements AssetRepository {
     const rows = assets.map((a) => assetToRow({ ...a, id: idFor(a.id) }, this.workspaceId));
     const { error } = await this.supabase
       .from("email_assets")
-      .upsert(rows, { onConflict: "workspace_id,slot" });
+      .upsert(rows, { onConflict: EMAIL_ASSET_CONFLICT_TARGET });
     if (error) throw error;
   }
 }

@@ -28,10 +28,17 @@ export async function upsertAssetAction(
   const existing = (await repos.assets.list()).find((a) => a.slot === slot);
   const merged: AssetRecord = {
     id: existing?.id ?? randomUUID(),
+    themeKey: patch.themeKey ?? existing?.themeKey,
     slot,
     name: patch.name ?? existing?.name ?? `${slot} asset`,
     productionUrl: patch.productionUrl ?? existing?.productionUrl ?? "",
     localDataUrl: patch.localDataUrl ?? existing?.localDataUrl ?? "",
+    storagePath: patch.storagePath ?? existing?.storagePath,
+    status: patch.status ?? existing?.status ?? "draft",
+    altText: patch.altText ?? existing?.altText,
+    mimeType: patch.mimeType ?? existing?.mimeType,
+    fileSize: patch.fileSize ?? existing?.fileSize,
+    isDecorative: patch.isDecorative ?? existing?.isDecorative,
     updatedAt: new Date().toISOString(),
   };
   const saved = await repos.assets.put(merged);

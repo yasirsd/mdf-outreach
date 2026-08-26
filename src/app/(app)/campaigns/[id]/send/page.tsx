@@ -3,6 +3,10 @@ import { notFound } from "next/navigation";
 import { serverRepositories } from "@/lib/repositories/server";
 import { resolveCampaignTemplate } from "@/lib/email/resolveCampaignTemplate";
 import { SendView } from "./SendView";
+import {
+  getGmailConnectionSummaryAction,
+  listTestRecipientsAction,
+} from "@/app/(app)/settings/gmailActions";
 
 export const dynamic = "force-dynamic";
 
@@ -10,10 +14,12 @@ export default async function SendPage({ params }: { params: { id: string } }) {
   const { repos } = await serverRepositories();
   const campaign = await repos.campaigns.get(params.id);
   if (!campaign) notFound();
-  const [recipients, buyers, assets] = await Promise.all([
+  const [recipients, buyers, assets, gmailSummary, testRecipients] = await Promise.all([
     repos.recipients.listByCampaign(params.id),
     repos.buyers.list(),
     repos.assets.list(),
+    getGmailConnectionSummaryAction(),
+    listTestRecipientsAction().catch(() => []),
   ]);
   const master = campaign.templateId
     ? (await repos.templates.get(campaign.templateId)) ?? null
@@ -47,6 +53,8 @@ export default async function SendPage({ params }: { params: { id: string } }) {
       recipients={recipients}
       buyers={buyers}
       assets={assets}
+      gmailSummary={gmailSummary}
+      testRecipients={testRecipients}
     />
   );
 }

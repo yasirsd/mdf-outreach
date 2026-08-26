@@ -14,18 +14,49 @@ import {
   saveSettingsAction,
   upsertAssetAction,
 } from "./actions";
+import { AssetManager } from "./AssetManager";
+import { GmailPanel } from "./GmailPanel";
+import type { GmailConnectionSummary, TestRecipient } from "./gmailActions";
+
+function AssetManagerSection({ initialAssets }: { initialAssets: AssetRecord[] }) {
+  return (
+    <div>
+      <div className="mb-6">
+        <div className="text-[18px] font-semibold tracking-tight text-text-primary">
+          Email assets
+        </div>
+        <div className="mt-1 text-[13px] text-text-secondary">
+          Manage the images used in outbound MDF emails. Uploads are stored in the
+          workspace&apos;s Supabase asset bucket.
+        </div>
+      </div>
+      <AssetManager initialAssets={initialAssets} />
+    </div>
+  );
+}
 
 type Tab = "company" | "brand" | "email" | "assets" | "data" | "developer";
 
 interface Props {
   initialSettings: WorkspaceSettings;
   initialAssets: AssetRecord[];
+  initialTab?: Tab;
+  gmailSummary: GmailConnectionSummary;
+  testRecipients: TestRecipient[];
+  gmailStatus?: string | null;
 }
 
-export function SettingsView({ initialSettings, initialAssets }: Props) {
+export function SettingsView({
+  initialSettings,
+  initialAssets,
+  initialTab,
+  gmailSummary,
+  testRecipients,
+  gmailStatus,
+}: Props) {
   const router = useRouter();
   const { setLocalSettings } = useWorkspace();
-  const [tab, setTab] = useState<Tab>("company");
+  const [tab, setTab] = useState<Tab>(initialTab ?? "company");
   const [draft, setDraft] = useState<WorkspaceSettings>(initialSettings);
   const [saving, setSaving] = useState(false);
 
@@ -171,11 +202,18 @@ export function SettingsView({ initialSettings, initialAssets }: Props) {
                 </Field>
               </TwoCol>
               <SaveBar onSave={save} saving={saving} />
+              <div className="mt-10 pt-8" style={{ borderTop: "1px solid var(--app-border)" }}>
+                <GmailPanel
+                  summary={gmailSummary}
+                  testRecipients={testRecipients}
+                  status={gmailStatus}
+                />
+              </div>
             </Section>
           )}
 
           {tab === "assets" && (
-            <AssetsSection initialAssets={initialAssets} onChange={() => router.refresh()} />
+            <AssetManagerSection initialAssets={initialAssets} />
           )}
 
           {tab === "data" && <DataSection />}

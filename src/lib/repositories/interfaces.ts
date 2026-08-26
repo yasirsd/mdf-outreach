@@ -49,7 +49,9 @@ export interface TemplateRepository {
 export interface AssetRepository {
   list(): Promise<AssetRecord[]>;
   get(id: string): Promise<AssetRecord | undefined>;
+  findBySlot(themeKey: string, slot: string): Promise<AssetRecord | undefined>;
   put(asset: AssetRecord): Promise<AssetRecord>;
+  patch(id: string, patch: Partial<AssetRecord>): Promise<AssetRecord>;
   delete(id: string): Promise<void>;
   bulkPut(assets: AssetRecord[]): Promise<void>;
 }

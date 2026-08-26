@@ -134,8 +134,19 @@ export class IndexedDBAssetRepository implements AssetRepository {
   async get(id: string) {
     return getDb().assets.get(id);
   }
+  async findBySlot(themeKey: string, slot: string) {
+    return getDb()
+      .assets.filter((a) => a.themeKey === themeKey && a.slot === slot)
+      .first();
+  }
   async put(a: AssetRecord) {
     await getDb().assets.put(a);
+    return a;
+  }
+  async patch(id: string, patch: Partial<AssetRecord>) {
+    await getDb().assets.update(id, { ...patch, updatedAt: new Date().toISOString() });
+    const a = await getDb().assets.get(id);
+    if (!a) throw new Error("Asset not found");
     return a;
   }
   async delete(id: string) {

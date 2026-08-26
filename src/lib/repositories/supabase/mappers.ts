@@ -318,20 +318,34 @@ export function templateToRow(
 export interface EmailAssetRow {
   id: string;
   workspace_id: string;
+  theme_key: string | null;
   slot: AssetSlot;
   name: string;
   production_url: string | null;
   local_data_url: string | null;
+  storage_path: string | null;
+  status: import("@/lib/types").AssetStatus;
+  alt_text: string | null;
+  mime_type: string | null;
+  file_size: number | null;
+  is_decorative: boolean;
   updated_at: string;
 }
 
 export function assetFromRow(r: EmailAssetRow): AssetRecord {
   return {
     id: r.id,
+    themeKey: r.theme_key ?? undefined,
     slot: r.slot,
     name: r.name,
     productionUrl: r.production_url ?? undefined,
     localDataUrl: r.local_data_url ?? undefined,
+    storagePath: r.storage_path ?? undefined,
+    status: r.status ?? "draft",
+    altText: r.alt_text ?? undefined,
+    mimeType: r.mime_type ?? undefined,
+    fileSize: r.file_size ?? undefined,
+    isDecorative: r.is_decorative ?? false,
     updatedAt: r.updated_at,
   };
 }
@@ -343,11 +357,42 @@ export function assetToRow(
   return {
     id: a.id!,
     workspace_id: workspaceId,
+    theme_key: a.themeKey ?? null,
     slot: a.slot as AssetSlot,
     name: a.name ?? "",
     production_url: a.productionUrl ?? null,
     local_data_url: a.localDataUrl ?? null,
+    storage_path: a.storagePath ?? null,
+    status: a.status ?? "draft",
+    alt_text: a.altText ?? null,
+    mime_type: a.mimeType ?? null,
+    file_size: a.fileSize ?? null,
+    is_decorative: a.isDecorative ?? false,
   };
+}
+
+/**
+ * Partial-safe patch mapper for assets. Only emits columns actually
+ * present in the input patch, preventing "just change status" calls from
+ * clobbering an approved production URL with nulls.
+ */
+export function assetToPatchRow(
+  patch: Partial<AssetRecord>,
+): Partial<Omit<EmailAssetRow, "id" | "workspace_id" | "updated_at">> {
+  const row: Record<string, unknown> = {};
+  const has = (k: keyof AssetRecord) => Object.prototype.hasOwnProperty.call(patch, k);
+  if (has("themeKey")) row.theme_key = patch.themeKey ?? null;
+  if (has("slot")) row.slot = patch.slot;
+  if (has("name")) row.name = patch.name ?? "";
+  if (has("productionUrl")) row.production_url = patch.productionUrl ?? null;
+  if (has("localDataUrl")) row.local_data_url = patch.localDataUrl ?? null;
+  if (has("storagePath")) row.storage_path = patch.storagePath ?? null;
+  if (has("status")) row.status = patch.status;
+  if (has("altText")) row.alt_text = patch.altText ?? null;
+  if (has("mimeType")) row.mime_type = patch.mimeType ?? null;
+  if (has("fileSize")) row.file_size = patch.fileSize ?? null;
+  if (has("isDecorative")) row.is_decorative = patch.isDecorative ?? false;
+  return row as Partial<Omit<EmailAssetRow, "id" | "workspace_id" | "updated_at">>;
 }
 
 export interface ActivityEventRow {
