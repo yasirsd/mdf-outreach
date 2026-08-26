@@ -8,6 +8,12 @@ import type {
   WorkspaceBackup,
   WorkspaceSettings,
 } from "@/lib/types";
+import type {
+  BuyerCandidate,
+  BuyerCandidateContact,
+  BuyerCandidateProductMatch,
+} from "@/lib/buyerFinder/types";
+import type { ProductKey } from "@/lib/email/themes/types";
 
 export interface BuyerRepository {
   list(): Promise<Buyer[]>;
@@ -73,4 +79,33 @@ export interface WorkspaceService {
   importBackup(backup: WorkspaceBackup, mode: "replace" | "merge"): Promise<void>;
   clearDemoData(): Promise<void>;
   resetAll(): Promise<void>;
+}
+
+export interface BuyerCandidateRepository {
+  list(): Promise<BuyerCandidate[]>;
+  get(id: string): Promise<BuyerCandidate | undefined>;
+  create(input: BuyerCandidate): Promise<BuyerCandidate>;
+  update(id: string, patch: Partial<BuyerCandidate>): Promise<BuyerCandidate>;
+  delete(id: string): Promise<void>;
+  findByDomain(domain: string): Promise<BuyerCandidate | undefined>;
+}
+
+export interface BuyerCandidateContactRepository {
+  listByCandidate(candidateId: string): Promise<BuyerCandidateContact[]>;
+  get(id: string): Promise<BuyerCandidateContact | undefined>;
+  create(input: BuyerCandidateContact): Promise<BuyerCandidateContact>;
+  update(id: string, patch: Partial<BuyerCandidateContact>): Promise<BuyerCandidateContact>;
+  delete(id: string): Promise<void>;
+  findByEmail(email: string): Promise<BuyerCandidateContact | undefined>;
+}
+
+export interface BuyerCandidateProductMatchRepository {
+  listByCandidate(candidateId: string): Promise<BuyerCandidateProductMatch[]>;
+  create(input: BuyerCandidateProductMatch): Promise<BuyerCandidateProductMatch>;
+  update(id: string, patch: Partial<BuyerCandidateProductMatch>): Promise<BuyerCandidateProductMatch>;
+  delete(id: string): Promise<void>;
+  findByCandidateAndProduct(
+    candidateId: string,
+    productKey: ProductKey,
+  ): Promise<BuyerCandidateProductMatch | undefined>;
 }

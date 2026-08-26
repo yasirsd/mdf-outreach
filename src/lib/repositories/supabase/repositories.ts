@@ -14,6 +14,9 @@ import type {
 import type {
   ActivityRepository,
   AssetRepository,
+  BuyerCandidateContactRepository,
+  BuyerCandidateProductMatchRepository,
+  BuyerCandidateRepository,
   BuyerRepository,
   CampaignRepository,
   RecipientRepository,
@@ -42,6 +45,9 @@ import {
   templateToPatchRow,
   templateToRow,
 } from "./mappers";
+import { createBuyerCandidateRepository } from "./buyerCandidateRepository";
+import { createBuyerCandidateContactRepository } from "./buyerCandidateContactRepository";
+import { createBuyerCandidateProductMatchRepository } from "./buyerCandidateProductMatchRepository";
 
 function idFor(patchId: string | undefined): string {
   if (patchId && isUuid(patchId)) return patchId;
@@ -507,6 +513,9 @@ export interface SupabaseRepositoryBundle {
   activity: ActivityRepository;
   settings: SettingsRepository;
   workspace: WorkspaceService;
+  buyerCandidates: BuyerCandidateRepository;
+  buyerCandidateContacts: BuyerCandidateContactRepository;
+  buyerCandidateProductMatches: BuyerCandidateProductMatchRepository;
 }
 
 export function createSupabaseRepositories(
@@ -520,6 +529,12 @@ export function createSupabaseRepositories(
   const assets = new SupabaseAssetRepository(supabase, workspaceId);
   const activity = new SupabaseActivityRepository(supabase, workspaceId);
   const settings = new SupabaseSettingsRepository(supabase, workspaceId);
+  const buyerCandidates = createBuyerCandidateRepository(supabase, workspaceId);
+  const buyerCandidateContacts = createBuyerCandidateContactRepository(supabase, workspaceId);
+  const buyerCandidateProductMatches = createBuyerCandidateProductMatchRepository(
+    supabase,
+    workspaceId,
+  );
   const workspace = new SupabaseWorkspaceService(
     buyers,
     campaigns,
@@ -531,5 +546,17 @@ export function createSupabaseRepositories(
     supabase,
     workspaceId,
   );
-  return { buyers, campaigns, recipients, templates, assets, activity, settings, workspace };
+  return {
+    buyers,
+    campaigns,
+    recipients,
+    templates,
+    assets,
+    activity,
+    settings,
+    workspace,
+    buyerCandidates,
+    buyerCandidateContacts,
+    buyerCandidateProductMatches,
+  };
 }

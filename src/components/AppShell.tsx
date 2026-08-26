@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import {
   LayoutDashboard,
   Users,
+  Search,
   Send,
   FileText,
   Activity,
@@ -18,6 +19,7 @@ import { MdfWordmark } from "@/components/brand/MdfWordmark";
 const NAV = [
   { href: "/", label: "Overview", icon: LayoutDashboard },
   { href: "/buyers", label: "Buyers", icon: Users },
+  { href: "/buyer-finder", label: "Buyer Finder", icon: Search },
   { href: "/campaigns", label: "Campaigns", icon: Send },
   { href: "/templates", label: "Templates", icon: FileText },
   { href: "/activity", label: "Activity", icon: Activity },

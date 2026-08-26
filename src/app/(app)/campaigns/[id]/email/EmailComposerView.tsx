@@ -35,6 +35,7 @@ import {
   saveCampaignEmailAction,
   useTemplateForCampaignAction,
 } from "@/app/(app)/campaigns/actions";
+import { EmailDetailsPanel } from "./EmailDetailsPanel";
 
 const SECTION_LABELS: Record<string, string> = {
   intro: "Introduction",
@@ -372,7 +373,7 @@ function EmptyIncompatibleState({ knownTheme }: { knownTheme?: ProductKey }) {
  * ----------------------------------------------------------------------- */
 
 function EmailComposer({
-  campaign,
+  campaign: initialCampaign,
   compatibleTemplates,
   currentMaster,
   knownTheme,
@@ -397,6 +398,11 @@ function EmailComposer({
   const [saving, setSaving] = useState(false);
   const [showChanger, setShowChanger] = useState(false);
   const [previewingTemplate, setPreviewingTemplate] = useState<EmailTemplate | null>(null);
+
+  // Local view of the campaign so the preview header + send eligibility
+  // reflect Email-details edits immediately (server round-trip is fine,
+  // but we don't want the header to feel laggy).
+  const [campaign, setCampaign] = useState<Campaign>(initialCampaign);
 
   const workingSections = draftSections ?? campaign.emailSections ?? [];
 
@@ -533,6 +539,11 @@ function EmailComposer({
           </button>
         </div>
       </div>
+
+      <EmailDetailsPanel
+        campaign={campaign}
+        onSaved={(patch) => setCampaign((prev) => ({ ...prev, ...patch }))}
+      />
 
       <div className="grid grid-cols-[240px_minmax(0,1fr)_320px] gap-4 -mx-2">
         {/* LEFT: sections */}
