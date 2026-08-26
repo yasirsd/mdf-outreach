@@ -57,7 +57,43 @@ export interface Buyer {
   createdAt: string;
   updatedAt: string;
   isDemo?: boolean;
+  /**
+   * Phase E — "Do not contact" suppression. When true, production Buyer
+   * Send server-side refuses to send to this buyer even if the operator
+   * somehow selected them. Reason is one of "manual", "opted_out",
+   * "invalid_email", "other". Simulation / Real Gmail Test are unaffected
+   * because they never target buyer.email in production mode.
+   */
+  suppressed?: boolean;
+  suppressionReason?: BuyerSuppressionReason;
+  suppressedAt?: string;
 }
+
+export type BuyerSuppressionReason =
+  | "manual"
+  | "opted_out"
+  | "invalid_email"
+  | "other";
+
+export const BUYER_SUPPRESSION_REASON_LABELS: Record<BuyerSuppressionReason, string> = {
+  manual: "Manual",
+  opted_out: "Opted out",
+  invalid_email: "Invalid email",
+  other: "Other",
+};
+
+/**
+ * Advanced buyer statuses that must NEVER be downgraded to "contacted"
+ * by a Buyer Send success. See src/lib/buyerStatus.ts.
+ */
+export const BUYER_ADVANCED_STATUSES: readonly BuyerStatus[] = [
+  "replied",
+  "interested",
+  "quotation-sent",
+  "negotiating",
+  "converted",
+  "not-interested",
+] as const;
 
 export type CampaignStatus = "draft" | "active" | "paused" | "completed";
 

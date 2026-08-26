@@ -12,12 +12,23 @@ import {
   Edit2,
   Trash2,
   Send,
+  ShieldOff,
+  ShieldCheck,
 } from "lucide-react";
-import type { Buyer, BuyerStatus } from "@/lib/types";
-import { BUYER_STATUS_LABELS, BUYER_STATUS_ORDER } from "@/lib/types";
+import type { Buyer, BuyerStatus, BuyerSuppressionReason } from "@/lib/types";
+import {
+  BUYER_STATUS_LABELS,
+  BUYER_STATUS_ORDER,
+  BUYER_SUPPRESSION_REASON_LABELS,
+} from "@/lib/types";
 import { StatusPill } from "@/components/StatusPill";
 import { formatDateTime } from "@/lib/utils";
-import { deleteBuyerAction, updateBuyerStatusAction } from "@/app/(app)/buyers/actions";
+import {
+  deleteBuyerAction,
+  suppressBuyerAction,
+  unsuppressBuyerAction,
+  updateBuyerStatusAction,
+} from "@/app/(app)/buyers/actions";
 import { toast } from "@/components/ui/Toast";
 
 interface Props {
@@ -29,10 +40,74 @@ interface Props {
 export function BuyerDetail({ buyer, onEdit, onClose }: Props) {
   const [status, setStatus] = useState<BuyerStatus>(buyer.status);
   const [deleting, setDeleting] = useState(false);
+  const [suppressed, setSuppressed] = useState<boolean>(!!buyer.suppressed);
+  const [suppressionReason, setSuppressionReason] = useState<
+    BuyerSuppressionReason | undefined
+  >(buyer.suppressionReason);
+  const [suppressionBusy, setSuppressionBusy] = useState(false);
 
   useEffect(() => {
     setStatus(buyer.status);
-  }, [buyer.id, buyer.status]);
+    setSuppressed(!!buyer.suppressed);
+    setSuppressionReason(buyer.suppressionReason);
+  }, [buyer.id, buyer.status, buyer.suppressed, buyer.suppressionReason]);
+
+  async function suppress() {
+    const reason = prompt(
+      "Reason for 'Do not contact': manual / opted_out / invalid_email / other",
+      "manual",
+    );
+    if (!reason) return;
+    const normalized = reason.trim().toLowerCase() as BuyerSuppressionReason;
+    if (
+      normalized !== "manual" &&
+      normalized !== "opted_out" &&
+      normalized !== "invalid_email" &&
+      normalized !== "other"
+    ) {
+      toast.error("Reason must be one of manual / opted_out / invalid_email / other.");
+      return;
+    }
+    if (
+      !confirm(
+        `Mark ${buyer.company || buyer.email} as "Do not contact"? Production Buyer Send will refuse to send to this buyer.`,
+      )
+    ) {
+      return;
+    }
+    setSuppressionBusy(true);
+    try {
+      await suppressBuyerAction({ id: buyer.id, reason: normalized });
+      setSuppressed(true);
+      setSuppressionReason(normalized);
+      toast.success('Marked "Do not contact"');
+    } catch {
+      toast.error("Could not update suppression");
+    } finally {
+      setSuppressionBusy(false);
+    }
+  }
+
+  async function unsuppress() {
+    if (
+      !confirm(
+        `Remove suppression for ${buyer.company || buyer.email}? This buyer will become eligible for production Buyer Send again.`,
+      )
+    ) {
+      return;
+    }
+    setSuppressionBusy(true);
+    try {
+      await unsuppressBuyerAction(buyer.id);
+      setSuppressed(false);
+      setSuppressionReason(undefined);
+      toast.success("Suppression removed");
+    } catch {
+      toast.error("Could not remove suppression");
+    } finally {
+      setSuppressionBusy(false);
+    }
+  }
 
   async function changeStatus(s: BuyerStatus) {
     setStatus(s);
@@ -76,6 +151,22 @@ export function BuyerDetail({ buyer, onEdit, onClose }: Props) {
         )}
         <div className="mt-4 flex flex-wrap items-center gap-2.5">
           <StatusPill status={status} />
+          {suppressed && (
+            <span
+              className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium"
+              style={{
+                backgroundColor: "rgba(239,108,92,0.12)",
+                color: "#F08B7E",
+                border: "1px solid rgba(239,108,92,0.32)",
+              }}
+              title={`Suppressed since ${buyer.suppressedAt ? formatDateTime(buyer.suppressedAt) : "—"}`}
+            >
+              <ShieldOff size={11} /> Do not contact
+              {suppressionReason
+                ? ` · ${BUYER_SUPPRESSION_REASON_LABELS[suppressionReason]}`
+                : ""}
+            </span>
+          )}
           <select
             className="text-[11.5px] px-2 py-1 rounded-md focus-ring-quiet"
             value={status}
@@ -168,6 +259,25 @@ export function BuyerDetail({ buyer, onEdit, onClose }: Props) {
         <Link href="/campaigns" className="btn-secondary">
           <Send size={13} /> Add to campaign
         </Link>
+        {suppressed ? (
+          <button
+            className="btn-secondary"
+            onClick={unsuppress}
+            disabled={suppressionBusy}
+            title="Buyer will become eligible for production Buyer Send again"
+          >
+            <ShieldCheck size={13} /> Remove suppression
+          </button>
+        ) : (
+          <button
+            className="btn-secondary"
+            onClick={suppress}
+            disabled={suppressionBusy}
+            title="Production Buyer Send will refuse to send to this buyer"
+          >
+            <ShieldOff size={13} /> Do not contact
+          </button>
+        )}
         <button className="btn-danger ml-auto" onClick={del} disabled={deleting}>
           <Trash2 size={13} /> {deleting ? "Removing…" : "Remove"}
         </button>

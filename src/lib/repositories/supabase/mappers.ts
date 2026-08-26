@@ -4,6 +4,7 @@ import type {
   AssetSlot,
   Buyer,
   BuyerStatus,
+  BuyerSuppressionReason,
   Campaign,
   CampaignRecipient,
   CampaignStatus,
@@ -34,6 +35,9 @@ export interface BuyerRow {
   status: BuyerStatus;
   last_contacted_at: string | null;
   next_follow_up_at: string | null;
+  suppressed: boolean | null;
+  suppression_reason: BuyerSuppressionReason | null;
+  suppressed_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -57,6 +61,9 @@ export function buyerFromRow(r: BuyerRow): Buyer {
     status: r.status,
     lastContactedAt: r.last_contacted_at ?? undefined,
     nextFollowUpAt: r.next_follow_up_at ?? undefined,
+    suppressed: r.suppressed ?? false,
+    suppressionReason: r.suppression_reason ?? undefined,
+    suppressedAt: r.suppressed_at ?? undefined,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
@@ -85,6 +92,9 @@ export function buyerToRow(
     status: (b.status ?? "new") as BuyerStatus,
     last_contacted_at: b.lastContactedAt ?? null,
     next_follow_up_at: b.nextFollowUpAt ?? null,
+    suppressed: b.suppressed ?? false,
+    suppression_reason: (b.suppressionReason as BuyerSuppressionReason | undefined) ?? null,
+    suppressed_at: b.suppressedAt ?? null,
   };
 }
 
@@ -112,6 +122,9 @@ export function buyerToPatchRow(
   if (has("status")) row.status = patch.status;
   if (has("lastContactedAt")) row.last_contacted_at = patch.lastContactedAt ?? null;
   if (has("nextFollowUpAt")) row.next_follow_up_at = patch.nextFollowUpAt ?? null;
+  if (has("suppressed")) row.suppressed = patch.suppressed ?? false;
+  if (has("suppressionReason")) row.suppression_reason = patch.suppressionReason ?? null;
+  if (has("suppressedAt")) row.suppressed_at = patch.suppressedAt ?? null;
   return row as Partial<Omit<BuyerRow, "id" | "workspace_id" | "created_at" | "updated_at">>;
 }
 

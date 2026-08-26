@@ -45,12 +45,47 @@ describe("buyer mapper round-trip", () => {
       status: "qualified",
       lastContactedAt: "2026-08-25T10:00:00.000Z",
       nextFollowUpAt: "2026-09-01T10:00:00.000Z",
+      suppressed: true,
+      suppressionReason: "manual",
+      suppressedAt: "2026-08-26T10:00:00.000Z",
       createdAt: "2026-08-01T00:00:00.000Z",
       updatedAt: "2026-08-25T00:00:00.000Z",
     };
     const row = { ...buyerToRow(buyer, WORKSPACE), created_at: buyer.createdAt, updated_at: buyer.updatedAt } as BuyerRow;
     const back = buyerFromRow(row);
     expect(back).toEqual(buyer);
+  });
+
+  it("defaults suppressed=false and leaves suppression fields undefined when absent in DB", () => {
+    const row: BuyerRow = {
+      id: BUYER_ID,
+      workspace_id: WORKSPACE,
+      first_name: "Anna",
+      last_name: "",
+      company: "",
+      email: "anna@example.com",
+      phone: null,
+      whatsapp: null,
+      website: null,
+      country: "India",
+      city: null,
+      buyer_type: null,
+      product_interest: null,
+      source: null,
+      notes: null,
+      status: "new",
+      last_contacted_at: null,
+      next_follow_up_at: null,
+      suppressed: null,
+      suppression_reason: null,
+      suppressed_at: null,
+      created_at: "2026-08-01T00:00:00.000Z",
+      updated_at: "2026-08-01T00:00:00.000Z",
+    };
+    const back = buyerFromRow(row);
+    expect(back.suppressed).toBe(false);
+    expect(back.suppressionReason).toBeUndefined();
+    expect(back.suppressedAt).toBeUndefined();
   });
 
   it("preserves undefined optional fields as absence", () => {

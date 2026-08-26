@@ -26,6 +26,8 @@ import {
   gmailPreflightAction,
   sendGmailTestAction,
 } from "@/app/(app)/campaigns/gmailActions";
+import type { BuyerSendPageData } from "@/app/(app)/campaigns/buyerSendActions";
+import { BuyerSendPanel } from "./BuyerSendPanel";
 
 interface Props {
   campaign: Campaign;
@@ -35,6 +37,7 @@ interface Props {
   assets: AssetRecord[];
   gmailSummary: GmailConnectionSummary;
   testRecipients: TestRecipient[];
+  buyerSendData: BuyerSendPageData | null;
 }
 
 type SendMode = "simulation" | "gmail-test" | "buyer-send";
@@ -47,6 +50,7 @@ export function SendView({
   assets,
   gmailSummary,
   testRecipients,
+  buyerSendData,
 }: Props) {
   const { settings } = useWorkspace();
 
@@ -163,6 +167,7 @@ export function SendView({
         onSimulate={runSimulation}
         simulating={simulating}
         campaignId={campaign.id}
+        buyerSendData={buyerSendData}
       />
 
       <Modal
@@ -216,6 +221,7 @@ interface SendModeSelectorProps {
   onSimulate: () => void;
   simulating: boolean;
   campaignId: string;
+  buyerSendData: BuyerSendPageData | null;
 }
 
 function SendModeSelector(props: SendModeSelectorProps) {
@@ -234,8 +240,7 @@ function SendModeSelector(props: SendModeSelectorProps) {
     {
       id: "buyer-send",
       label: "Buyer Send",
-      description: "Locked — enabled only after email-client QA is approved.",
-      disabled: true,
+      description: "Individually personalized emails to real buyers.",
     },
   ];
   return (
@@ -320,25 +325,39 @@ function SendModeSelector(props: SendModeSelectorProps) {
         />
       )}
 
-      {mode === "buyer-send" && (
-        <div
-          className="mt-4 rounded-[12px] p-6 flex items-start gap-3"
-          style={{
-            backgroundColor: "var(--app-surface)",
-            border: "1px dashed var(--app-border-strong)",
-          }}
-        >
-          <Lock size={16} className="text-text-muted mt-0.5" />
-          <div>
-            <div className="text-[14px] font-medium text-text-primary">Locked</div>
-            <p className="mt-1 text-[13px] text-text-secondary max-w-xl leading-relaxed">
-              Buyer sending is disabled everywhere in the app until we&apos;ve completed
-              visual QA of real Gmail delivery. Use Real Gmail Test above to validate the
-              rendered email against your own inbox first.
-            </p>
+      {mode === "buyer-send" &&
+        (props.buyerSendData ? (
+          <BuyerSendPanel
+            campaign={props.buyerSendData.campaign}
+            template={props.buyerSendData.template}
+            gmailConnected={props.buyerSendData.gmailConnected}
+            gmailSenderEmail={props.buyerSendData.gmailSenderEmail}
+            rows={props.buyerSendData.rows}
+            summary={props.buyerSendData.summary}
+            buyersById={props.buyerSendData.buyersById}
+            batchMax={props.buyerSendData.batchMax}
+            buyerSendEnabled={props.buyerSendData.buyerSendEnabled}
+          />
+        ) : (
+          <div
+            className="mt-4 rounded-[12px] p-6 flex items-start gap-3"
+            style={{
+              backgroundColor: "var(--app-surface)",
+              border: "1px dashed var(--app-border-strong)",
+            }}
+          >
+            <Lock size={16} className="text-text-muted mt-0.5" />
+            <div>
+              <div className="text-[14px] font-medium text-text-primary">
+                Buyer send unavailable
+              </div>
+              <p className="mt-1 text-[13px] text-text-secondary max-w-xl leading-relaxed">
+                Readiness could not be computed for this campaign. Ensure the
+                campaign has a template and at least one recipient, then reload.
+              </p>
+            </div>
           </div>
-        </div>
-      )}
+        ))}
     </div>
   );
 }

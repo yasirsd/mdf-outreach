@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { randomUUID } from "node:crypto";
 import { serverRepositories } from "@/lib/repositories/server";
 import { logActivity } from "@/lib/activity";
-import type { Buyer, BuyerStatus } from "@/lib/types";
+import type { Buyer, BuyerStatus, BuyerSuppressionReason } from "@/lib/types";
 
 function isUuid(s: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s);
@@ -60,6 +60,50 @@ export async function updateBuyerStatusAction(id: string, status: BuyerStatus): 
   );
   revalidatePath("/buyers");
   revalidatePath("/");
+  return updated;
+}
+
+export async function suppressBuyerAction(input: {
+  id: string;
+  reason: BuyerSuppressionReason;
+  note?: string;
+}): Promise<Buyer> {
+  const { repos } = await serverRepositories();
+  const existing = await repos.buyers.get(input.id);
+  if (!existing) throw new Error("Buyer not found");
+  const updated = await repos.buyers.update(input.id, {
+    suppressed: true,
+    suppressionReason: input.reason,
+    suppressedAt: new Date().toISOString(),
+  });
+  await logActivity(
+    repos,
+    "buyer.suppressed",
+    `${updated.company || updated.email} marked "Do not contact" (${input.reason}${input.note ? `: ${input.note}` : ""})`,
+    { type: "buyer", id: updated.id },
+  );
+  revalidatePath("/buyers");
+  revalidatePath(`/buyers/${updated.id}`);
+  return updated;
+}
+
+export async function unsuppressBuyerAction(id: string): Promise<Buyer> {
+  const { repos } = await serverRepositories();
+  const existing = await repos.buyers.get(id);
+  if (!existing) throw new Error("Buyer not found");
+  const updated = await repos.buyers.update(id, {
+    suppressed: false,
+    suppressionReason: undefined,
+    suppressedAt: undefined,
+  });
+  await logActivity(
+    repos,
+    "buyer.unsuppressed",
+    `${updated.company || updated.email} suppression removed`,
+    { type: "buyer", id: updated.id },
+  );
+  revalidatePath("/buyers");
+  revalidatePath(`/buyers/${updated.id}`);
   return updated;
 }
 

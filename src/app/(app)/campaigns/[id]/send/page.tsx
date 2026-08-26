@@ -7,6 +7,7 @@ import {
   getGmailConnectionSummaryAction,
   listTestRecipientsAction,
 } from "@/app/(app)/settings/gmailActions";
+import { getBuyerSendPageDataAction } from "@/app/(app)/campaigns/buyerSendActions";
 
 export const dynamic = "force-dynamic";
 
@@ -14,13 +15,15 @@ export default async function SendPage({ params }: { params: { id: string } }) {
   const { repos } = await serverRepositories();
   const campaign = await repos.campaigns.get(params.id);
   if (!campaign) notFound();
-  const [recipients, buyers, assets, gmailSummary, testRecipients] = await Promise.all([
-    repos.recipients.listByCampaign(params.id),
-    repos.buyers.list(),
-    repos.assets.list(),
-    getGmailConnectionSummaryAction(),
-    listTestRecipientsAction().catch(() => []),
-  ]);
+  const [recipients, buyers, assets, gmailSummary, testRecipients, buyerSendData] =
+    await Promise.all([
+      repos.recipients.listByCampaign(params.id),
+      repos.buyers.list(),
+      repos.assets.list(),
+      getGmailConnectionSummaryAction(),
+      listTestRecipientsAction().catch(() => []),
+      getBuyerSendPageDataAction(params.id).catch(() => null),
+    ]);
   const master = campaign.templateId
     ? (await repos.templates.get(campaign.templateId)) ?? null
     : null;
@@ -55,6 +58,7 @@ export default async function SendPage({ params }: { params: { id: string } }) {
       assets={assets}
       gmailSummary={gmailSummary}
       testRecipients={testRecipients}
+      buyerSendData={buyerSendData}
     />
   );
 }
