@@ -23,6 +23,7 @@ import {
 } from "@/lib/types";
 import { StatusPill } from "@/components/StatusPill";
 import { formatDateTime } from "@/lib/utils";
+import { formatFollowUpDate } from "@/lib/dates/followUp";
 import {
   deleteBuyerAction,
   getBuyerContactHistoryAction,
@@ -249,7 +250,7 @@ export function BuyerDetail({ buyer, onEdit, onClose }: Props) {
             <> · Last contacted {formatDateTime(buyer.lastContactedAt)}</>
           )}
           {buyer.nextFollowUpAt && (
-            <> · Next follow-up {formatDateTime(buyer.nextFollowUpAt)}</>
+            <> · Next follow-up {formatFollowUpDate(buyer.nextFollowUpAt)}</>
           )}
         </div>
       </MetaBlock>

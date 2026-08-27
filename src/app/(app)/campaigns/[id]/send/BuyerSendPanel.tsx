@@ -538,6 +538,7 @@ export function BuyerSendPanel(props: BuyerSendPanelProps) {
         onClose={() => {
           if (phase === "done") resetToIdle();
         }}
+        busy={phase === "sending"}
         size="lg"
         title={phase === "sending" ? "Sending buyer emails" : "Send complete"}
         subtitle={

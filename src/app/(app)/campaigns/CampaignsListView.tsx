@@ -11,6 +11,9 @@ import { toast } from "@/components/ui/Toast";
 import type { Campaign, CampaignRecipient, CampaignStatus, EmailTemplate } from "@/lib/types";
 import { PRODUCT_CATALOGUE } from "@/lib/email/themes/catalogue";
 import { createCampaignAction } from "./actions";
+import { SearchableCombobox, type ComboboxOption } from "@/components/ui/SearchableCombobox";
+import { Select } from "@/components/ui/Select";
+import { COUNTRIES } from "@/lib/catalogue/countries";
 
 const STATUS_LABELS: Record<CampaignStatus, string> = {
   draft: "Draft",
@@ -18,6 +21,16 @@ const STATUS_LABELS: Record<CampaignStatus, string> = {
   paused: "Paused",
   completed: "Completed",
 };
+
+const CAMPAIGN_STATUS_OPTIONS: ComboboxOption[] = (
+  Object.keys(STATUS_LABELS) as CampaignStatus[]
+).map((s) => ({ value: s, label: STATUS_LABELS[s] }));
+
+const COUNTRY_OPTIONS_FOR_CAMPAIGN: ComboboxOption[] = COUNTRIES.map((c) => ({
+  value: c.name,
+  label: c.name,
+  keywords: [c.code, ...(c.aliases ?? [])],
+}));
 
 interface CampaignsWithRecipients {
   campaign: Campaign;
@@ -243,25 +256,27 @@ function NewCampaignModal({
         <div className="grid grid-cols-2 gap-4">
           <label className="block">
             <span className="label">Country / Market</span>
-            <input
-              className="input"
-              value={country}
-              onChange={(e) => setCountry(e.target.value)}
-              placeholder="e.g. Thailand"
+            <SearchableCombobox
+              value={country || null}
+              onChange={setCountry}
+              onClear={() => setCountry("")}
+              options={COUNTRY_OPTIONS_FOR_CAMPAIGN}
+              placeholder="Search country or region…"
+              emptyLabel="Select market…"
+              emptyMessage="Type to add a region (e.g. GCC, Europe)."
+              allowCustom
             />
+            <span className="mt-1 block text-[11px] text-text-muted">
+              Countries auto-complete. Free-form regions (GCC, Europe, Southeast Asia) are also supported.
+            </span>
           </label>
           <label className="block">
             <span className="label">Status</span>
-            <select
-              className="input"
+            <Select
               value={status}
-              onChange={(e) => setStatus(e.target.value as CampaignStatus)}
-            >
-              <option value="draft">Draft</option>
-              <option value="active">Active</option>
-              <option value="paused">Paused</option>
-              <option value="completed">Completed</option>
-            </select>
+              onChange={(v) => setStatus(v as CampaignStatus)}
+              options={CAMPAIGN_STATUS_OPTIONS}
+            />
           </label>
         </div>
 

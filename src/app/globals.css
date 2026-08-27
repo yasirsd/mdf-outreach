@@ -234,3 +234,108 @@ body {
   from { opacity: 0; transform: translateY(4px); }
   to   { opacity: 1; transform: translateY(0); }
 }
+
+/*
+ * Skeleton sweep — restrained, no bright shimmer. A soft horizontal
+ * gradient tint drifts across the element. Reduce-motion collapses it
+ * to a static tint via the media block above.
+ */
+.mdf-skeleton::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.04) 45%,
+    rgba(255, 255, 255, 0.055) 50%,
+    rgba(255, 255, 255, 0.04) 55%,
+    transparent 100%
+  );
+  animation: mdf-skeleton-sweep 1400ms ease-in-out infinite;
+  pointer-events: none;
+}
+@keyframes mdf-skeleton-sweep {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mdf-skeleton::after {
+    animation: none;
+    background: none;
+  }
+}
+
+/*
+ * react-day-picker dark theme — used by <DatePicker>.
+ * Only the .mdf-daypicker scope so this cannot leak into email HTML.
+ */
+.mdf-daypicker .rdp {
+  --rdp-cell-size: 34px;
+  --rdp-accent-color: var(--brand-orange);
+  --rdp-background-color: var(--app-elevated);
+  --rdp-outline: 2px solid rgba(243, 107, 33, 0.35);
+  --rdp-outline-selected: 2px solid rgba(243, 107, 33, 0.55);
+  margin: 0;
+}
+.mdf-daypicker .rdp-caption_label {
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 600;
+}
+.mdf-daypicker .rdp-head_cell {
+  color: var(--text-muted);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 10.5px;
+}
+.mdf-daypicker .rdp-day {
+  color: var(--text-secondary);
+  border-radius: 8px;
+}
+.mdf-daypicker .rdp-day:hover:not([disabled]):not(.rdp-day_selected) {
+  background-color: var(--app-hover);
+  color: var(--text-primary);
+}
+.mdf-daypicker .rdp-day_today:not(.rdp-day_selected) {
+  color: var(--brand-orange);
+  font-weight: 600;
+}
+.mdf-daypicker .rdp-day_selected {
+  background-color: var(--brand-orange);
+  color: #0b0b0b;
+  font-weight: 600;
+}
+.mdf-daypicker .rdp-day_outside {
+  color: var(--text-faint);
+  opacity: 0.7;
+}
+.mdf-daypicker .rdp-nav_button {
+  color: var(--text-secondary);
+  border-radius: 8px;
+}
+.mdf-daypicker .rdp-nav_button:hover {
+  background-color: var(--app-hover);
+  color: var(--text-primary);
+}
+
+/*
+ * Top navigation progress bar — used by NavigationProgress. Fixed at
+ * the very top of the app shell, only visible during transitions.
+ */
+.mdf-navprogress {
+  position: fixed;
+  top: 0;
+  left: 0;
+  height: 2px;
+  background: var(--brand-orange);
+  box-shadow: 0 0 8px rgba(243, 107, 33, 0.35);
+  transform-origin: 0 50%;
+  transition: transform 220ms cubic-bezier(0.4, 0, 0.2, 1),
+    opacity 220ms ease-out;
+  z-index: 60;
+  pointer-events: none;
+  width: 100%;
+}

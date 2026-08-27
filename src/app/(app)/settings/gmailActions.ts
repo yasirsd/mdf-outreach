@@ -5,10 +5,8 @@ import { cookies } from "next/headers";
 import { serverRepositories } from "@/lib/repositories/server";
 import { createClient } from "@/utils/supabase/server";
 import { logActivity } from "@/lib/activity";
-import {
-  deleteGmailConnection,
-  loadGmailConnection,
-} from "@/lib/gmail/tokens";
+import { deleteGmailConnection } from "@/lib/gmail/tokens";
+import { getCachedGmailConnection } from "@/lib/gmail/gmailConnectionCache";
 
 export interface GmailConnectionSummary {
   connected: boolean;
@@ -22,9 +20,10 @@ export interface GmailConnectionSummary {
  * Never return access/refresh tokens to the client.
  */
 export async function getGmailConnectionSummaryAction(): Promise<GmailConnectionSummary> {
-  const { session } = await serverRepositories();
-  const supabase = createClient(cookies());
-  const conn = await loadGmailConnection(supabase, session.membership.workspaceId);
+  // Uses the request-scoped Gmail connection cache — same underlying
+  // load, deduped across the Send page which also needs the connection
+  // record for delivery preflight.
+  const conn = await getCachedGmailConnection();
   if (!conn) return { connected: false };
   return {
     connected: true,

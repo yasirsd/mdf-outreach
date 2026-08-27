@@ -1,34 +1,37 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { serverRepositories } from "@/lib/repositories/server";
-import { resolveCampaignTemplate } from "@/lib/email/resolveCampaignTemplate";
-import { SendView } from "./SendView";
-import {
-  getGmailConnectionSummaryAction,
-  listTestRecipientsAction,
-} from "@/app/(app)/settings/gmailActions";
+import { getCachedCampaign } from "@/lib/repositories/campaignCache";
 import { getBuyerSendPageDataAction } from "@/app/(app)/campaigns/buyerSendActions";
+import { listTestRecipientsAction } from "@/app/(app)/settings/gmailActions";
+import { SendView } from "./SendView";
 
 export const dynamic = "force-dynamic";
 
+/**
+ * Send page loader — Phase F3 consolidation.
+ *
+ * All heavy data (campaign, recipients, buyers, assets, settings,
+ * Gmail connection, send history, delivery summary) lives inside
+ * `getBuyerSendPageDataAction`. The page fetches ONLY:
+ *   • the cached campaign (for notFound + gating on template)
+ *   • the Buyer Send bundle
+ *   • the workspace test-recipient allowlist (independent, small)
+ *
+ * All duplicate reads from F2 (campaign/template/recipients/buyers/
+ * assets/settings/gmail-connection loaded once by page.tsx and again
+ * by the bundle) are eliminated because both sides now share React.cache
+ * request-scoped resolvers.
+ */
 export default async function SendPage({ params }: { params: { id: string } }) {
-  const { repos } = await serverRepositories();
-  const campaign = await repos.campaigns.get(params.id);
+  const campaign = await getCachedCampaign(params.id);
   if (!campaign) notFound();
-  const [recipients, buyers, assets, gmailSummary, testRecipients, buyerSendData] =
-    await Promise.all([
-      repos.recipients.listByCampaign(params.id),
-      repos.buyers.list(),
-      repos.assets.list(),
-      getGmailConnectionSummaryAction(),
-      listTestRecipientsAction().catch(() => []),
-      getBuyerSendPageDataAction(params.id).catch(() => null),
-    ]);
-  const master = campaign.templateId
-    ? (await repos.templates.get(campaign.templateId)) ?? null
-    : null;
-  const template = resolveCampaignTemplate(campaign, master);
-  if (!template) {
+
+  const [buyerSendData, testRecipients] = await Promise.all([
+    getBuyerSendPageDataAction(params.id).catch(() => null),
+    listTestRecipientsAction().catch(() => []),
+  ]);
+
+  if (!buyerSendData || !buyerSendData.template) {
     return (
       <div
         className="rounded-[14px] p-10 text-center"
@@ -49,14 +52,18 @@ export default async function SendPage({ params }: { params: { id: string } }) {
       </div>
     );
   }
+
   return (
     <SendView
-      campaign={campaign}
-      template={template}
-      recipients={recipients}
-      buyers={buyers}
-      assets={assets}
-      gmailSummary={gmailSummary}
+      campaign={buyerSendData.campaign}
+      template={buyerSendData.template}
+      recipients={buyerSendData.recipients}
+      buyers={Object.values(buyerSendData.buyersById)}
+      assets={buyerSendData.assets}
+      gmailSummary={{
+        connected: buyerSendData.gmailConnected,
+        email: buyerSendData.gmailSenderEmail ?? undefined,
+      }}
       testRecipients={testRecipients}
       buyerSendData={buyerSendData}
     />

@@ -1,6 +1,7 @@
 import { cookies } from "next/headers";
 import { notFound } from "next/navigation";
 import { serverRepositories } from "@/lib/repositories/server";
+import { getCachedCampaign } from "@/lib/repositories/campaignCache";
 import { createClient } from "@/utils/supabase/server";
 import { fetchSendHistoryForCampaign } from "@/lib/gmail/buyerSendAudit";
 import { formatRelative } from "@/lib/utils";
@@ -15,7 +16,7 @@ export default async function CampaignActivityPage({
   params: { id: string };
 }) {
   const { session, repos } = await serverRepositories();
-  const campaign = await repos.campaigns.get(params.id);
+  const campaign = await getCachedCampaign(params.id);
   if (!campaign) notFound();
 
   const supabase = createClient(cookies());

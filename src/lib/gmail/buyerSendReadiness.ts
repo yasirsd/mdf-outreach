@@ -145,12 +145,14 @@ export function classifyOne(input: ClassifyOneInput): BuyerReadinessRow {
       settings: input.settings,
       assetsBySlot: input.assetsBySlot,
       mode: "send",
+      campaign: input.campaign,
     });
     const text = renderEmailText({
       template: input.template,
       buyer: input.buyer,
       settings: input.settings,
       assetsBySlot: input.assetsBySlot,
+      campaign: input.campaign,
     });
     const ctx = buildContext(input.buyer, input.campaign.product);
     const subject = personalize(input.campaign.subject ?? "", ctx);

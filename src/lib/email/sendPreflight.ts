@@ -1,6 +1,9 @@
-import type { AssetRecord, EmailTemplate } from "@/lib/types";
-import type { ProductKey } from "@/lib/email/themes/types";
-import { slotsFor } from "@/lib/assets/slots";
+import type { AssetRecord, AssetSlot, Campaign, EmailTemplate } from "@/lib/types";
+import { effectiveSections } from "./effectiveSections";
+import {
+  DECORATIVE_SLOTS,
+  requiredSlotsForRendering,
+} from "./sectionAssetRequirements";
 
 export interface AssetPreflightFinding {
   slot: string;
@@ -14,60 +17,86 @@ export interface AssetPreflightFinding {
 }
 
 /**
- * Validates that a campaign is safe to LIVE SEND (Phase E / Gmail).
+ * Validate assets required to LIVE SEND (Gmail / Buyer Send).
  *
- * Every required slot for the template's product theme must have an
- * approved asset in `production` status, with a public HTTPS
- * production URL and meaningful alt text (unless the slot is
- * decorative).
+ * The set of REQUIRED slots is derived from the sections that the SEND
+ * renderer will actually emit for the given campaign snapshot + variant.
+ * Hidden Signature sections and unused Direct sections contribute nothing.
+ * Decorative slots (texture / divider / doodle) can never block a send.
  *
- * Not used by the current SimulationEmailProvider — but wired here
- * so the future Gmail integration cannot ship without it.
+ * The same helper is used by:
+ *   - fullPreflight (Real Gmail Test dry-run + final send)
+ *   - Buyer Send readiness classifier
+ *   - Buyer Send server action (belt-and-suspenders re-check before Gmail)
+ *
+ * so what the operator sees on the review page equals what the server
+ * enforces before Gmail is called.
  */
 export function preflightAssetsForSend(
   template: EmailTemplate,
-  assets: Record<string, AssetRecord | undefined>,
+  assetsBySlot: Record<string, AssetRecord | undefined>,
+  campaign?: Pick<Campaign, "emailSections" | "templateVariant"> | null,
 ): AssetPreflightFinding[] {
-  const themeKey = template.themeKey as ProductKey | undefined;
-  if (!themeKey) return [];
+  const themeKey = template.themeKey ?? "";
+  const { sections, variant } = effectiveSections(template, campaign);
+  const required = requiredSlotsForRendering(sections, variant);
+
   const findings: AssetPreflightFinding[] = [];
-  for (const spec of slotsFor(themeKey)) {
-    if (!spec.required) continue;
-    const asset = assets[spec.slot];
+  for (const slot of required) {
+    if (DECORATIVE_SLOTS.has(slot)) continue;
+    const asset = assetsBySlot[slot];
+    const label = slotLabel(slot);
+
     if (!asset) {
       findings.push({
-        slot: spec.slot,
+        slot,
         themeKey,
         reason: "missing",
-        message: `Required asset "${spec.label}" is not uploaded.`,
+        message: `Required asset "${label}" is not uploaded.`,
       });
       continue;
     }
     if (!asset.productionUrl?.trim()) {
       findings.push({
-        slot: spec.slot,
+        slot,
         themeKey,
         reason: "no-production-url",
-        message: `"${spec.label}" has no hosted production URL.`,
+        message: `"${label}" has no hosted production URL.`,
       });
       continue;
     }
     if (asset.status !== "production") {
       findings.push({
-        slot: spec.slot,
+        slot,
         themeKey,
         reason: "not-production-status",
-        message: `"${spec.label}" is not promoted to Production (current: ${asset.status}).`,
+        message: `"${label}" is not promoted to Production (current: ${asset.status}).`,
       });
     }
     if (!asset.isDecorative && !asset.altText?.trim()) {
       findings.push({
-        slot: spec.slot,
+        slot,
         themeKey,
         reason: "no-alt-text",
-        message: `"${spec.label}" is missing alt text.`,
+        message: `"${label}" is missing alt text.`,
       });
     }
   }
   return findings;
+}
+
+// Human-friendly names for the small set of slots we actually enforce.
+// Full slot vocabulary lives in src/lib/assets/slots.ts — this map is
+// intentionally narrow.
+function slotLabel(slot: AssetSlot): string {
+  switch (slot) {
+    case "hero":
+      return "Hero";
+    case "origin":
+      return "Origin";
+    case "packing":
+      return "Packing";
+    default:
+      return typeof slot === "string" ? slot.charAt(0).toUpperCase() + slot.slice(1) : String(slot);
+  }
 }

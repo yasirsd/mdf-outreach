@@ -12,6 +12,7 @@ export function Modal({
   children,
   actions,
   size = "md",
+  busy = false,
 }: {
   open: boolean;
   onClose: () => void;
@@ -20,15 +21,23 @@ export function Modal({
   children: React.ReactNode;
   actions?: React.ReactNode;
   size?: "sm" | "md" | "lg" | "xl";
+  /**
+   * When true, backdrop click, Escape key, and the header X are
+   * suppressed. Use for irreversible / in-flight operations (Buyer
+   * Send progress, mid-flight asset upload, etc.) so the modal does
+   * not vanish and hide critical progress. Individual action buttons
+   * inside can still control their own busy state.
+   */
+  busy?: boolean;
 }) {
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape" && !busy) onClose();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [open, onClose]);
+  }, [open, onClose, busy]);
 
   const width =
     size === "sm" ? "max-w-md" : size === "md" ? "max-w-xl" : size === "lg" ? "max-w-3xl" : "max-w-5xl";
@@ -46,7 +55,8 @@ export function Modal({
       <div
         className="absolute inset-0 backdrop-blur-[3px]"
         style={{ backgroundColor: "rgba(0,0,0,0.55)" }}
-        onClick={onClose}
+        onClick={busy ? undefined : onClose}
+        data-mdf-backdrop-busy={busy || undefined}
       />
       <div
         className={cn(
@@ -74,7 +84,9 @@ export function Modal({
           </div>
           <button
             onClick={onClose}
-            className="text-text-muted hover:text-text-primary p-1 -m-1 rounded-md hover:bg-app-hover focus-ring-quiet"
+            disabled={busy}
+            aria-disabled={busy || undefined}
+            className="text-text-muted hover:text-text-primary p-1 -m-1 rounded-md hover:bg-app-hover focus-ring-quiet disabled:opacity-40 disabled:pointer-events-none"
             aria-label="Close"
           >
             <X size={18} />

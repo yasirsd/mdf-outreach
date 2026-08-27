@@ -1,9 +1,23 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Buyer, BuyerStatus } from "@/lib/types";
 import { BUYER_STATUS_LABELS, BUYER_STATUS_ORDER } from "@/lib/types";
 import { isValidEmail, uid } from "@/lib/utils";
+import { AsyncButton } from "@/components/ui/AsyncButton";
+import {
+  SearchableCombobox,
+  type ComboboxOption,
+} from "@/components/ui/SearchableCombobox";
+import { Select } from "@/components/ui/Select";
+import { DatePicker } from "@/components/ui/DatePicker";
+import { COUNTRIES, findCountryByName } from "@/lib/catalogue/countries";
+import { BUYER_TYPES, findBuyerTypeByLabel } from "@/lib/catalogue/buyerTypes";
+import {
+  activeProducts,
+  findProductByDisplayName,
+} from "@/lib/catalogue/products";
+import { searchCitiesAction } from "@/lib/catalogue/citySearch";
 
 function blankBuyer(): Buyer {
   const now = new Date().toISOString();
@@ -26,23 +40,125 @@ interface Props {
   onCancel: () => void;
 }
 
+const COUNTRY_OPTIONS: ComboboxOption[] = COUNTRIES.map((c) => ({
+  value: c.name,
+  label: c.name,
+  keywords: [c.code, ...(c.aliases ?? [])],
+}));
+
+const BUYER_TYPE_OPTIONS: ComboboxOption[] = BUYER_TYPES.map((t) => ({
+  value: t.label,
+  label: t.label,
+  description: t.description,
+}));
+
+const PRODUCT_OPTIONS: ComboboxOption[] = activeProducts().map((p) => ({
+  value: p.displayName,
+  label: p.displayName,
+  description: p.emailThemeKey ? undefined : "No email master yet",
+  keywords: [p.shortName],
+}));
+
+const STATUS_OPTIONS: ComboboxOption[] = BUYER_STATUS_ORDER.map((s) => ({
+  value: s,
+  label: BUYER_STATUS_LABELS[s],
+}));
+
 export function BuyerForm({ initial, onSubmit, onCancel }: Props) {
   const [b, setB] = useState<Buyer>(initial ?? blankBuyer());
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
+  // "Other" specifier — kept in local state (not persisted separately);
+  // the actual buyer.buyerType stores the string the operator typed.
+  const [buyerTypeIsOther, setBuyerTypeIsOther] = useState(false);
+  const [otherBuyerTypeText, setOtherBuyerTypeText] = useState("");
 
-  // Re-initialize when the parent hands us a different buyer while the form
-  // is already mounted (guards against React's useState-captures-initial-once
-  // behavior, which was the root cause of the edit pre-population regression).
+  // Country → City lookup wiring.
+  const [cityLoading, setCityLoading] = useState(false);
+  const [cityOptions, setCityOptions] = useState<ComboboxOption[]>([]);
+  const [cityQuery, setCityQuery] = useState("");
+  const cityRequestSeq = useRef(0);
+  // Whether the current city may not match the country — surfaces a
+  // subtle helper, never mutates the value.
+  const [cityCountryMismatch, setCityCountryMismatch] = useState(false);
+
   useEffect(() => {
     if (initial) {
       setB(initial);
       setErrors({});
+      const bt = findBuyerTypeByLabel(initial.buyerType);
+      if (bt?.isOther || (!bt && initial.buyerType)) {
+        setBuyerTypeIsOther(!!bt?.isOther);
+        setOtherBuyerTypeText(bt?.isOther ? "" : initial.buyerType ?? "");
+      } else {
+        setBuyerTypeIsOther(false);
+        setOtherBuyerTypeText("");
+      }
+      setCityCountryMismatch(false);
     }
   }, [initial?.id]);
 
+  // Debounced country-scoped city search. Ignore stale responses so
+  // the last-typed query wins even under network jitter.
+  useEffect(() => {
+    if (!b.country) {
+      setCityOptions([]);
+      return;
+    }
+    const q = cityQuery.trim();
+    if (!q) {
+      setCityOptions([]);
+      return;
+    }
+    const seq = ++cityRequestSeq.current;
+    setCityLoading(true);
+    const t = setTimeout(async () => {
+      try {
+        const results = await searchCitiesAction({ country: b.country, query: q });
+        if (cityRequestSeq.current !== seq) return; // stale
+        setCityOptions(
+          results.map((r) => ({
+            value: r.name,
+            label: r.name,
+            description: r.admin,
+          })),
+        );
+      } catch {
+        if (cityRequestSeq.current === seq) setCityOptions([]);
+      } finally {
+        if (cityRequestSeq.current === seq) setCityLoading(false);
+      }
+    }, 180);
+    return () => clearTimeout(t);
+  }, [cityQuery, b.country]);
+
   function set<K extends keyof Buyer>(k: K, v: Buyer[K]) {
     setB((prev) => ({ ...prev, [k]: v }));
+  }
+
+  function changeCountry(next: string) {
+    setB((prev) => ({ ...prev, country: next }));
+    // If a city is set and the operator changes country, surface a
+    // subtle helper but do NOT erase the city.
+    if (b.city && b.city.trim().length > 0) setCityCountryMismatch(true);
+  }
+
+  function changeBuyerType(nextValue: string) {
+    const entry = findBuyerTypeByLabel(nextValue);
+    if (entry?.isOther) {
+      setBuyerTypeIsOther(true);
+      // Persist the "Other" label until the operator specifies.
+      set("buyerType", otherBuyerTypeText || "Other");
+    } else {
+      setBuyerTypeIsOther(false);
+      setOtherBuyerTypeText("");
+      set("buyerType", nextValue);
+    }
+  }
+
+  function changeOtherBuyerType(next: string) {
+    setOtherBuyerTypeText(next);
+    set("buyerType", next.trim() ? next : "Other");
   }
 
   async function submit(e: React.FormEvent) {
@@ -55,13 +171,22 @@ export function BuyerForm({ initial, onSubmit, onCancel }: Props) {
     setErrors(errs);
     if (Object.keys(errs).length > 0) return;
     setSaving(true);
-    await onSubmit({
-      ...b,
-      email: b.email.trim().toLowerCase(),
-      updatedAt: new Date().toISOString(),
-    });
-    setSaving(false);
+    try {
+      await onSubmit({
+        ...b,
+        email: b.email.trim().toLowerCase(),
+        updatedAt: new Date().toISOString(),
+      });
+    } finally {
+      setSaving(false);
+    }
   }
+
+  // Legacy value awareness for the labeled controls.
+  const countryIsLegacy = !!b.country && !findCountryByName(b.country);
+  const productLabel = b.productInterest ?? "";
+  const productIsLegacy =
+    !!productLabel && !findProductByDisplayName(productLabel);
 
   return (
     <form onSubmit={submit} className="divide-y" style={{ borderColor: "var(--app-border)" }}>
@@ -131,36 +256,91 @@ export function BuyerForm({ initial, onSubmit, onCancel }: Props) {
 
       <Section title="Trade profile">
         <TwoCol>
-          <Field label="Country" error={errors.country}>
-            <input
-              className="input"
-              value={b.country}
-              onChange={(e) => set("country", e.target.value)}
+          <Field
+            label="Country"
+            error={errors.country}
+            hint={countryIsLegacy ? "Legacy value preserved. Choose a canonical country if this is stale." : undefined}
+          >
+            <SearchableCombobox
+              value={b.country || null}
+              onChange={changeCountry}
+              options={COUNTRY_OPTIONS}
+              placeholder="Search country…"
+              emptyLabel="Select country…"
+              allowCustom={false}
+              onClear={() => set("country", "")}
             />
           </Field>
-          <Field label="City">
-            <input
-              className="input"
-              value={b.city ?? ""}
-              onChange={(e) => set("city", e.target.value)}
+          <Field
+            label="City"
+            hint={
+              cityCountryMismatch
+                ? "City may not match the selected country. Choose another city if needed."
+                : undefined
+            }
+          >
+            <SearchableCombobox
+              value={b.city || null}
+              onChange={(next) => {
+                set("city", next);
+                setCityCountryMismatch(false);
+              }}
+              options={cityOptions}
+              placeholder={
+                b.country ? `Search cities in ${b.country}…` : "Choose a country first"
+              }
+              emptyLabel="Type a city…"
+              emptyMessage="No matching city — type to add."
+              allowCustom
+              loading={cityLoading}
+              onQueryChange={setCityQuery}
+              disabled={!b.country}
+              onClear={() => set("city", "")}
             />
           </Field>
         </TwoCol>
         <TwoCol>
           <Field label="Buyer type">
-            <input
-              className="input"
-              placeholder="Importer, Distributor…"
-              value={b.buyerType ?? ""}
-              onChange={(e) => set("buyerType", e.target.value)}
+            <Select
+              value={
+                buyerTypeIsOther
+                  ? "Other"
+                  : findBuyerTypeByLabel(b.buyerType)?.label ??
+                    (b.buyerType || null)
+              }
+              onChange={changeBuyerType}
+              options={BUYER_TYPE_OPTIONS}
+              emptyLabel="Select buyer type…"
             />
+            {buyerTypeIsOther && (
+              <input
+                className="input mt-2"
+                value={otherBuyerTypeText}
+                onChange={(e) => changeOtherBuyerType(e.target.value)}
+                placeholder="Specify buyer type"
+              />
+            )}
           </Field>
-          <Field label="Product interest">
-            <input
-              className="input"
-              placeholder="Dry Red Chilli"
-              value={b.productInterest ?? ""}
-              onChange={(e) => set("productInterest", e.target.value)}
+          <Field
+            label="Product interest"
+            hint={
+              productIsLegacy
+                ? "Legacy value preserved. Choose an MDF product to replace it."
+                : "Only MDF products can be selected. New products must be added to the catalogue first."
+            }
+          >
+            <SearchableCombobox
+              value={b.productInterest || null}
+              onChange={(next) => set("productInterest", next)}
+              options={PRODUCT_OPTIONS}
+              placeholder="Search products…"
+              emptyLabel="Select product…"
+              // F5 follow-up: no more arbitrary custom products at edit time.
+              // Legacy values remain visible (via the Combobox's legacy chip)
+              // and are preserved on unrelated saves; the operator can only
+              // REPLACE with a canonical MDF product.
+              allowCustom={false}
+              onClear={() => set("productInterest", undefined)}
             />
           </Field>
         </TwoCol>
@@ -177,24 +357,17 @@ export function BuyerForm({ initial, onSubmit, onCancel }: Props) {
       <Section title="Relationship">
         <TwoCol>
           <Field label="Status">
-            <select
-              className="input"
+            <Select
               value={b.status}
-              onChange={(e) => set("status", e.target.value as BuyerStatus)}
-            >
-              {BUYER_STATUS_ORDER.map((s) => (
-                <option key={s} value={s}>
-                  {BUYER_STATUS_LABELS[s]}
-                </option>
-              ))}
-            </select>
+              onChange={(next) => set("status", next as BuyerStatus)}
+              options={STATUS_OPTIONS}
+            />
           </Field>
           <Field label="Next follow-up">
-            <input
-              className="input"
-              type="date"
-              value={toDateInput(b.nextFollowUpAt)}
-              onChange={(e) => set("nextFollowUpAt", fromDateInput(e.target.value))}
+            <DatePicker
+              value={b.nextFollowUpAt}
+              onChange={(iso) => set("nextFollowUpAt", iso ?? undefined)}
+              placeholder="Pick a follow-up date"
             />
           </Field>
         </TwoCol>
@@ -212,12 +385,12 @@ export function BuyerForm({ initial, onSubmit, onCancel }: Props) {
         className="px-6 py-4 flex items-center justify-end gap-2"
         style={{ backgroundColor: "var(--app-sidebar)" }}
       >
-        <button type="button" className="btn-ghost" onClick={onCancel}>
+        <button type="button" className="btn-ghost" onClick={onCancel} disabled={saving}>
           Cancel
         </button>
-        <button type="submit" className="btn-primary" disabled={saving}>
-          {saving ? "Saving…" : "Save buyer"}
-        </button>
+        <AsyncButton type="submit" pending={saving} pendingLabel="Saving…">
+          Save buyer
+        </AsyncButton>
       </div>
     </form>
   );
@@ -237,37 +410,29 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 function Field({
   label,
   error,
+  hint,
   children,
 }: {
   label: string;
   error?: string;
+  hint?: React.ReactNode;
   children: React.ReactNode;
 }) {
   return (
     <label className="block">
       <span className="label">{label}</span>
       {children}
-      {error && <div className="mt-1 text-[11px]" style={{ color: "#F08B7E" }}>{error}</div>}
+      {error ? (
+        <div className="mt-1 text-[11px]" style={{ color: "#F08B7E" }}>
+          {error}
+        </div>
+      ) : hint ? (
+        <div className="mt-1 text-[11.5px] text-text-muted">{hint}</div>
+      ) : null}
     </label>
   );
 }
 
 function TwoCol({ children }: { children: React.ReactNode }) {
-  return <div className="grid grid-cols-2 gap-3.5">{children}</div>;
-}
-
-function toDateInput(iso?: string): string {
-  if (!iso) return "";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
-
-function fromDateInput(v: string): string | undefined {
-  if (!v) return undefined;
-  const d = new Date(`${v}T09:00:00.000Z`);
-  return Number.isNaN(d.getTime()) ? undefined : d.toISOString();
+  return <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">{children}</div>;
 }

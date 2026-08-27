@@ -12,6 +12,7 @@ export function Drawer({
   subtitle,
   actions,
   width = "480px",
+  busy = false,
 }: {
   open: boolean;
   onClose: () => void;
@@ -20,15 +21,20 @@ export function Drawer({
   subtitle?: React.ReactNode;
   actions?: React.ReactNode;
   width?: string;
+  /**
+   * When true, backdrop click and Escape are suppressed. Use for
+   * in-flight destructive operations that must not be dismissed.
+   */
+  busy?: boolean;
 }) {
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape" && !busy) onClose();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [open, onClose]);
+  }, [open, onClose, busy]);
 
   return (
     <div
@@ -41,7 +47,8 @@ export function Drawer({
       <div
         className="absolute inset-0 backdrop-blur-[2px]"
         style={{ backgroundColor: "rgba(0,0,0,0.5)" }}
-        onClick={onClose}
+        onClick={busy ? undefined : onClose}
+        data-mdf-backdrop-busy={busy || undefined}
       />
       <div
         className={cn(
@@ -69,7 +76,9 @@ export function Drawer({
           </div>
           <button
             onClick={onClose}
-            className="text-text-muted hover:text-text-primary p-1 -m-1 rounded-md hover:bg-app-hover focus-ring-quiet"
+            disabled={busy}
+            aria-disabled={busy || undefined}
+            className="text-text-muted hover:text-text-primary p-1 -m-1 rounded-md hover:bg-app-hover focus-ring-quiet disabled:opacity-40 disabled:pointer-events-none"
             aria-label="Close"
           >
             <X size={18} />

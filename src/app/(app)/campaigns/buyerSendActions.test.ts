@@ -175,6 +175,28 @@ const state: {
 // -----------------------------------------------------------------------
 // Mocks
 // -----------------------------------------------------------------------
+
+// React's `cache` is a server-components-only API and is undefined in
+// jsdom. Provide a Map-backed identity so campaignCache /
+// settingsCache / gmailConnectionCache can be imported by the code
+// under test.
+vi.mock("react", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("react")>();
+  return {
+    ...actual,
+    cache: <A extends unknown[], R>(fn: (...args: A) => R) => {
+      const store = new Map<string, R>();
+      return ((...args: A): R => {
+        const key = JSON.stringify(args);
+        if (store.has(key)) return store.get(key) as R;
+        const result = fn(...args);
+        store.set(key, result);
+        return result;
+      }) as (...args: A) => R;
+    },
+  };
+});
+
 vi.mock("next/headers", () => ({ cookies: () => ({}) }));
 
 // A fake SupabaseClient that supports the narrow set of queries this

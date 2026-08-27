@@ -76,6 +76,7 @@ export async function gmailPreflightAction(
         settings: (await getWorkspaceSettingsOrThrow()).settings,
         assetsBySlot: bundle.assetsBySlot,
         mode: "send",
+        campaign: bundle.campaign,
       })
     : "";
   const text = bundle.template
@@ -84,6 +85,7 @@ export async function gmailPreflightAction(
         buyer: bundle.buyer,
         settings: (await getWorkspaceSettingsOrThrow()).settings,
         assetsBySlot: bundle.assetsBySlot,
+        campaign: bundle.campaign,
       })
     : "";
   const ctx = buildContext(bundle.buyer, bundle.campaign.product);
@@ -195,12 +197,14 @@ export async function sendGmailTestAction(
     settings,
     assetsBySlot: bundle.assetsBySlot,
     mode: "send",
+    campaign: bundle.campaign,
   });
   const text = renderEmailText({
     template: bundle.template,
     buyer: bundle.buyer,
     settings,
     assetsBySlot: bundle.assetsBySlot,
+    campaign: bundle.campaign,
   });
   const ctx = buildContext(bundle.buyer, bundle.campaign.product);
   const subject = personalize(bundle.campaign.subject ?? "", ctx);

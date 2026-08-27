@@ -125,6 +125,28 @@ class SupabaseBuyerRepository implements BuyerRepository {
     if (error) throw error;
     return data ? buyerFromRow(data) : undefined;
   }
+
+  /**
+   * Workspace-scoped fetch of only the requested buyer ids. Chunked so
+   * a huge id list still round-trips safely — PostgREST's `in.(...)`
+   * URL has practical length limits.
+   */
+  async listByIds(ids: string[]): Promise<Buyer[]> {
+    if (ids.length === 0) return [];
+    const unique = Array.from(new Set(ids));
+    const CHUNK = 200;
+    const results: Buyer[] = [];
+    for (let i = 0; i < unique.length; i += CHUNK) {
+      const slice = unique.slice(i, i + CHUNK);
+      const { data, error } = await this.supabase
+        .from("buyers")
+        .select("*")
+        .in("id", slice);
+      if (error) throw error;
+      for (const row of data ?? []) results.push(buyerFromRow(row));
+    }
+    return results;
+  }
 }
 
 class SupabaseCampaignRepository implements CampaignRepository {
@@ -253,6 +275,20 @@ class SupabaseTemplateRepository implements TemplateRepository {
 
   async list(): Promise<EmailTemplate[]> {
     const { data, error } = await this.supabase.from("email_templates").select("*");
+    if (error) throw error;
+    return (data ?? []).map(templateFromRow);
+  }
+
+  async listByFilter(filter: {
+    themeKey?: string;
+    variant?: "signature" | "direct";
+    status?: "draft" | "approved" | "archived";
+  }): Promise<EmailTemplate[]> {
+    let query = this.supabase.from("email_templates").select("*");
+    if (filter.themeKey) query = query.eq("theme_key", filter.themeKey);
+    if (filter.variant) query = query.eq("variant", filter.variant);
+    if (filter.status) query = query.eq("status", filter.status);
+    const { data, error } = await query;
     if (error) throw error;
     return (data ?? []).map(templateFromRow);
   }

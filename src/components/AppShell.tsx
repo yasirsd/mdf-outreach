@@ -15,6 +15,7 @@ import {
 import { cn } from "@/lib/utils";
 import { SignOutButton } from "@/components/auth/SignOutButton";
 import { MdfWordmark } from "@/components/brand/MdfWordmark";
+import { NavigationProgress } from "@/components/ui/NavigationProgress";
 
 const NAV = [
   { href: "/", label: "Overview", icon: LayoutDashboard },
@@ -37,6 +38,7 @@ export function AppShell({
 
   return (
     <div className="min-h-screen flex" style={{ backgroundColor: "var(--app-bg)" }}>
+      <NavigationProgress />
       <aside
         className="hidden md:flex w-[232px] shrink-0 flex-col sticky top-0 h-screen"
         style={{

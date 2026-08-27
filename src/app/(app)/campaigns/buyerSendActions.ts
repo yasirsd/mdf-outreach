@@ -3,6 +3,9 @@
 import { revalidatePath } from "next/cache";
 import { cookies } from "next/headers";
 import { serverRepositories } from "@/lib/repositories/server";
+import { getCachedCampaign } from "@/lib/repositories/campaignCache";
+import { requireCachedSettings } from "@/lib/repositories/settingsCache";
+import { getCachedGmailConnection } from "@/lib/gmail/gmailConnectionCache";
 import { createClient } from "@/utils/supabase/server";
 import { logActivity } from "@/lib/activity";
 import { renderEmailHtml, renderEmailText } from "@/lib/email/renderer";
@@ -37,7 +40,13 @@ import {
   type CampaignDeliverySummary,
 } from "@/lib/gmail/deliverySummary";
 import { buyerPatchAfterSuccessfulSend } from "@/lib/buyerStatus";
-import type { Buyer, Campaign, EmailTemplate } from "@/lib/types";
+import type {
+  AssetRecord,
+  Buyer,
+  Campaign,
+  CampaignRecipient,
+  EmailTemplate,
+} from "@/lib/types";
 
 /* ---------------------------------------------------------------------------
  * Readiness — what the review screen and the Buyer Send rail render.
@@ -55,6 +64,10 @@ export interface BuyerSendPageData {
   batchMax: number;
   buyerSendEnabled: boolean;
   buyersById: Record<string, Buyer>;
+  /** Recipient rows the Send page's Simulation panel + validation need. */
+  recipients: CampaignRecipient[];
+  /** Workspace asset list — used by Simulation renderEmailHtml/Text. */
+  assets: AssetRecord[];
 }
 
 export async function getBuyerSendPageDataAction(
@@ -63,24 +76,33 @@ export async function getBuyerSendPageDataAction(
   const { session, repos } = await serverRepositories();
   const supabase = createClient(cookies());
 
-  const campaign = await repos.campaigns.get(campaignId);
+  // Cached across the request tree — the Send page also calls
+  // getCachedCampaign in its page.tsx and requireCachedSettings via
+  // gmail summary. Zero duplication.
+  const campaign = await getCachedCampaign(campaignId);
   if (!campaign) throw new Error("Campaign not found");
-  const master = campaign.templateId
-    ? (await repos.templates.get(campaign.templateId)) ?? null
-    : null;
-  const template = resolveCampaignTemplate(campaign, master);
 
-  const [recipients, buyers, assets, settings, conn] = await Promise.all([
-    repos.recipients.listByCampaign(campaignId),
-    repos.buyers.list(),
-    repos.assets.list(),
-    repos.settings.get(),
-    loadGmailConnection(supabase, session.membership.workspaceId),
-  ]);
-  if (!settings) throw new Error("Workspace settings not initialized.");
-
+  // Recipients come first — buyers listByIds only needs recipient ids.
+  const recipients = await repos.recipients.listByCampaign(campaignId);
   const candidateBuyerIds = recipients.map((r) => r.buyerId);
-  const [alreadySentBuyerIds, lastSuccessfulSendByBuyerId, history] = await Promise.all([
+
+  const [
+    master,
+    buyers,
+    assets,
+    settings,
+    conn,
+    alreadySentBuyerIds,
+    lastSuccessfulSendByBuyerId,
+    history,
+  ] = await Promise.all([
+    campaign.templateId
+      ? repos.templates.get(campaign.templateId).then((t) => t ?? null)
+      : Promise.resolve(null),
+    repos.buyers.listByIds(candidateBuyerIds),
+    repos.assets.list(),
+    requireCachedSettings(),
+    getCachedGmailConnection(),
     fetchAlreadySentBuyerIds({
       supabase,
       workspaceId: session.membership.workspaceId,
@@ -98,6 +120,7 @@ export async function getBuyerSendPageDataAction(
       campaignId,
     }),
   ]);
+  const template = resolveCampaignTemplate(campaign, master);
 
   const rows = classifyRecipients({
     campaign,
@@ -126,6 +149,8 @@ export async function getBuyerSendPageDataAction(
     batchMax: BUYER_SEND_BATCH_MAX,
     buyerSendEnabled: isBuyerSendEnabled(),
     buyersById,
+    recipients,
+    assets,
   };
 }
 
@@ -208,8 +233,8 @@ export async function sendBuyersAction(
   }
 
   const [settings, conn, assets, recipients] = await Promise.all([
-    repos.settings.get(),
-    loadGmailConnection(supabase, workspaceId),
+    requireCachedSettings().catch(() => null),
+    getCachedGmailConnection(),
     repos.assets.list(),
     repos.recipients.listByCampaign(input.campaignId),
   ]);
@@ -330,12 +355,14 @@ export async function sendBuyersAction(
       settings,
       assetsBySlot,
       mode: "send",
+      campaign,
     });
     const text = renderEmailText({
       template,
       buyer,
       settings,
       assetsBySlot,
+      campaign,
     });
     const ctx = buildContext(buyer, campaign.product);
     const subject = personalize(campaign.subject ?? "", ctx);

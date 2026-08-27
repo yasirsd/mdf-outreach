@@ -3,6 +3,11 @@ import { ArrowUpRight, Plus, Upload } from "lucide-react";
 import { serverRepositories } from "@/lib/repositories/server";
 import { PageContainer } from "@/components/ui/Page";
 import { formatRelative, greeting } from "@/lib/utils";
+import {
+  followUpDateKey,
+  formatFollowUpDate,
+  isFollowUpOverdue,
+} from "@/lib/dates/followUp";
 import type { Buyer, Campaign, CampaignRecipient } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -29,8 +34,12 @@ export default async function OverviewPage() {
   const interested = buyers.filter((b) => INTERESTED_SET.includes(b.status)).length;
 
   const followUps = buyers
-    .filter((b) => !!b.nextFollowUpAt)
-    .sort((a, b) => (a.nextFollowUpAt ?? "").localeCompare(b.nextFollowUpAt ?? ""))
+    .filter((b) => !!followUpDateKey(b.nextFollowUpAt))
+    .sort((a, b) =>
+      (followUpDateKey(a.nextFollowUpAt) ?? "").localeCompare(
+        followUpDateKey(b.nextFollowUpAt) ?? "",
+      ),
+    )
     .slice(0, 5);
 
   return (
@@ -281,8 +290,9 @@ function SectionHeader({
 }
 
 function FollowUpRow({ buyer }: { buyer: Buyer }) {
-  const due = buyer.nextFollowUpAt ? new Date(buyer.nextFollowUpAt) : null;
-  const overdue = due && due.getTime() < Date.now();
+  // Date-only semantics — the follow-up is "Aug 30", not "09:00Z Aug 30".
+  const overdue = isFollowUpOverdue(buyer.nextFollowUpAt);
+  const label = formatFollowUpDate(buyer.nextFollowUpAt);
   return (
     <li className="px-5 py-3 flex items-center justify-between gap-4">
       <div className="min-w-0">
@@ -298,7 +308,7 @@ function FollowUpRow({ buyer }: { buyer: Buyer }) {
         className="text-[11.5px] shrink-0 tabular-nums"
         style={{ color: overdue ? "#F08B7E" : "var(--text-muted)" }}
       >
-        {due ? formatRelative(due.toISOString()) : "—"}
+        {label || "—"}
       </div>
     </li>
   );

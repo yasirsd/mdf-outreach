@@ -23,6 +23,11 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
  * Server-side "am I safe to actually hand this to Gmail?" check.
  * Called both when the UI asks for a dry preflight AND immediately
  * before the actual send.
+ *
+ * Asset requirements are computed from the SECTIONS THE SEND RENDERER
+ * WILL ACTUALLY EMIT — the campaign snapshot when present, filtered by
+ * variant + visibility. Hidden sections do NOT contribute required
+ * assets. See src/lib/email/effectiveSections.ts + sectionAssetRequirements.ts.
  */
 export function fullPreflight(input: FullPreflightInput): FullPreflightResult {
   const blockers: string[] = [];
@@ -49,7 +54,7 @@ export function fullPreflight(input: FullPreflightInput): FullPreflightResult {
   }
 
   const assetFindings = input.template
-    ? preflightAssetsForSend(input.template, input.assetsBySlot)
+    ? preflightAssetsForSend(input.template, input.assetsBySlot, input.campaign)
     : [];
   for (const f of assetFindings) blockers.push(f.message);
 

@@ -27,6 +27,31 @@ function snapshotSections(sections: EmailSection[]): EmailSection[] {
   }));
 }
 
+/**
+ * If the workspace has a `defaultCtaUrl` configured, seed the CTA
+ * destination on every section that renders a button (hero / packing /
+ * cta) IN THE SNAPSHOT — but ONLY where the master template shipped no
+ * CTA URL of its own (empty or `"#"`). We never silently overwrite a
+ * per-section CTA the master library defined intentionally.
+ *
+ * The seeding runs at snapshot-time only. Editing the workspace default
+ * later never mutates existing campaign snapshots.
+ */
+function seedCtaDefaults(
+  sections: EmailSection[],
+  defaultCtaUrl: string | undefined | null,
+): EmailSection[] {
+  const url = (defaultCtaUrl ?? "").trim();
+  if (!url) return sections;
+  const CTA_SECTIONS = new Set(["hero", "packing", "cta"]);
+  return sections.map((s) => {
+    if (!CTA_SECTIONS.has(s.type)) return s;
+    const current = (s.data.ctaUrl ?? "").trim();
+    if (current && current !== "#") return s;
+    return { ...s, data: { ...s.data, ctaUrl: url } };
+  });
+}
+
 export async function createCampaignAction(input: Partial<Campaign>): Promise<Campaign> {
   const { repos } = await serverRepositories();
   const now = new Date().toISOString();
@@ -95,9 +120,10 @@ export async function useTemplateForCampaignAction(
   templateId: string,
 ): Promise<Campaign> {
   const { repos } = await serverRepositories();
-  const [campaign, template] = await Promise.all([
+  const [campaign, template, settings] = await Promise.all([
     repos.campaigns.get(campaignId),
     repos.templates.get(templateId),
+    repos.settings.get(),
   ]);
   if (!campaign) throw new Error("Campaign not found");
   if (!template) throw new Error("Template not found");
@@ -106,11 +132,17 @@ export async function useTemplateForCampaignAction(
       `Template is for a different product (${template.themeKey}) than this campaign (${campaign.themeKey}).`,
     );
   }
+  // Snapshot the master; then seed CTA destinations from the workspace
+  // default when the master shipped no per-section CTA URL of its own.
+  const snapshot = seedCtaDefaults(
+    snapshotSections(template.sections ?? []),
+    settings?.email.defaultCtaUrl,
+  );
   const patch: Partial<Campaign> = {
     templateId: template.id,
     themeKey: template.themeKey ?? campaign.themeKey,
     templateVariant: template.variant as TemplateVariant | undefined,
-    emailSections: snapshotSections(template.sections ?? []),
+    emailSections: snapshot,
   };
   const updated = await repos.campaigns.update(campaignId, patch);
   await logActivity(

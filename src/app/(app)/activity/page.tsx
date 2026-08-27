@@ -1,5 +1,6 @@
 import { serverRepositories } from "@/lib/repositories/server";
 import { PageContainer, PageHeader } from "@/components/ui/Page";
+import { EmptyState } from "@/components/ui/EmptyState";
 import { formatDateTime } from "@/lib/utils";
 import type { ActivityEvent } from "@/lib/types";
 
@@ -35,25 +36,36 @@ export default async function ActivityPage() {
         subtitle="A timeline of everything that happens in this workspace."
       />
       {activity.length === 0 ? (
-        <div className="card p-14 text-center">
-          <div className="text-[11px] tracking-[0.16em] uppercase text-brand-orange mb-3">Empty</div>
-          <div className="font-serif text-[24px] text-brand-charcoal">Nothing here yet.</div>
-          <div className="mt-2 text-brand-muted text-[13.5px]">Your actions will appear here.</div>
-        </div>
+        <EmptyState
+          eyebrow="Empty"
+          title="Nothing here yet."
+          body="Your actions will appear here."
+        />
       ) : (
         <div className="space-y-8">
           {grouped.map(([day, events]) => (
             <section key={day}>
-              <div className="text-[11px] tracking-[0.14em] uppercase text-brand-muted mb-3">
+              <div className="text-[10.5px] tracking-[0.14em] uppercase text-text-muted mb-3 font-medium">
                 {day}
               </div>
-              <div className="card divide-y divide-brand-border">
+              <div
+                className="rounded-[12px] divide-y"
+                style={{
+                  backgroundColor: "var(--app-surface)",
+                  border: "1px solid var(--app-border)",
+                  borderColor: "var(--app-border)",
+                }}
+              >
                 {events.map((e) => (
-                  <div key={e.id} className="p-4 flex items-start justify-between gap-3">
-                    <div>
-                      <div className="text-[13.5px] text-brand-charcoal/90">{e.message}</div>
+                  <div
+                    key={e.id}
+                    className="p-4 flex items-start justify-between gap-3"
+                    style={{ borderColor: "var(--app-border)" }}
+                  >
+                    <div className="text-[13px] text-text-primary leading-relaxed">
+                      {e.message}
                     </div>
-                    <div className="text-[12px] text-brand-muted shrink-0">
+                    <div className="text-[11.5px] text-text-muted shrink-0 whitespace-nowrap tabular-nums">
                       {formatDateTime(e.at).split(",").pop()?.trim()}
                     </div>
                   </div>

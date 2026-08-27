@@ -91,12 +91,12 @@ export function PreviewView({ campaign, template, recipients, buyers, assets }: 
   );
 
   const html = useMemo(
-    () => renderEmailHtml({ template, buyer: previewBuyer, settings, assetsBySlot }),
-    [template, previewBuyer, settings, assetsBySlot],
+    () => renderEmailHtml({ template, buyer: previewBuyer, settings, assetsBySlot, campaign }),
+    [template, previewBuyer, settings, assetsBySlot, campaign],
   );
   const text = useMemo(
-    () => renderEmailText({ template, buyer: previewBuyer, settings, assetsBySlot }),
-    [template, previewBuyer, settings, assetsBySlot],
+    () => renderEmailText({ template, buyer: previewBuyer, settings, assetsBySlot, campaign }),
+    [template, previewBuyer, settings, assetsBySlot, campaign],
   );
 
   const previewWidth = view === "desktop" ? 680 : 390;

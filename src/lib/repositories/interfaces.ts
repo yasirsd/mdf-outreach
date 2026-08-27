@@ -18,6 +18,16 @@ import type { ProductKey } from "@/lib/email/themes/types";
 export interface BuyerRepository {
   list(): Promise<Buyer[]>;
   get(id: string): Promise<Buyer | undefined>;
+  /**
+   * Load only the buyers whose ids are provided. Workspace-scoped via
+   * RLS. Empty input returns immediately without a DB query. Handles
+   * chunking internally when the input exceeds the practical PostgREST
+   * IN-list size. Duplicate ids are de-duplicated.
+   *
+   * Prefer this over `list()` on campaign paths where only recipient
+   * buyers are needed — avoids loading every workspace buyer per tab.
+   */
+  listByIds(ids: string[]): Promise<Buyer[]>;
   create(buyer: Buyer): Promise<Buyer>;
   update(id: string, patch: Partial<Buyer>): Promise<Buyer>;
   delete(id: string): Promise<void>;
@@ -43,8 +53,20 @@ export interface RecipientRepository {
   find(campaignId: string, buyerId: string): Promise<CampaignRecipient | undefined>;
 }
 
+export interface TemplateFilter {
+  themeKey?: string;
+  variant?: "signature" | "direct";
+  status?: "draft" | "approved" | "archived";
+}
+
 export interface TemplateRepository {
   list(): Promise<EmailTemplate[]>;
+  /**
+   * Server-side filtered list. Empty filter is equivalent to `list()`.
+   * Any combination of themeKey / variant / status may be supplied.
+   * Workspace-scoped via RLS.
+   */
+  listByFilter(filter: TemplateFilter): Promise<EmailTemplate[]>;
   get(id: string): Promise<EmailTemplate | undefined>;
   create(t: EmailTemplate): Promise<EmailTemplate>;
   update(id: string, patch: Partial<EmailTemplate>): Promise<EmailTemplate>;

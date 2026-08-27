@@ -6,6 +6,7 @@ import { ArrowUpRight, Eye } from "lucide-react";
 import type { AssetRecord, EmailTemplate, WorkspaceSettings } from "@/lib/types";
 import { renderEmailHtml } from "@/lib/email/renderer";
 import { EmailPreviewFrame } from "@/components/email/EmailPreviewFrame";
+import { LazyEmailPreview } from "@/components/email/LazyEmailPreview";
 import type { ProductTheme } from "@/lib/email/themes/types";
 import { Modal } from "@/components/ui/Modal";
 
@@ -221,7 +222,7 @@ function TemplateCard({
           className="absolute inset-0 origin-top-left pointer-events-none transition-transform duration-220 group-hover:scale-[0.51]"
           style={{ transform: "scale(0.5)", width: "200%", height: "560px" }}
         >
-          <EmailPreviewFrame html={previewHtml} width="100%" minHeight={560} />
+          <LazyEmailPreview html={previewHtml} width="100%" minHeight={560} />
         </div>
         <div
           className="absolute top-3 left-3 text-[10px] px-2 py-0.5 rounded-full font-medium tracking-[0.08em] uppercase"
@@ -295,7 +296,7 @@ function PlainTemplateCard({
           className="origin-top-left pointer-events-none"
           style={{ transform: "scale(0.5)", width: "200%", height: "480px" }}
         >
-          <EmailPreviewFrame html={html} width="100%" minHeight={480} />
+          <LazyEmailPreview html={html} width="100%" minHeight={480} />
         </div>
       </div>
       <div className="p-4">

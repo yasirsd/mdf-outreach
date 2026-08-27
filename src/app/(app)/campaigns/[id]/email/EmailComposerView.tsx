@@ -443,8 +443,9 @@ function EmailComposer({
         buyer: previewBuyer,
         settings,
         assetsBySlot,
+        campaign,
       }),
-    [renderableTemplate, previewBuyer, settings, assetsBySlot],
+    [renderableTemplate, previewBuyer, settings, assetsBySlot, campaign],
   );
 
   const selectedSection =

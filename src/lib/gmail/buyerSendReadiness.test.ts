@@ -26,7 +26,17 @@ const campaign: Campaign = {
 const template: EmailTemplate = {
   id: "t1",
   name: "MDF Master",
-  sections: [],
+  // Phase F1 preflight derives asset requirements from EFFECTIVELY
+  // rendered sections. A visible Hero section is included so the
+  // "missing hero" assertions still trigger.
+  sections: [
+    {
+      id: "sec-hero",
+      type: "hero",
+      visible: true,
+      data: { headline: "Guntur" },
+    },
+  ],
   themeKey: "guntur-chilli",
   variant: "signature",
   version: 1,

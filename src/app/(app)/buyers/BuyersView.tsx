@@ -16,6 +16,9 @@ import { buyersToCsv } from "@/lib/csv";
 import { toast } from "@/components/ui/Toast";
 import { formatRelative } from "@/lib/utils";
 import { saveBuyerAction } from "./actions";
+import { SearchableCombobox, type ComboboxOption } from "@/components/ui/SearchableCombobox";
+import { Select } from "@/components/ui/Select";
+import { activeProducts } from "@/lib/catalogue/products";
 
 export function BuyersView({ initialBuyers }: { initialBuyers: Buyer[] }) {
   const router = useRouter();
@@ -129,24 +132,38 @@ export function BuyersView({ initialBuyers }: { initialBuyers: Buyer[] }) {
               aria-label="Search buyers"
             />
           </div>
-          <FilterSelect
-            value={country}
-            onChange={setCountry}
-            placeholder="All countries"
-            options={countries}
-          />
-          <FilterSelect
-            value={status}
-            onChange={(v) => setStatus(v as BuyerStatus | "")}
-            placeholder="All statuses"
-            options={BUYER_STATUS_ORDER.map((s) => ({ value: s, label: BUYER_STATUS_LABELS[s] }))}
-          />
-          <FilterSelect
-            value={product}
-            onChange={setProduct}
-            placeholder="All products"
-            options={products}
-          />
+          <div className="w-[200px]">
+            <SearchableCombobox
+              value={country || null}
+              onChange={setCountry}
+              onClear={() => setCountry("")}
+              options={countries.map<ComboboxOption>((c) => ({ value: c, label: c }))}
+              placeholder="Search country…"
+              emptyLabel="All countries"
+              emptyMessage="No match in current buyers."
+            />
+          </div>
+          <div className="w-[180px]">
+            <Select
+              value={status || null}
+              onChange={(v) => setStatus(v as BuyerStatus | "")}
+              emptyLabel="All statuses"
+              options={BUYER_STATUS_ORDER.map<ComboboxOption>((s) => ({
+                value: s,
+                label: BUYER_STATUS_LABELS[s],
+              }))}
+            />
+          </div>
+          <div className="w-[200px]">
+            <SearchableCombobox
+              value={product || null}
+              onChange={setProduct}
+              onClear={() => setProduct("")}
+              options={buildProductFilterOptions(products)}
+              placeholder="Search product…"
+              emptyLabel="All products"
+            />
+          </div>
           {activeFilters > 0 && (
             <button
               className="text-[11.5px] text-text-muted hover:text-text-primary flex items-center gap-1 px-2"
@@ -278,36 +295,30 @@ export function BuyersView({ initialBuyers }: { initialBuyers: Buyer[] }) {
   );
 }
 
-function FilterSelect({
-  value,
-  onChange,
-  placeholder,
-  options,
-}: {
-  value: string;
-  onChange: (v: string) => void;
-  placeholder: string;
-  options: Array<string | { value: string; label: string }>;
-}) {
-  return (
-    <select
-      className="input h-9 w-auto text-[12.5px] max-w-[200px]"
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      aria-label={placeholder}
-    >
-      <option value="">{placeholder}</option>
-      {options.map((o) => {
-        const value = typeof o === "string" ? o : o.value;
-        const label = typeof o === "string" ? o : o.label;
-        return (
-          <option key={value} value={value}>
-            {label}
-          </option>
-        );
-      })}
-    </select>
-  );
+/**
+ * Product filter options — merge the canonical product list with any
+ * distinct product-interest values already present in the workspace
+ * (legacy free-text values remain filterable).
+ */
+function buildProductFilterOptions(fromBuyers: string[]): ComboboxOption[] {
+  const canonical = activeProducts().map<ComboboxOption>((p) => ({
+    value: p.displayName,
+    label: p.displayName,
+  }));
+  const seen = new Set(canonical.map((o) => o.value.toLowerCase()));
+  const legacy: ComboboxOption[] = [];
+  for (const raw of fromBuyers) {
+    if (!raw) continue;
+    if (seen.has(raw.toLowerCase())) continue;
+    legacy.push({ value: raw, label: raw, description: "Legacy" });
+    seen.add(raw.toLowerCase());
+  }
+  return legacy.length
+    ? [
+        ...canonical.map((o) => ({ ...o, group: "MDF products" })),
+        ...legacy.map((o) => ({ ...o, group: "Legacy values" })),
+      ]
+    : canonical;
 }
 
 function EmptyState({

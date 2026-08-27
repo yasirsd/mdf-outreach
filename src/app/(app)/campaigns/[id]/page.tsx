@@ -2,18 +2,21 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ArrowRight, Send, Eye, FileText, Users } from "lucide-react";
 import { serverRepositories } from "@/lib/repositories/server";
+import { getCachedCampaign } from "@/lib/repositories/campaignCache";
 import { inferThemeKey, themeForKey } from "@/lib/email/themes/catalogue";
 
 export const dynamic = "force-dynamic";
 
 export default async function CampaignOverviewPage({ params }: { params: { id: string } }) {
   const { repos } = await serverRepositories();
-  const campaign = await repos.campaigns.get(params.id);
+  const campaign = await getCachedCampaign(params.id);
   if (!campaign) notFound();
-  const [recipients, master, buyers] = await Promise.all([
-    repos.recipients.listByCampaign(params.id),
+  // Overview only reads recipient buyers to compute the "ready" count.
+  // No reason to load the whole workspace roster here.
+  const recipients = await repos.recipients.listByCampaign(params.id);
+  const [master, buyers] = await Promise.all([
     campaign.templateId ? repos.templates.get(campaign.templateId) : Promise.resolve(undefined),
-    repos.buyers.list(),
+    repos.buyers.listByIds(recipients.map((r) => r.buyerId)),
   ]);
 
   const byId = new Map(buyers.map((b) => [b.id, b]));

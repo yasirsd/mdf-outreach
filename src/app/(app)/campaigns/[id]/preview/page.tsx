@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { serverRepositories } from "@/lib/repositories/server";
+import { getCachedCampaign } from "@/lib/repositories/campaignCache";
 import { resolveCampaignTemplate } from "@/lib/email/resolveCampaignTemplate";
 import { PreviewView } from "./PreviewView";
 
@@ -8,16 +9,18 @@ export const dynamic = "force-dynamic";
 
 export default async function PreviewPage({ params }: { params: { id: string } }) {
   const { repos } = await serverRepositories();
-  const campaign = await repos.campaigns.get(params.id);
+  const campaign = await getCachedCampaign(params.id);
   if (!campaign) notFound();
-  const [recipients, buyers, assets] = await Promise.all([
-    repos.recipients.listByCampaign(params.id),
-    repos.buyers.list(),
+  // Preview only needs recipient buyers for the "preview as buyer"
+  // dropdown — never the entire workspace roster.
+  const recipients = await repos.recipients.listByCampaign(params.id);
+  const [buyers, assets, master] = await Promise.all([
+    repos.buyers.listByIds(recipients.map((r) => r.buyerId)),
     repos.assets.list(),
+    campaign.templateId
+      ? repos.templates.get(campaign.templateId).then((t) => t ?? null)
+      : Promise.resolve(null),
   ]);
-  const master = campaign.templateId
-    ? (await repos.templates.get(campaign.templateId)) ?? null
-    : null;
   const template = resolveCampaignTemplate(campaign, master);
   if (!template) {
     return (

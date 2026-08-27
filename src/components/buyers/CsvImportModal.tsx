@@ -135,7 +135,7 @@ export function CsvImportModal({ open, onClose }: Props) {
             <button className="btn-ghost" onClick={() => setStep("map")}>
               Back
             </button>
-            <button className="btn-brand" onClick={commitImport} disabled={importing}>
+            <button className="btn-primary" onClick={commitImport} disabled={importing}>
               {importing ? "Importing…" : "Import buyers"}
             </button>
           </>
@@ -155,12 +155,12 @@ export function CsvImportModal({ open, onClose }: Props) {
               const file = e.dataTransfer.files[0];
               if (file) handleFile(file);
             }}
-            className="border-2 border-dashed border-brand-border rounded-2xl p-10 text-center hover:border-brand-charcoal/30 transition-colors"
+            className="border-2 border-dashed border-white/[0.12] rounded-2xl p-10 text-center hover:border-white/[0.24] transition-colors"
           >
-            <div className="mx-auto w-10 h-10 rounded-full bg-brand-canvas grid place-items-center mb-4">
-              <Upload size={18} className="text-brand-charcoal/70" />
+            <div className="mx-auto w-10 h-10 rounded-full bg-[color:var(--app-elevated)] grid place-items-center mb-4">
+              <Upload size={18} className="text-text-primary/70" />
             </div>
-            <div className="text-[15px] font-medium text-brand-charcoal">Drop a CSV file, or</div>
+            <div className="text-[15px] font-medium text-text-primary">Drop a CSV file, or</div>
             <div className="mt-3">
               <button
                 onClick={() => fileInputRef.current?.click()}
@@ -176,32 +176,32 @@ export function CsvImportModal({ open, onClose }: Props) {
                 onChange={(e) => e.target.files?.[0] && handleFile(e.target.files[0])}
               />
             </div>
-            <div className="mt-5 text-[12.5px] text-brand-muted max-w-md mx-auto leading-relaxed">
-              Common headers detected automatically: <span className="text-brand-charcoal/70">first_name, last_name, company, email, phone, whatsapp, website, country, city, product, notes</span>.
+            <div className="mt-5 text-[12.5px] text-text-muted max-w-md mx-auto leading-relaxed">
+              Common headers detected automatically: <span className="text-text-primary/70">first_name, last_name, company, email, phone, whatsapp, website, country, city, product, notes</span>.
             </div>
           </div>
         )}
 
         {step === "map" && parsed && (
           <div>
-            <div className="text-[13px] text-brand-muted mb-4 flex items-center gap-2">
+            <div className="text-[13px] text-text-muted mb-4 flex items-center gap-2">
               <FileText size={14} /> {parsed.rows.length} row{parsed.rows.length === 1 ? "" : "s"} · {parsed.headers.length} column
               {parsed.headers.length === 1 ? "" : "s"}
             </div>
-            <div className="border border-brand-border rounded-xl overflow-hidden">
+            <div className="border border-white/[0.08] rounded-xl overflow-hidden">
               <table className="w-full text-[13px]">
-                <thead className="bg-brand-canvas text-brand-muted uppercase tracking-[0.12em] text-[10.5px]">
+                <thead className="bg-[color:var(--app-elevated)] text-text-muted uppercase tracking-[0.12em] text-[10.5px]">
                   <tr>
                     <th className="text-left px-4 py-3">CSV column</th>
                     <th className="text-left px-4 py-3">Sample value</th>
                     <th className="text-left px-4 py-3 w-[220px]">Map to</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-brand-border">
+                <tbody className="divide-y divide-white/[0.06]">
                   {parsed.headers.map((h) => (
                     <tr key={h}>
-                      <td className="px-4 py-3 font-medium text-brand-charcoal">{h}</td>
-                      <td className="px-4 py-3 text-brand-muted truncate max-w-[280px]">
+                      <td className="px-4 py-3 font-medium text-text-primary">{h}</td>
+                      <td className="px-4 py-3 text-text-muted truncate max-w-[280px]">
                         {parsed.rows[0]?.[h] ?? "—"}
                       </td>
                       <td className="px-4 py-3">
@@ -223,7 +223,7 @@ export function CsvImportModal({ open, onClose }: Props) {
               </table>
             </div>
             {invalid.length > 0 && (
-              <div className="mt-4 text-[12.5px] text-brand-chilli flex items-center gap-2">
+              <div className="mt-4 text-[12.5px] text-[color:#F08B7E] flex items-center gap-2">
                 <AlertTriangle size={14} /> {invalid.length} row{invalid.length === 1 ? "" : "s"} will be skipped due to missing or invalid data.
               </div>
             )}
@@ -238,10 +238,10 @@ export function CsvImportModal({ open, onClose }: Props) {
               <PreviewStat label="Invalid rows skipped" value={invalid.length} muted />
             </div>
             {(dupPreview?.dupes ?? 0) > 0 && (
-              <div className="border border-brand-border rounded-xl p-4 mb-4">
-                <div className="text-[13px] font-medium text-brand-charcoal mb-2">Duplicate handling</div>
+              <div className="border border-white/[0.08] rounded-xl p-4 mb-4">
+                <div className="text-[13px] font-medium text-text-primary mb-2">Duplicate handling</div>
                 <div className="flex gap-2">
-                  <label className="flex items-center gap-2 text-[13px] text-brand-charcoal/85 cursor-pointer">
+                  <label className="flex items-center gap-2 text-[13px] text-text-primary/85 cursor-pointer">
                     <input
                       type="radio"
                       name="dup"
@@ -250,7 +250,7 @@ export function CsvImportModal({ open, onClose }: Props) {
                     />
                     Skip duplicates
                   </label>
-                  <label className="flex items-center gap-2 text-[13px] text-brand-charcoal/85 ml-4 cursor-pointer">
+                  <label className="flex items-center gap-2 text-[13px] text-text-primary/85 ml-4 cursor-pointer">
                     <input
                       type="radio"
                       name="dup"
@@ -262,9 +262,9 @@ export function CsvImportModal({ open, onClose }: Props) {
                 </div>
               </div>
             )}
-            <div className="border border-brand-border rounded-xl overflow-hidden max-h-72 overflow-y-auto">
+            <div className="border border-white/[0.08] rounded-xl overflow-hidden max-h-72 overflow-y-auto">
               <table className="w-full text-[13px]">
-                <thead className="bg-brand-canvas text-brand-muted uppercase tracking-[0.12em] text-[10.5px] sticky top-0">
+                <thead className="bg-[color:var(--app-elevated)] text-text-muted uppercase tracking-[0.12em] text-[10.5px] sticky top-0">
                   <tr>
                     <th className="text-left px-4 py-3">Name</th>
                     <th className="text-left px-4 py-3">Company</th>
@@ -272,22 +272,22 @@ export function CsvImportModal({ open, onClose }: Props) {
                     <th className="text-left px-4 py-3">Country</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-brand-border">
+                <tbody className="divide-y divide-white/[0.06]">
                   {valid.slice(0, 20).map((d) => (
                     <tr key={d.buyer.id}>
-                      <td className="px-4 py-2.5 text-brand-charcoal">
+                      <td className="px-4 py-2.5 text-text-primary">
                         {[d.buyer.firstName, d.buyer.lastName].filter(Boolean).join(" ") || "—"}
                       </td>
-                      <td className="px-4 py-2.5 text-brand-charcoal/80">{d.buyer.company || "—"}</td>
-                      <td className="px-4 py-2.5 text-brand-muted">{d.buyer.email}</td>
-                      <td className="px-4 py-2.5 text-brand-muted">{d.buyer.country || "—"}</td>
+                      <td className="px-4 py-2.5 text-text-primary/80">{d.buyer.company || "—"}</td>
+                      <td className="px-4 py-2.5 text-text-muted">{d.buyer.email}</td>
+                      <td className="px-4 py-2.5 text-text-muted">{d.buyer.country || "—"}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
             {valid.length > 20 && (
-              <div className="mt-2 text-[12px] text-brand-muted">Showing first 20 of {valid.length}.</div>
+              <div className="mt-2 text-[12px] text-text-muted">Showing first 20 of {valid.length}.</div>
             )}
           </div>
         )}
@@ -297,8 +297,8 @@ export function CsvImportModal({ open, onClose }: Props) {
             <div className="mx-auto w-12 h-12 rounded-full bg-emerald-100 grid place-items-center mb-4">
               <CheckCircle2 size={22} className="text-emerald-700" />
             </div>
-            <div className="text-[18px] font-serif text-brand-charcoal">Import complete</div>
-            <div className="mt-2 text-[13px] text-brand-muted">
+            <div className="text-[18px] font-semibold text-text-primary">Import complete</div>
+            <div className="mt-2 text-[13px] text-text-muted">
               {result.imported} imported · {result.updated} updated · {result.skipped} skipped · {result.invalid} invalid
             </div>
           </div>
@@ -320,10 +320,10 @@ function PreviewStat({
   muted?: boolean;
 }) {
   return (
-    <div className="border border-brand-border rounded-xl p-4">
-      <div className="text-[10.5px] tracking-[0.14em] uppercase text-brand-muted">{label}</div>
+    <div className="border border-white/[0.08] rounded-xl p-4">
+      <div className="text-[10.5px] tracking-[0.14em] uppercase text-text-muted">{label}</div>
       <div
-        className={`mt-2 font-serif text-[24px] tracking-[-0.02em] ${accent ? "text-brand-orange" : muted ? "text-brand-muted" : "text-brand-charcoal"}`}
+        className={`mt-2 font-semibold text-[24px] tracking-[-0.02em] ${accent ? "text-brand-orange" : muted ? "text-text-muted" : "text-text-primary"}`}
       >
         {value}
       </div>

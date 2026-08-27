@@ -46,6 +46,11 @@ export class IndexedDBBuyerRepository implements BuyerRepository {
   async findByEmail(email: string) {
     return getDb().buyers.where("email").equalsIgnoreCase(email).first();
   }
+  async listByIds(ids: string[]): Promise<Buyer[]> {
+    if (ids.length === 0) return [];
+    const unique = Array.from(new Set(ids));
+    return getDb().buyers.where("id").anyOf(unique).toArray();
+  }
 }
 
 export class IndexedDBCampaignRepository implements CampaignRepository {
@@ -105,6 +110,20 @@ export class IndexedDBRecipientRepository implements RecipientRepository {
 export class IndexedDBTemplateRepository implements TemplateRepository {
   async list() {
     return getDb().templates.toArray();
+  }
+  async listByFilter(filter: {
+    themeKey?: string;
+    variant?: "signature" | "direct";
+    status?: "draft" | "approved" | "archived";
+  }) {
+    return getDb()
+      .templates.filter(
+        (t) =>
+          (!filter.themeKey || t.themeKey === filter.themeKey) &&
+          (!filter.variant || t.variant === filter.variant) &&
+          (!filter.status || t.status === filter.status),
+      )
+      .toArray();
   }
   async get(id: string) {
     return getDb().templates.get(id);

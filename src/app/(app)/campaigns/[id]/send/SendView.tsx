@@ -83,8 +83,8 @@ export function SendView({
     }
     setSimulating(true);
     const assetsBySlot = Object.fromEntries(assets.map((a) => [a.slot, a]));
-    const html = renderEmailHtml({ template, buyer, settings, assetsBySlot });
-    const text = renderEmailText({ template, buyer, settings, assetsBySlot });
+    const html = renderEmailHtml({ template, buyer, settings, assetsBySlot, campaign });
+    const text = renderEmailText({ template, buyer, settings, assetsBySlot, campaign });
     const result = await emailProvider.send({
       to: buyer.email,
       toName: `${buyer.firstName} ${buyer.lastName}`.trim(),
@@ -102,18 +102,20 @@ export function SendView({
   return (
     <div>
       <div className="mb-8">
-        <h2 className="font-serif text-[28px] leading-tight tracking-[-0.015em] text-brand-charcoal">
+        <h2 className="text-[22px] font-semibold leading-tight tracking-tight text-text-primary">
           Ready to send?
         </h2>
-        <p className="mt-2 text-brand-muted text-[14px]">
+        <p className="mt-2 text-text-secondary text-[13.5px] leading-relaxed max-w-2xl">
           Review the campaign, run a simulated test, and validate everything before live sending is enabled.
         </p>
       </div>
 
       <div className="grid md:grid-cols-2 gap-6">
         <div className="card p-6">
-          <div className="text-[10.5px] tracking-[0.14em] uppercase text-brand-muted">Campaign</div>
-          <div className="mt-2 font-serif text-[22px] tracking-[-0.015em] text-brand-charcoal">
+          <div className="text-[10.5px] tracking-[0.14em] uppercase text-text-muted font-medium">
+            Campaign
+          </div>
+          <div className="mt-2 text-[18px] font-semibold tracking-tight text-text-primary">
             {campaign.name}
           </div>
           <dl className="mt-5 grid grid-cols-2 gap-y-3 gap-x-4 text-[13px]">
@@ -127,26 +129,26 @@ export function SendView({
         </div>
 
         <div className="card p-6">
-          <div className="text-[10.5px] tracking-[0.14em] uppercase text-brand-muted">
+          <div className="text-[10.5px] tracking-[0.14em] uppercase text-text-muted font-medium">
             Pre-flight validation
           </div>
           <ul className="mt-4 space-y-2">
             {report.lines.map((line, i) => (
               <li key={i} className="flex items-start gap-2.5 text-[13px]">
                 {line.ok && !line.warn ? (
-                  <CheckCircle2 size={15} className="text-emerald-600 mt-0.5 shrink-0" />
+                  <CheckCircle2 size={15} className="text-emerald-400 mt-0.5 shrink-0" />
                 ) : line.warn ? (
-                  <AlertTriangle size={15} className="text-amber-500 mt-0.5 shrink-0" />
+                  <AlertTriangle size={15} className="text-amber-400 mt-0.5 shrink-0" />
                 ) : (
-                  <XCircle size={15} className="text-brand-chilli mt-0.5 shrink-0" />
+                  <XCircle size={15} className="text-[color:#F08B7E] mt-0.5 shrink-0" />
                 )}
                 <span
                   className={
                     line.warn
-                      ? "text-brand-charcoal/80"
+                      ? "text-text-secondary"
                       : line.ok
-                        ? "text-brand-charcoal/85"
-                        : "text-brand-chilli"
+                        ? "text-text-primary/90"
+                        : "text-[color:#F08B7E]"
                   }
                 >
                   {line.label}
@@ -187,7 +189,7 @@ export function SendView({
               <span className="font-medium">Email successfully prepared.</span> Live Gmail sending
               will be connected in Phase 2.
             </div>
-            <div className="rounded-xl overflow-hidden border border-brand-border">
+            <div className="rounded-xl overflow-hidden border border-white/[0.08]">
               <EmailPreviewFrame html={testResult.html} width="100%" minHeight={700} />
             </div>
           </div>
@@ -200,8 +202,10 @@ export function SendView({
 function Item({ label, value, full }: { label: string; value: string; full?: boolean }) {
   return (
     <div className={full ? "col-span-2" : ""}>
-      <dt className="text-[10.5px] tracking-[0.14em] uppercase text-brand-muted">{label}</dt>
-      <dd className="mt-1 text-brand-charcoal truncate">{value}</dd>
+      <dt className="text-[10.5px] tracking-[0.14em] uppercase text-text-muted font-medium">
+        {label}
+      </dt>
+      <dd className="mt-1 text-text-primary truncate">{value}</dd>
     </div>
   );
 }

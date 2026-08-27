@@ -10,7 +10,7 @@ export function SignOutButton({ className }: { className?: string }) {
     <button
       type="button"
       onClick={onClick}
-      className={className ?? "flex items-center gap-2 text-[12.5px] text-brand-charcoal/70 hover:text-brand-charcoal transition-colors"}
+      className={className ?? "flex items-center gap-2 text-[12.5px] text-text-muted hover:text-text-secondary transition-colors"}
     >
       <LogOut size={13} /> Sign out
     </button>

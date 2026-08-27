@@ -1,7 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
+import { useTransition } from "react";
+import { Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const TABS = [
@@ -13,12 +15,27 @@ const TABS = [
   { key: "activity", label: "Activity", path: "/activity" },
 ];
 
+/**
+ * MDF Outreach — campaign tab bar.
+ *
+ * Uses useTransition + router.push so a click is instantly reflected in
+ * pending UI (spinner on the destination tab, active bar stays on the
+ * current tab until the destination commits). Link's default prefetch
+ * is left enabled so hover-warmed routes swap in with no waterfall.
+ */
 export function CampaignTabs({ campaignId }: { campaignId: string }) {
   const pathname = usePathname() ?? "";
+  const router = useRouter();
+  const [pending, startTransition] = useTransition();
   const base = `/campaigns/${campaignId}`;
+
   return (
     <div className="mb-8" style={{ borderBottom: "1px solid var(--app-border)" }}>
-      <nav className="flex gap-0.5 -mb-px" aria-label="Campaign sections">
+      <nav
+        className="flex gap-0.5 -mb-px"
+        aria-label="Campaign sections"
+        aria-busy={pending || undefined}
+      >
         {TABS.map((t) => {
           const href = `${base}${t.path}`;
           const isActive =
@@ -28,15 +45,32 @@ export function CampaignTabs({ campaignId }: { campaignId: string }) {
             <Link
               key={t.key}
               href={href}
+              prefetch
               aria-current={isActive ? "page" : undefined}
+              onClick={(e) => {
+                // Same tab click — no-op.
+                if (isActive) return;
+                e.preventDefault();
+                startTransition(() => {
+                  router.push(href);
+                });
+              }}
               className={cn(
-                "px-3 py-2.5 text-[12.5px] font-medium transition-colors relative focus-ring-quiet",
+                "px-3 py-2.5 text-[12.5px] font-medium transition-colors relative focus-ring-quiet inline-flex items-center gap-1.5",
                 isActive
                   ? "text-text-primary"
                   : "text-text-muted hover:text-text-secondary",
+                pending && !isActive && "opacity-70",
               )}
             >
               {t.label}
+              {pending && !isActive && (
+                <Loader2
+                  size={11}
+                  className="animate-spin text-text-muted"
+                  aria-hidden
+                />
+              )}
               {isActive && (
                 <span
                   aria-hidden

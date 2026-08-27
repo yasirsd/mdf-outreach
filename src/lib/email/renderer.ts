@@ -1,6 +1,7 @@
 import type {
   AssetRecord,
   Buyer,
+  Campaign,
   EmailSection,
   EmailTemplate,
   WorkspaceSettings,
@@ -39,6 +40,13 @@ export interface RenderOptions {
    *   the placeholder. Used by the future live-send preflight.
    */
   mode?: "preview" | "send";
+  /**
+   * Optional campaign context. When supplied, `campaign.preheader`
+   * (personalized) takes precedence over `settings.email.defaultPreheader`
+   * in the hidden email preheader element. Template-library previews may
+   * omit this to fall back to the workspace default.
+   */
+  campaign?: Pick<Campaign, "preheader"> | null;
 }
 
 const FONT_STACK =
@@ -664,9 +672,12 @@ function renderDirect(
   settings: WorkspaceSettings,
   p: ProductPalette,
 ): string {
-  const intro = template.sections.find((s) => s.type === "intro");
-  const hero = template.sections.find((s) => s.type === "hero");
-  const cta = template.sections.find((s) => s.type === "cta");
+  // Direct honours the visibility toggle exposed in the composer — if
+  // the operator hides intro / hero / cta the corresponding block is
+  // omitted. effectiveSections() + sectionAssetRequirements agree.
+  const intro = template.sections.find((s) => s.type === "intro" && s.visible !== false);
+  const hero = template.sections.find((s) => s.type === "hero" && s.visible !== false);
+  const cta = template.sections.find((s) => s.type === "cta" && s.visible !== false);
 
   const greeting = personalize(intro?.data.greeting || "{{greeting}},", ctx) || "Hello,";
   const introBody = personalize(intro?.data.body || "", ctx);
@@ -679,7 +690,12 @@ function renderDirect(
     .filter(Boolean)
     .slice(0, 4);
 
-  const ctaLabel = personalize(cta?.data.ctaLabel || hero?.data.ctaLabel || "Request price & specs", ctx);
+  // Direct CTA button — only rendered when either the visible CTA section
+  // or the visible Hero section explicitly supplied a label. If the
+  // operator hid the CTA section AND left hero.data.ctaLabel empty, no
+  // button is rendered.
+  const rawCtaLabel = (cta?.data.ctaLabel || hero?.data.ctaLabel || "").trim();
+  const ctaLabel = rawCtaLabel ? personalize(rawCtaLabel, ctx) : "";
   const ctaUrl = cta?.data.ctaUrl || hero?.data.ctaUrl || "#";
   const heroAsset = assets["hero"];
   const heroSrc = assetSrc(heroAsset);
@@ -719,8 +735,11 @@ function renderDirect(
       .join("")}</div>` : ""}
     ${vspace(24)}
     ${compactImage}
-    ${vspace(22)}
-    <div style="text-align:left;">${ctaButton(ctaLabel, ctaUrl, { bg: p.ctaBg, fg: p.ctaText, radius: 14 })}</div>
+    ${
+      ctaLabel
+        ? `${vspace(22)}<div style="text-align:left;">${ctaButton(ctaLabel, ctaUrl, { bg: p.ctaBg, fg: p.ctaText, radius: 14 })}</div>`
+        : ""
+    }
   `;
 
   const heroBand = band(
@@ -758,7 +777,10 @@ function renderDirect(
 
   const footerBand = renderFooter(settings, p);
 
-  return `${opening}${heroBand}${trustBand}${footerBand}`;
+  // Gate opening / heroBand on visibility of their source sections.
+  const openingHtml = intro ? opening : "";
+  const heroHtml = hero ? heroBand : "";
+  return `${openingHtml}${heroHtml}${trustBand}${footerBand}`;
 }
 
 /* -------------------------------------------------------------------- */
@@ -805,7 +827,18 @@ export function renderEmailHtml(opts: RenderOptions): string {
   currentRenderMode = opts.mode ?? "preview";
   const palette = resolvePalette(template);
   const ctx = buildContext(buyer, opts.productName);
-  const preheader = personalize(settings.email.defaultPreheader || "", ctx);
+  // Preheader ownership:
+  //   REAL CAMPAIGN (opts.campaign supplied)  → render EXACTLY the
+  //     campaign's own preheader. Empty / whitespace-only means the
+  //     operator intentionally wants no preheader. Settings never
+  //     overrides at render time.
+  //   NO CAMPAIGN (template library preview) → use settings default so
+  //     the master preview reads well.
+  const preheaderSource = opts.campaign
+    ? (opts.campaign.preheader ?? "")
+    : (settings.email.defaultPreheader ?? "");
+  const preheader = personalize(preheaderSource, ctx);
+  const hasPreheader = preheader.trim() !== "";
 
   // NOTE: the dark-mode media block is intentionally NARROW. Applying
   // `background-color !important` to a broad selector like `table` cascades
@@ -829,7 +862,7 @@ export function renderEmailHtml(opts: RenderOptions): string {
     </style>
   `;
 
-  const preheaderHtml = preheader
+  const preheaderHtml = hasPreheader
     ? `<div style="display:none;overflow:hidden;line-height:1px;opacity:0;max-height:0;max-width:0;visibility:hidden;font-size:1px;color:${palette.paper};">${esc(preheader)}</div>`
     : "";
 

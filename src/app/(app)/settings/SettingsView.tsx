@@ -1,19 +1,16 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { AlertTriangle, Download, Wrench } from "lucide-react";
+import { Download, Wrench } from "lucide-react";
+import { AsyncButton } from "@/components/ui/AsyncButton";
 import { resetMasterLibraryAction, verifyMasterLibraryAction } from "@/app/(app)/actions";
 import { PageContainer, PageHeader } from "@/components/ui/Page";
 import { useWorkspace } from "@/components/WorkspaceProvider";
-import type { AssetRecord, AssetSlot, WorkspaceSettings } from "@/lib/types";
+import type { AssetRecord, WorkspaceSettings } from "@/lib/types";
 import { toast } from "@/components/ui/Toast";
 import { cn } from "@/lib/utils";
-import {
-  exportWorkspaceBackupAction,
-  saveSettingsAction,
-  upsertAssetAction,
-} from "./actions";
+import { exportWorkspaceBackupAction, saveSettingsAction } from "./actions";
 import { AssetManager } from "./AssetManager";
 import { GmailPanel } from "./GmailPanel";
 import type { GmailConnectionSummary, TestRecipient } from "./gmailActions";
@@ -35,7 +32,7 @@ function AssetManagerSection({ initialAssets }: { initialAssets: AssetRecord[] }
   );
 }
 
-type Tab = "company" | "brand" | "email" | "assets" | "data" | "developer";
+type Tab = "company" | "email" | "assets" | "data" | "developer";
 
 interface Props {
   initialSettings: WorkspaceSettings;
@@ -75,8 +72,6 @@ export function SettingsView({
 
   const setCompany = (k: keyof WorkspaceSettings["company"], v: string) =>
     setDraft({ ...draft, company: { ...draft.company, [k]: v } });
-  const setBrand = (k: keyof WorkspaceSettings["brand"], v: string) =>
-    setDraft({ ...draft, brand: { ...draft.brand, [k]: v } });
   const setEmail = (k: keyof WorkspaceSettings["email"], v: string) =>
     setDraft({ ...draft, email: { ...draft.email, [k]: v } });
 
@@ -92,7 +87,6 @@ export function SettingsView({
           {(
             [
               ["company", "Company"],
-              ["brand", "Brand"],
               ["email", "Email"],
               ["assets", "Assets"],
               ["data", "Data"],
@@ -102,11 +96,15 @@ export function SettingsView({
             <button
               key={k}
               className={cn(
-                "text-left px-3 py-2 rounded-md text-[13px] font-medium transition-colors",
+                "text-left px-3 py-2 rounded-[8px] text-[13px] font-medium transition-colors",
                 tab === k
-                  ? "bg-white border border-brand-border text-brand-charcoal"
-                  : "text-brand-charcoal/70 hover:bg-brand-canvas/60 border border-transparent",
+                  ? "text-text-primary"
+                  : "text-text-secondary hover:text-text-primary",
               )}
+              style={{
+                backgroundColor: tab === k ? "var(--app-elevated)" : "transparent",
+                border: `1px solid ${tab === k ? "var(--app-border-strong)" : "transparent"}`,
+              }}
               onClick={() => setTab(k)}
             >
               {label}
@@ -116,58 +114,60 @@ export function SettingsView({
 
         <div>
           {tab === "company" && (
-            <Section title="Company" description="Used throughout the app and in outreach emails.">
-              <TwoCol>
-                <Field label="Company name">
-                  <input className="input" value={draft.company.companyName} onChange={(e) => setCompany("companyName", e.target.value)} />
-                </Field>
-                <Field label="Short name">
-                  <input className="input" value={draft.company.shortName} onChange={(e) => setCompany("shortName", e.target.value)} />
-                </Field>
-              </TwoCol>
-              <Field label="Tagline">
+            <Section
+              title="Company"
+              description="Identity used in the app shell and in outreach emails."
+            >
+              <SubHeader
+                title="Applied to outreach email"
+                hint="These values appear inside the delivered email."
+              />
+              <Field label="Company name" hint="Shown in the footer sign-off and email <title>.">
+                <input className="input" value={draft.company.companyName} onChange={(e) => setCompany("companyName", e.target.value)} />
+              </Field>
+              <Field label="Tagline" hint="Optional italic line beneath the company name in the footer.">
                 <input className="input" value={draft.company.tagline} onChange={(e) => setCompany("tagline", e.target.value)} />
               </Field>
-              <Field label="Heritage line">
+              <Field label="Heritage line" hint='Fallback body copy for the "40+ years" heritage section.'>
                 <input className="input" value={draft.company.heritage} onChange={(e) => setCompany("heritage", e.target.value)} />
               </Field>
-              <Field label="Location">
-                <input className="input" value={draft.company.location} onChange={(e) => setCompany("location", e.target.value)} />
-              </Field>
               <TwoCol>
-                <Field label="Website">
+                <Field label="Website" hint="Rendered as a link in the email footer.">
                   <input className="input" value={draft.company.website} onChange={(e) => setCompany("website", e.target.value)} />
                 </Field>
-                <Field label="Contact email">
+                <Field label="Contact email" hint="Rendered as a mailto link in the email footer.">
                   <input className="input" value={draft.company.email} onChange={(e) => setCompany("email", e.target.value)} />
                 </Field>
               </TwoCol>
-              <SaveBar onSave={save} saving={saving} />
-            </Section>
-          )}
 
-          {tab === "brand" && (
-            <Section title="Brand" description="MDF has one strong identity — kept intentional and restrained.">
-              <TwoCol>
-                <Field label="Brand orange">
-                  <ColorInput value={draft.brand.orange} onChange={(v) => setBrand("orange", v)} />
-                </Field>
-                <Field label="Charcoal">
-                  <ColorInput value={draft.brand.charcoal} onChange={(v) => setBrand("charcoal", v)} />
-                </Field>
-                <Field label="Warm ivory (background)">
-                  <ColorInput value={draft.brand.ivory} onChange={(v) => setBrand("ivory", v)} />
-                </Field>
-                <Field label="Deep chilli red (accent)">
-                  <ColorInput value={draft.brand.chilli} onChange={(v) => setBrand("chilli", v)} />
-                </Field>
-              </TwoCol>
+              <div className="mt-8">
+                <SubHeader
+                  title="Company profile"
+                  hint="Recorded for internal reference. Not currently applied to outreach email."
+                />
+                <TwoCol>
+                  <Field label="Short name">
+                    <input className="input" value={draft.company.shortName} onChange={(e) => setCompany("shortName", e.target.value)} />
+                  </Field>
+                  <Field label="Location">
+                    <input className="input" value={draft.company.location} onChange={(e) => setCompany("location", e.target.value)} />
+                  </Field>
+                </TwoCol>
+              </div>
+
               <SaveBar onSave={save} saving={saving} />
             </Section>
           )}
 
           {tab === "email" && (
-            <Section title="Email defaults" description="Applied to new campaigns.">
+            <Section
+              title="Email"
+              description="Defaults for new campaigns, plus the company links that appear in every outreach email."
+            >
+              <SubHeader
+                title="New campaign defaults"
+                hint="Applied only when a new campaign is created. Existing campaigns are never overwritten — edit them on the campaign's Email tab."
+              />
               <TwoCol>
                 <Field label="From name">
                   <input className="input" value={draft.email.fromName} onChange={(e) => setEmail("fromName", e.target.value)} />
@@ -179,28 +179,37 @@ export function SettingsView({
               <Field label="Default subject">
                 <input className="input" value={draft.email.defaultSubject} onChange={(e) => setEmail("defaultSubject", e.target.value)} />
               </Field>
-              <Field label="Default preheader">
+              <Field
+                label="Default preheader"
+                hint="Applied when a new campaign is created. Existing campaigns are not changed."
+              >
                 <input className="input" value={draft.email.defaultPreheader} onChange={(e) => setEmail("defaultPreheader", e.target.value)} />
               </Field>
-              <Field label="Default CTA URL">
+              <Field
+                label="Default CTA destination"
+                hint='Seeded into a campaign snapshot when the master template ships no CTA URL. Never overwrites an existing per-section CTA.'
+              >
                 <input className="input" value={draft.email.defaultCtaUrl} onChange={(e) => setEmail("defaultCtaUrl", e.target.value)} />
               </Field>
-              <TwoCol>
-                <Field label="Website URL">
-                  <input className="input" value={draft.email.websiteUrl} onChange={(e) => setEmail("websiteUrl", e.target.value)} />
-                </Field>
-                <Field label="WhatsApp URL">
-                  <input className="input" value={draft.email.whatsappUrl} onChange={(e) => setEmail("whatsappUrl", e.target.value)} />
-                </Field>
-              </TwoCol>
-              <TwoCol>
-                <Field label="LinkedIn URL">
-                  <input className="input" value={draft.email.linkedinUrl} onChange={(e) => setEmail("linkedinUrl", e.target.value)} />
-                </Field>
+
+              <div className="mt-8">
+                <SubHeader
+                  title="Company links"
+                  hint="Rendered as social links in every outreach email footer."
+                />
+                <TwoCol>
+                  <Field label="WhatsApp URL">
+                    <input className="input" value={draft.email.whatsappUrl} onChange={(e) => setEmail("whatsappUrl", e.target.value)} />
+                  </Field>
+                  <Field label="LinkedIn URL">
+                    <input className="input" value={draft.email.linkedinUrl} onChange={(e) => setEmail("linkedinUrl", e.target.value)} />
+                  </Field>
+                </TwoCol>
                 <Field label="Instagram URL">
                   <input className="input" value={draft.email.instagramUrl} onChange={(e) => setEmail("instagramUrl", e.target.value)} />
                 </Field>
-              </TwoCol>
+              </div>
+
               <SaveBar onSave={save} saving={saving} />
               <div className="mt-10 pt-8" style={{ borderTop: "1px solid var(--app-border)" }}>
                 <GmailPanel
@@ -238,18 +247,19 @@ export function SettingsView({
                   per workspace).
                 </div>
                 <div>
-                  <strong className="text-text-primary">Email provider:</strong>{" "}
-                  SimulationEmailProvider (no network calls).
+                  <strong className="text-text-primary">Simulation:</strong> renders emails
+                  locally without a network call. Used for Simulation mode on Campaign → Send.
                 </div>
                 <div>
-                  <strong className="text-text-primary">Live sending:</strong> Not connected in
-                  this phase.
+                  <strong className="text-text-primary">Gmail integration:</strong> connected
+                  server-side with the <code>gmail.send</code> scope only. Real Gmail Test is
+                  live; production Buyer Send is gated on <code>BUYER_SEND_ENABLED</code>.
                 </div>
                 <div
                   className="pt-3 text-text-muted"
                   style={{ borderTop: "1px solid var(--app-border)" }}
                 >
-                  Phase 2 will introduce Gmail live sending — configuration will appear here.
+                  Manage the connected Gmail sender + approved test recipients on the Email tab.
                 </div>
               </div>
             </Section>
@@ -282,11 +292,35 @@ function Section({
   );
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function Field({
+  label,
+  hint,
+  children,
+}: {
+  label: string;
+  hint?: string;
+  children: React.ReactNode;
+}) {
   return (
     <div>
       <label className="label">{label}</label>
       {children}
+      {hint && <div className="mt-1 text-[11.5px] text-text-muted">{hint}</div>}
+    </div>
+  );
+}
+
+function SubHeader({ title, hint }: { title: string; hint?: string }) {
+  return (
+    <div className="mb-3">
+      <div className="text-[10.5px] tracking-[0.14em] uppercase text-text-muted font-medium">
+        {title}
+      </div>
+      {hint && (
+        <div className="mt-1 text-[12px] text-text-secondary leading-relaxed max-w-2xl">
+          {hint}
+        </div>
+      )}
     </div>
   );
 }
@@ -295,156 +329,23 @@ function TwoCol({ children }: { children: React.ReactNode }) {
   return <div className="grid grid-cols-2 gap-4">{children}</div>;
 }
 
-function ColorInput({ value, onChange }: { value: string; onChange: (v: string) => void }) {
-  return (
-    <div className="flex items-center gap-2">
-      <input
-        type="color"
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className="w-10 h-10 rounded-lg border border-brand-border bg-white p-1 cursor-pointer"
-      />
-      <input className="input flex-1 font-mono text-[13px]" value={value} onChange={(e) => onChange(e.target.value)} />
-    </div>
-  );
-}
-
-function SaveBar({ onSave, saving }: { onSave: () => void; saving: boolean }) {
+function SaveBar({ onSave, saving }: { onSave: () => Promise<void> | void; saving: boolean }) {
   return (
     <div className="pt-4 flex justify-end">
-      <button className="btn-primary" onClick={onSave} disabled={saving}>
-        {saving ? "Saving…" : "Save changes"}
-      </button>
+      <AsyncButton
+        onClick={onSave}
+        pending={saving}
+        pendingLabel="Saving…"
+      >
+        Save changes
+      </AsyncButton>
     </div>
   );
 }
 
-function AssetsSection({
-  initialAssets,
-  onChange,
-}: {
-  initialAssets: AssetRecord[];
-  onChange: () => void;
-}) {
-  const [assets, setAssets] = useState<AssetRecord[]>(initialAssets);
-  const bySlot = useMemo<Record<string, AssetRecord | undefined>>(
-    () => Object.fromEntries(assets.map((a) => [a.slot, a])),
-    [assets],
-  );
-  const SLOTS: Array<{ slot: AssetSlot; label: string; hint: string }> = [
-    { slot: "logo", label: "Logo", hint: "MDF logo mark" },
-    { slot: "hero", label: "Hero", hint: "Premium studio photograph" },
-    { slot: "stem", label: "Format — with stem", hint: "Whole chillies with stems" },
-    { slot: "stemless", label: "Format — stemless", hint: "Stemless dry red chilli" },
-    { slot: "powder", label: "Format — chilli powder", hint: "Chilli powder composition" },
-    { slot: "packing", label: "Custom packing", hint: "Export-grade packing" },
-    { slot: "origin", label: "Origin", hint: "Origin / farm scene" },
-  ];
-
-  async function updateSlot(slot: AssetSlot, patch: Partial<AssetRecord>) {
-    try {
-      const saved = await upsertAssetAction(slot, patch);
-      setAssets((prev) => {
-        const idx = prev.findIndex((a) => a.slot === slot);
-        if (idx === -1) return [...prev, saved];
-        const next = [...prev];
-        next[idx] = saved;
-        return next;
-      });
-      onChange();
-    } catch {
-      toast.error("Could not update asset");
-    }
-  }
-
-  async function onFile(slot: AssetSlot, file: File) {
-    if (file.size > 4 * 1024 * 1024) {
-      toast.error("Image must be under 4 MB for local preview.");
-      return;
-    }
-    const dataUrl: string = await new Promise((res, rej) => {
-      const r = new FileReader();
-      r.onload = () => res(r.result as string);
-      r.onerror = () => rej(new Error("read failed"));
-      r.readAsDataURL(file);
-    });
-    await updateSlot(slot, { localDataUrl: dataUrl, name: file.name });
-    toast.success("Preview image updated");
-  }
-
-  return (
-    <Section title="Assets" description="Preview images and production URLs for the email.">
-      <div
-        className="rounded-[10px] p-4 text-[12.5px] flex gap-2 leading-relaxed"
-        style={{
-          backgroundColor: "rgba(252,211,77,0.08)",
-          border: "1px solid rgba(252,211,77,0.28)",
-          color: "#FCD34D",
-        }}
-      >
-        <AlertTriangle size={15} className="mt-0.5 shrink-0" />
-        <div>
-          Local preview images look great in the app but cannot be delivered by email. Add a
-          public HTTPS <strong>Production URL</strong> for each asset before live sending.
-        </div>
-      </div>
-      <div className="grid grid-cols-1 gap-3">
-        {SLOTS.map(({ slot, label, hint }) => {
-          const a = bySlot[slot];
-          return (
-            <div
-              key={slot}
-              className="rounded-[10px] p-4 flex items-start gap-4"
-              style={{
-                backgroundColor: "var(--app-surface)",
-                border: "1px solid var(--app-border)",
-              }}
-            >
-              <div
-                className="w-16 h-16 rounded-md overflow-hidden shrink-0"
-                style={{
-                  backgroundColor: "var(--app-elevated)",
-                  border: "1px solid var(--app-border)",
-                }}
-              >
-                {a?.localDataUrl && (
-                  /* eslint-disable-next-line @next/next/no-img-element */
-                  <img src={a.localDataUrl} alt={label} className="w-full h-full object-cover" />
-                )}
-              </div>
-              <div className="flex-1 min-w-0">
-                <div className="text-[13px] font-medium text-text-primary">{label}</div>
-                <div className="text-[11.5px] text-text-muted mb-2.5">{hint}</div>
-                <div className="grid md:grid-cols-2 gap-2">
-                  <label className="btn-secondary text-[11.5px] h-8 cursor-pointer">
-                    Upload local preview
-                    <input
-                      type="file"
-                      accept="image/*"
-                      className="hidden"
-                      onChange={(e) => e.target.files?.[0] && onFile(slot, e.target.files[0])}
-                    />
-                  </label>
-                  <input
-                    className="input h-8 text-[12.5px]"
-                    placeholder="Production HTTPS URL"
-                    defaultValue={a?.productionUrl ?? ""}
-                    onBlur={(e) => {
-                      const v = e.target.value.trim();
-                      if (v !== (a?.productionUrl ?? "")) {
-                        void updateSlot(slot, { productionUrl: v });
-                      }
-                    }}
-                  />
-                </div>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </Section>
-  );
-}
+// (Deleted: an earlier version of an inline AssetsSection lived here. The
+// live Assets tab uses AssetManager via AssetManagerSection above — see
+// line 21. Kept the removal comment as a maintenance marker.)
 
 function MasterLibraryRepair() {
   const router = useRouter();
@@ -509,13 +410,17 @@ function MasterLibraryRepair() {
             restores any that are missing. Never overwrites existing templates.
           </div>
         </div>
-        <button
-          className="btn-secondary shrink-0"
+        <AsyncButton
+          variant="secondary"
+          className="shrink-0"
           onClick={verify}
-          disabled={busy !== null}
+          pending={busy === "verify"}
+          disabled={busy !== null && busy !== "verify"}
+          icon={<Wrench size={13} />}
+          pendingLabel="Verifying…"
         >
-          <Wrench size={13} /> {busy === "verify" ? "Verifying…" : "Verify library"}
-        </button>
+          Verify library
+        </AsyncButton>
       </div>
       <div
         className="p-5 flex items-start justify-between gap-4 flex-wrap"
@@ -531,9 +436,16 @@ function MasterLibraryRepair() {
             Use after a redesign of the master library.
           </div>
         </div>
-        <button className="btn-ghost shrink-0" onClick={reset} disabled={busy !== null}>
-          {busy === "reset" ? "Restoring…" : "Restore approved version"}
-        </button>
+        <AsyncButton
+          variant="ghost"
+          className="shrink-0"
+          onClick={reset}
+          pending={busy === "reset"}
+          disabled={busy !== null && busy !== "reset"}
+          pendingLabel="Restoring…"
+        >
+          Restore approved version
+        </AsyncButton>
       </div>
     </div>
   );
@@ -580,9 +492,15 @@ function DataSection() {
               settings from your workspace.
             </div>
           </div>
-          <button className="btn-primary shrink-0" onClick={exportBackup} disabled={busy}>
-            <Download size={13} /> {busy ? "Exporting…" : "Export"}
-          </button>
+          <AsyncButton
+            className="shrink-0"
+            onClick={exportBackup}
+            pending={busy}
+            icon={<Download size={13} />}
+            pendingLabel="Exporting…"
+          >
+            Export
+          </AsyncButton>
         </div>
         <div className="p-5" style={{ borderTop: "1px solid var(--app-border)" }}>
           <div className="text-[13.5px] font-medium text-text-primary">Import / restore</div>

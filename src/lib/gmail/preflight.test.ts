@@ -19,7 +19,19 @@ const campaign: Campaign = {
 const template: EmailTemplate = {
   id: "t1",
   name: "MDF Master",
-  sections: [],
+  // Signature template that renders a Hero section. Phase F1 preflight
+  // derives required assets from the EFFECTIVELY rendered sections, so a
+  // visible hero must be present for the "hero missing" assertion below.
+  sections: [
+    {
+      id: "sec-hero",
+      type: "hero",
+      visible: true,
+      data: {
+        headline: "Guntur — offer",
+      },
+    },
+  ],
   themeKey: "guntur-chilli",
   variant: "signature",
   version: 1,

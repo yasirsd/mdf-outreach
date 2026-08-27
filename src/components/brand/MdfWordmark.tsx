@@ -1,24 +1,35 @@
 import Image from "next/image";
-import darkArtwork from "@/assets/images/DarkPNG.png";
-import lightArtwork from "@/assets/images/LightPNG.png";
+import darkArtwork from "@/assets/images/DarkPNG.trimmed.png";
+import lightArtwork from "@/assets/images/LightPNG.trimmed.png";
 
 /**
- * Full MDF wordmark.
+ * MDF wordmark.
  *
- * `tone` picks the artwork intended for the surrounding surface:
- *   - `light`  → light artwork (white MDF logo) for use on DARK surfaces.
- *   - `dark`   → dark artwork (black MDF logo) for use on LIGHT surfaces.
+ * Uses the PROGRAMMATICALLY TRIMMED master PNGs whose alpha bounds
+ * equal the visible artwork plus a ~4 % transparent safety margin.
+ * The trim script `scripts/trim-logo.mjs` is deterministic — every
+ * run against the same source produces identical output — so the
+ * `.trimmed.png` files are checked in as build inputs, not runtime
+ * artefacts.
  *
- * Both variants are shipped inside `src/assets/images` and rendered through
- * next/image so they are optimised, versioned, and never fall back to a
- * broken URL.
+ * `tone`:
+ *   - `light` → light artwork (white MDF logo) for use on DARK surfaces
+ *   - `dark`  → dark artwork (black MDF logo) for use on LIGHT surfaces
+ *
+ * `height` is the visible artwork height in px. Because the source
+ * canvases equal the visible artwork bounding box (plus 4 % safety
+ * margin) the rendered mark now reads at the requested height with
+ * normal intrinsic sizing — no CSS transform hacks, no padding
+ * compensation constant.
  */
+
 export function MdfWordmark({
   tone = "light",
   height = 32,
   className,
 }: {
   tone?: "light" | "dark";
+  /** Visible wordmark height in px. */
   height?: number;
   className?: string;
 }) {
