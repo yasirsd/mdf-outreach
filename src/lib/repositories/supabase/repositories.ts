@@ -19,6 +19,8 @@ import type {
   BuyerCandidateRepository,
   BuyerRepository,
   CampaignRepository,
+  PaginatedBuyerQuery,
+  PaginatedBuyers,
   RecipientRepository,
   SettingsRepository,
   TemplateRepository,
@@ -49,6 +51,21 @@ import { createBuyerCandidateRepository } from "./buyerCandidateRepository";
 import { createBuyerCandidateContactRepository } from "./buyerCandidateContactRepository";
 import { createBuyerCandidateProductMatchRepository } from "./buyerCandidateProductMatchRepository";
 
+function clamp(n: number, lo: number, hi: number): number {
+  if (!Number.isFinite(n)) return lo;
+  return Math.min(hi, Math.max(lo, Math.floor(n)));
+}
+
+/**
+ * PostgREST OR filter syntax uses commas and parentheses as delimiters.
+ * A search term containing those characters could otherwise inject
+ * additional filter branches. We strip / escape the small set of chars
+ * PostgREST treats as structural.
+ */
+function escapeOrValue(s: string): string {
+  return s.replace(/[,()]/g, "");
+}
+
 function idFor(patchId: string | undefined): string {
   if (patchId && isUuid(patchId)) return patchId;
   return randomUUID();
@@ -68,6 +85,51 @@ class SupabaseBuyerRepository implements BuyerRepository {
       .order("updated_at", { ascending: false });
     if (error) throw error;
     return (data ?? []).map(buyerFromRow);
+  }
+
+  /**
+   * F8 — server-side paginated + filtered read. See BuyerRepository.
+   * Uses PostgREST `count: 'exact'` so `total` is authoritative; RLS
+   * still applies via the request-scoped Supabase client.
+   */
+  async listPaginated(query: PaginatedBuyerQuery): Promise<PaginatedBuyers> {
+    const pageSize = clamp(query.pageSize, 1, 200);
+    const page = Math.max(1, Math.floor(query.page || 1));
+    const from = (page - 1) * pageSize;
+    const to = from + pageSize - 1;
+
+    let q = this.supabase
+      .from("buyers")
+      .select("*", { count: "exact" })
+      .order("updated_at", { ascending: false })
+      .range(from, to);
+
+    if (query.status?.trim()) q = q.eq("status", query.status.trim());
+    if (query.country?.trim()) q = q.eq("country", query.country.trim());
+    if (query.product?.trim()) q = q.eq("product_interest", query.product.trim());
+
+    const search = query.search?.trim();
+    if (search) {
+      // Bound the search string length and escape PostgREST OR delimiters
+      // so a user searching for a literal comma/parenthesis cannot inject
+      // filter syntax. 128 chars covers real-world buyer/company names
+      // with room to spare and prevents ridiculous URL payloads.
+      const s = escapeOrValue(search.slice(0, 128));
+      q = q.or(
+        `company.ilike.*${s}*,first_name.ilike.*${s}*,last_name.ilike.*${s}*,email.ilike.*${s}*`,
+      );
+    }
+
+    const { data, error, count } = await q;
+    if (error) throw error;
+    const total = count ?? 0;
+    return {
+      rows: (data ?? []).map(buyerFromRow),
+      total,
+      page,
+      pageSize,
+      pageCount: total === 0 ? 0 : Math.ceil(total / pageSize),
+    };
   }
 
   async get(id: string): Promise<Buyer | undefined> {

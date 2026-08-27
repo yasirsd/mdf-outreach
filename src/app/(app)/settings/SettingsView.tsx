@@ -13,6 +13,7 @@ import { cn } from "@/lib/utils";
 import { exportWorkspaceBackupAction, saveSettingsAction } from "./actions";
 import { AssetManager } from "./AssetManager";
 import { GmailPanel } from "./GmailPanel";
+import { ProductionReadinessPanel } from "./ProductionReadinessPanel";
 import type { GmailConnectionSummary, TestRecipient } from "./gmailActions";
 
 function AssetManagerSection({ initialAssets }: { initialAssets: AssetRecord[] }) {
@@ -232,6 +233,8 @@ export function SettingsView({
               title="Developer"
               description="Administrative maintenance actions and environment info."
             >
+              <ProductionReadinessPanel />
+
               <MasterLibraryRepair />
 
               <div

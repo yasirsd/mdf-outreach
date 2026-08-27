@@ -105,6 +105,10 @@ function nl2br(s: string): string {
 // top of renderEmailHtml propagates deterministically through every
 // nested renderer without threading it through 9 function signatures.
 let currentRenderMode: "preview" | "send" = "preview";
+// F7 — mirror of `template.themeKey` for the same reason. Only the
+// productMark decorative helper reads it. Falls back to undefined so
+// non-product templates just skip the mark entirely.
+let currentThemeKey: string | undefined = undefined;
 
 function assetSrc(a: AssetRecord | undefined): string {
   if (!a) return "";
@@ -275,6 +279,83 @@ function heroImage(
   return `<img src="${esc(src)}" width="${CONTAINER_INNER}" alt="${esc(alt)}" style="display:block;width:100%;max-width:${CONTAINER_INNER}px;height:${height}px;object-fit:cover;border:0;border-radius:${radius}px;" />`;
 }
 
+/**
+ * F7 — Per-product decorative marks.
+ *
+ * Small inline SVG "signatures" that give each product a recognizable
+ * personality without hosted assets. They are always decorative —
+ * rendered with `role="presentation"` and `aria-hidden="true"`; they
+ * carry no meaning and are NEVER preflight-required.
+ *
+ * • guntur-chilli   → a warm heat-wave arc + tiny chilli stem contour
+ * • banganapalli-mango → an organic leaf silhouette
+ * • pomegranate     → a jewel-seed cluster (three arils)
+ * • indian-apple    → a crisp orchard curve + apple contour
+ *
+ * SVG is inline so no external request is issued; every path uses the
+ * theme colour passed in, so the mark reads correctly on any dark hero.
+ */
+function productMark(
+  productKey: string | undefined,
+  color: string,
+  size = 44,
+): string {
+  const shared = `xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 44 44" fill="none" role="presentation" aria-hidden="true" style="display:block;"`;
+  switch (productKey) {
+    case "guntur-chilli":
+      return `<svg ${shared}>
+  <path d="M4 30 C 12 26, 20 34, 30 26" stroke="${color}" stroke-width="1.6" stroke-linecap="round" fill="none" opacity="0.85"/>
+  <path d="M28 12 C 34 14, 38 22, 34 30 C 30 34, 22 32, 20 26 C 22 22, 26 14, 28 12 Z" fill="${color}" opacity="0.9"/>
+  <path d="M28 12 C 28 8, 32 6, 34 6" stroke="${color}" stroke-width="1.6" stroke-linecap="round" fill="none"/>
+</svg>`;
+    case "banganapalli-mango":
+      return `<svg ${shared}>
+  <path d="M22 8 C 34 10, 40 22, 34 34 C 28 40, 14 38, 10 30 C 8 22, 12 12, 22 8 Z" fill="${color}" opacity="0.9"/>
+  <path d="M8 8 C 14 10, 18 14, 20 20" stroke="${color}" stroke-width="1.6" stroke-linecap="round" fill="none" opacity="0.7"/>
+</svg>`;
+    case "pomegranate":
+      return `<svg ${shared}>
+  <ellipse cx="16" cy="22" rx="5" ry="7" fill="${color}" opacity="0.9"/>
+  <ellipse cx="26" cy="18" rx="5" ry="7" fill="${color}" opacity="0.65"/>
+  <ellipse cx="24" cy="30" rx="5" ry="7" fill="${color}" opacity="0.8"/>
+  <path d="M22 4 C 22 8, 26 10, 30 8" stroke="${color}" stroke-width="1.6" stroke-linecap="round" fill="none" opacity="0.7"/>
+</svg>`;
+    case "indian-apple":
+      return `<svg ${shared}>
+  <path d="M22 12 C 32 12, 38 22, 34 32 C 30 40, 24 40, 22 34 C 20 40, 14 40, 10 32 C 6 22, 12 12, 22 12 Z" fill="${color}" opacity="0.92"/>
+  <path d="M22 12 C 22 8, 26 5, 30 6" stroke="${color}" stroke-width="1.6" stroke-linecap="round" fill="none"/>
+  <path d="M6 38 C 16 34, 28 34, 38 38" stroke="${color}" stroke-width="1.2" stroke-linecap="round" fill="none" opacity="0.55"/>
+</svg>`;
+    default:
+      return "";
+  }
+}
+
+/**
+ * F7 — Editorial masthead row.
+ *
+ * Sits above the hero. Small tracked capital MDF wordmark on the left,
+ * product family on the right. Uses real HTML text — no image asset
+ * required, degrades to plain text if styles are stripped.
+ */
+function masthead(
+  companyName: string,
+  productName: string | undefined,
+  p: ProductPalette,
+): string {
+  return `<tr><td style="background-color:${p.paper};padding:26px 40px 8px 40px;" class="mdf-pad">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+      <tr>
+        <td align="left" style="font-family:${FONT_STACK};font-size:11px;font-weight:700;letter-spacing:0.28em;color:${p.text};text-transform:uppercase;">
+          ${esc(companyName)}
+        </td>
+        ${productName ? `<td align="right" style="font-family:${FONT_STACK};font-size:10px;font-weight:500;letter-spacing:0.24em;color:${p.textMuted};text-transform:uppercase;">${esc(productName)}</td>` : ""}
+      </tr>
+    </table>
+    <div style="margin-top:14px;height:1px;line-height:1px;background-color:${p.border};font-size:0;">&nbsp;</div>
+  </td></tr>`;
+}
+
 /** Curved SVG wave divider — used between hero-dark and paper-light. */
 function waveDivider(color: string, height = 40, flip = false): string {
   const transform = flip ? ' transform="scale(1,-1) translate(0,-40)"' : "";
@@ -327,8 +408,20 @@ function renderHero(
         height: 260,
       });
 
+  // F7 — product mark sits top-right of the hero card as an editorial
+  // signature. Purely decorative; never blocks preflight.
+  const mark = productMark(currentThemeKey, p.accent, 46);
+  const markRow = mark
+    ? `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr>
+        <td align="left" valign="middle">${eb ? eyebrow(eb, p.accent) : ""}</td>
+        <td align="right" valign="middle" width="46">${mark}</td>
+      </tr></table>`
+    : eb
+      ? eyebrow(eb, p.accent)
+      : "";
+
   const heroInner = `
-    ${eb ? eyebrow(eb, p.accent) : ""}
+    ${markRow}
     ${vspace(18)}
     ${displayHeadline(nl2br(headline), p.invertedText, 38)}
     ${body ? `${vspace(18)}${bodyText(nl2br(body), p.invertedMuted, { size: 15.5, maxWidth: 420 })}` : ""}
@@ -722,9 +815,20 @@ function renderDirect(
     56,
   );
 
-  // Compact rounded procurement hero
+  // Compact rounded procurement hero — F7 product mark inline right of
+  // the eyebrow, so even the compact card carries the product signature.
+  const dmark = productMark(currentThemeKey, p.accent, 34);
+  const dmarkRow = dmark
+    ? `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr>
+        <td align="left" valign="middle">${eb ? eyebrow(eb, p.accent) : ""}</td>
+        <td align="right" valign="middle" width="34">${dmark}</td>
+      </tr></table>`
+    : eb
+      ? eyebrow(eb, p.accent)
+      : "";
+
   const heroCompactInner = `
-    ${eb ? eyebrow(eb, p.accent) : ""}
+    ${dmarkRow}
     ${vspace(14)}
     ${displayHeadline(nl2br(headline), p.invertedText, 30)}
     ${chips.length ? `${vspace(20)}<div>${chips
@@ -825,6 +929,7 @@ function renderSection(
 export function renderEmailHtml(opts: RenderOptions): string {
   const { template, buyer, settings, assetsBySlot } = opts;
   currentRenderMode = opts.mode ?? "preview";
+  currentThemeKey = template.themeKey;
   const palette = resolvePalette(template);
   const ctx = buildContext(buyer, opts.productName);
   // Preheader ownership:
@@ -866,6 +971,14 @@ export function renderEmailHtml(opts: RenderOptions): string {
     ? `<div style="display:none;overflow:hidden;line-height:1px;opacity:0;max-height:0;max-width:0;visibility:hidden;font-size:1px;color:${palette.paper};">${esc(preheader)}</div>`
     : "";
 
+  // F7 — small editorial masthead sitting above the hero. Real HTML
+  // text; degrades gracefully when styles are stripped.
+  const productDisplay =
+    template.themeKey && isKnownProduct(template.themeKey)
+      ? getProductTheme(template.themeKey).name
+      : undefined;
+  const mastheadRow = masthead(settings.company.companyName, productDisplay, palette);
+
   let body: string;
   if (template.variant === "direct") {
     body = renderDirect(template, ctx, assetsBySlot, settings, palette);
@@ -891,6 +1004,7 @@ export function renderEmailHtml(opts: RenderOptions): string {
 <body style="margin:0;padding:0;background-color:${palette.canvas};-webkit-text-size-adjust:100%;-ms-text-size-adjust:100%;">
   ${preheaderHtml}
   ${shellOpen(palette)}
+    ${mastheadRow}
     ${body}
   ${shellClose()}
 </body>

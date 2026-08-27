@@ -114,6 +114,40 @@ Does **not** call `serverRepositories()`, create Supabase, or touch Buyers/Campa
 
 Phase 1 UI still reads `src/lib/buyerFinder/mock/candidates.ts`.
 
+## Phase 5A (Hunter Discover company provider)
+
+First **real** company-discovery adapter. **Not wired to the UI, ingestion routes, or Supabase.**
+
+Hunter Discover (`POST https://api.hunter.io/v2/discover`) is used because it supports explicit filters (headquarters country + keywords) and the Discover call is currently free. We do **not** use Hunter’s natural-language `query`, `company_type`, `industry.include`, `limit`/`offset`, Domain Search, Email Finder, or Email Verifier.
+
+**Query construction** (`providers/hunter/query.ts`):
+
+- Country names/aliases resolve to ISO 3166-1 alpha-2 via the existing catalogue helpers (`Thailand` → `TH`, `UAE` → `AE`). Wrapper only; catalogue is not modified.
+- Existing MDF `ProductKey` maps to search keywords only (not a second product identity).
+- MDF Importer / Distributor / Wholesaler become keywords (`importer`, `distribution`, …). They are **never** sent as Hunter `company_type` (that field means privately held / nonprofit / etc.).
+- Free-text `industry` is appended as a keyword. Hunter `industry.include` is not sent (invalid values 400).
+- `keywords.match` is `"any"` so we do not require every product keyword AND every buyer-type keyword at once.
+
+**Provider** (`HunterCompanyDiscoveryProvider`): API key injected in the constructor (never `process.env`). Sent as `X-API-KEY` only (not `Authorization`, never `?api_key=`). `fetchImpl` is injectable so Vitest makes **zero** Hunter requests. 15s `AbortController` timeout. HTTP 400/401/403/429/5xx map to typed `HunterDiscoveryError` codes; messages redact the key.
+
+**Mapping:** Hunter `organization` + `domain` → `DiscoveredCompany`. Country is the validated search country. `source: "hunter"`. `isImporter` / `isDistributor` stay **unset** — a keyword hit is not proof the company imports or distributes MDF products. Evidence notes a directory match only.
+
+Local `query.limit` slices the response; Hunter is not sent premium limit/offset.
+
+No contact enrichment. No server actions. No migration changes.
+
+## Phase 5B (one controlled Hunter Discover live test + usage meter)
+
+Developer-only quality check: Thailand + `guntur-chilli` + Importer keywords, `limit` 10 applied locally. Gated by `HUNTER_LIVE_TEST=1` and a session `HUNTER_API_KEY` inside `companyDiscovery.live.test.ts` only. Ordinary `npm test` skips it.
+
+**Live budget:** one `POST /v2/discover` + one `GET /v2/usage` (usage is documented free / 0 credits). No Domain Search, Email Finder, Email Verifier, enrichment, `/account`, `/usage/history`, ingestion, or retries.
+
+**Usage meter (UI):** Buyer Finder header shows a compact Hunter remaining-quota indicator. Click opens the existing `Modal` with plan buckets, reset date, and free Discover vs credit-consuming guidance. The browser still uses **mock** quota data (`src/lib/buyerFinder/mock/usage.ts`). The real `HunterUsageProvider` is server-only, constructor-injected, `X-API-KEY` only. No API key in the browser. Refresh is disabled until the server boundary is wired.
+
+## Phase 5C (Hunter Discover keyword quality)
+
+Generic `"import"` / `"importer"` tokens pulled banks, logistics, and machinery. Query construction now distinguishes **product-led**, **food-trade**, and **hybrid** keyword sets. Standalone rejected tokens: import, importer, export, exporter, logistics, freight. ProductKey remains `guntur-chilli`. MDF buyer types are not Hunter `company_type` and no longer inject generic import keywords. `isImporter` / `isDistributor` stay unset. Mock usage UI now shows unified + search + verification buckets together. Live experiments are gated in `queryExperiments.live.test.ts`. No UI → Hunter wiring.
+
 ## Later phases (not started)
 
-Phase 5 `approveCandidateAction()` calling existing `repos.buyers.create()`. Real providers after review. Never LinkedIn scrape.
+Phase 5D+ UI/server wiring and approval. Contact waterfall separate. Never LinkedIn scrape.

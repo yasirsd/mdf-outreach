@@ -12,6 +12,8 @@ import {
 } from "@/lib/buyerFinder/mock/candidates";
 import { SearchView } from "./SearchView";
 import { QueueView } from "./QueueView";
+import { ProviderUsageIndicator } from "@/components/buyerFinder/ProviderUsageIndicator";
+import { MOCK_HUNTER_USAGE } from "@/lib/buyerFinder/mock/usage";
 
 type Tab = "search" | "queue";
 
@@ -43,6 +45,7 @@ export function BuyerFinderView() {
       <PageHeader
         title="Buyer Finder"
         subtitle="Search mock companies, review a staging queue, and inspect candidates. Nothing is saved and nothing becomes a Buyer yet."
+        actions={<ProviderUsageIndicator usage={MOCK_HUNTER_USAGE} />}
       />
 
       <div className="mb-6" style={{ borderBottom: "1px solid var(--app-border)" }}>

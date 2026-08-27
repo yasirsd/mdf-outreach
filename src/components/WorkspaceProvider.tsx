@@ -1,13 +1,11 @@
 "use client";
 
 import { createContext, useContext, useState } from "react";
-import { useRouter } from "next/navigation";
 import type { WorkspaceSettings } from "@/lib/types";
 
 interface WorkspaceContextValue {
   ready: true;
   settings: WorkspaceSettings;
-  reloadSettings: () => void;
   setLocalSettings: (s: WorkspaceSettings) => void;
 }
 
@@ -26,19 +24,14 @@ export function WorkspaceProvider({
   initialSettings: WorkspaceSettings;
   children: React.ReactNode;
 }) {
-  const router = useRouter();
   const [settings, setSettings] = useState<WorkspaceSettings>(initialSettings);
-
-  function reloadSettings() {
-    router.refresh();
-  }
 
   function setLocalSettings(s: WorkspaceSettings) {
     setSettings(s);
   }
 
   return (
-    <Ctx.Provider value={{ ready: true, settings, reloadSettings, setLocalSettings }}>
+    <Ctx.Provider value={{ ready: true, settings, setLocalSettings }}>
       {children}
     </Ctx.Provider>
   );

@@ -51,6 +51,45 @@ export class IndexedDBBuyerRepository implements BuyerRepository {
     const unique = Array.from(new Set(ids));
     return getDb().buyers.where("id").anyOf(unique).toArray();
   }
+
+  /**
+   * F8 — in-memory paginated slice for the IndexedDB (offline demo)
+   * variant. The Supabase implementation is what production uses; this
+   * exists to satisfy the interface for local/demo builds.
+   */
+  async listPaginated(query: {
+    page: number;
+    pageSize: number;
+    search?: string;
+    status?: string;
+    country?: string;
+    product?: string;
+  }) {
+    const all = await this.list();
+    const search = query.search?.trim().toLowerCase();
+    const filtered = all.filter((b) => {
+      if (query.status && b.status !== query.status) return false;
+      if (query.country && b.country !== query.country) return false;
+      if (query.product && (b.productInterest ?? "") !== query.product) return false;
+      if (search) {
+        const hay = `${b.company ?? ""} ${b.firstName ?? ""} ${b.lastName ?? ""} ${b.email ?? ""}`.toLowerCase();
+        if (!hay.includes(search)) return false;
+      }
+      return true;
+    });
+    const pageSize = Math.min(200, Math.max(1, Math.floor(query.pageSize)));
+    const page = Math.max(1, Math.floor(query.page || 1));
+    const from = (page - 1) * pageSize;
+    const rows = filtered.slice(from, from + pageSize);
+    const total = filtered.length;
+    return {
+      rows,
+      total,
+      page,
+      pageSize,
+      pageCount: total === 0 ? 0 : Math.ceil(total / pageSize),
+    };
+  }
 }
 
 export class IndexedDBCampaignRepository implements CampaignRepository {

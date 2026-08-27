@@ -15,8 +15,41 @@ import type {
 } from "@/lib/buyerFinder/types";
 import type { ProductKey } from "@/lib/email/themes/types";
 
+export interface BuyerListFilter {
+  search?: string;
+  status?: string;
+  country?: string;
+  product?: string;
+}
+
+export interface PaginatedBuyerQuery extends BuyerListFilter {
+  page: number;
+  pageSize: number;
+}
+
+export interface PaginatedBuyers {
+  rows: Buyer[];
+  total: number;
+  page: number;
+  pageSize: number;
+  pageCount: number;
+}
+
 export interface BuyerRepository {
   list(): Promise<Buyer[]>;
+  /**
+   * F8 — server-side paginated + filtered read for the Buyers page.
+   *
+   * • Ordering: `updated_at DESC` (matches `list()`).
+   * • Search covers company, first name, last name, email — case-insensitive.
+   * • Filters are AND-composed.
+   * • RLS scopes to the caller's workspace automatically.
+   * • `page` is 1-indexed; `pageSize` is clamped to [1, 200].
+   * • Return payload includes the exact `total` for the current filter,
+   *   so the UI never has to fetch the whole list to know how many pages
+   *   there are.
+   */
+  listPaginated(query: PaginatedBuyerQuery): Promise<PaginatedBuyers>;
   get(id: string): Promise<Buyer | undefined>;
   /**
    * Load only the buyers whose ids are provided. Workspace-scoped via
