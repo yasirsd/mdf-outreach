@@ -5,13 +5,12 @@ export const dynamic = "force-dynamic";
 
 export default async function RecipientsPage({ params }: { params: { id: string } }) {
   const { repos } = await serverRepositories();
-  // Recipients tab shows a picker of all workspace buyers PLUS the
-  // current recipients. We still need the full workspace buyer list
-  // here because the operator can add any buyer to the campaign.
-  // No consolidation possible without breaking the add-recipient UX.
-  const [recipients, buyers] = await Promise.all([
-    repos.recipients.listByCampaign(params.id),
-    repos.buyers.list(),
-  ]);
+  // F9 — Only the actual recipients + their buyer records are loaded
+  // eagerly. The "Add buyers" modal uses a bounded server search
+  // (searchAvailableRecipientsAction) instead of downloading every
+  // workspace buyer.
+  const recipients = await repos.recipients.listByCampaign(params.id);
+  const buyerIds = recipients.map((r) => r.buyerId);
+  const buyers = await repos.buyers.listByIds(buyerIds);
   return <RecipientsView campaignId={params.id} recipients={recipients} buyers={buyers} />;
 }

@@ -1,6 +1,7 @@
 import type { AssetRecord, Campaign, EmailTemplate } from "@/lib/types";
 import { preflightAssetsForSend, type AssetPreflightFinding } from "@/lib/email/sendPreflight";
 import { detectUnresolvedTokens } from "@/lib/email/personalize";
+import { preflightCtaUrls } from "@/lib/email/ctaUrl";
 
 export interface FullPreflightInput {
   campaign: Campaign | null;
@@ -57,6 +58,14 @@ export function fullPreflight(input: FullPreflightInput): FullPreflightResult {
     ? preflightAssetsForSend(input.template, input.assetsBySlot, input.campaign)
     : [];
   for (const f of assetFindings) blockers.push(f.message);
+
+  // F8 — CTA URL contract: reject href="#" / relative / javascript: / etc.
+  // ONLY when a CTA button will actually render for the given campaign.
+  // Hidden or unlabelled buttons produce no findings.
+  if (input.template) {
+    const ctaFindings = preflightCtaUrls(input.template, input.campaign);
+    for (const f of ctaFindings) blockers.push(f.message);
+  }
 
   return { ok: blockers.length === 0, blockers, assetFindings };
 }

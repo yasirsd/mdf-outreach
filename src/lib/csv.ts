@@ -150,22 +150,48 @@ export function mapCsvToBuyers(rows: CsvRow[], mapping: CsvMapping): MappedBuyer
   });
 }
 
+/**
+ * F9-follow-up — CSV formula-injection prevention.
+ *
+ * A cell whose first character is =, +, -, @, TAB (\t), or CR (\r) is
+ * interpreted as a formula by Excel / Google Sheets / LibreOffice when
+ * the workbook is opened. That would allow a maliciously-crafted buyer
+ * `notes` or `company` value to fire commands the moment the operator
+ * opens the export.
+ *
+ * The safe strategy is to prefix such cells with a leading single quote
+ * (`'`) — the spreadsheet strips it during display but treats the rest
+ * as literal text. See OWASP CSV Injection guidance.
+ *
+ * Papaparse then handles quote / comma / newline escaping.
+ */
+const FORMULA_LEAD = /^[=+\-@\t\r]/;
+export function neutralizeFormula(value: unknown): string {
+  if (value === null || value === undefined) return "";
+  const s = String(value);
+  if (FORMULA_LEAD.test(s)) return `'${s}`;
+  return s;
+}
+
+function buyerToCsvRow(b: Buyer): Record<string, string> {
+  return {
+    first_name: neutralizeFormula(b.firstName),
+    last_name: neutralizeFormula(b.lastName),
+    company: neutralizeFormula(b.company),
+    email: neutralizeFormula(b.email),
+    phone: neutralizeFormula(b.phone ?? ""),
+    whatsapp: neutralizeFormula(b.whatsapp ?? ""),
+    website: neutralizeFormula(b.website ?? ""),
+    country: neutralizeFormula(b.country),
+    city: neutralizeFormula(b.city ?? ""),
+    buyer_type: neutralizeFormula(b.buyerType ?? ""),
+    product: neutralizeFormula(b.productInterest ?? ""),
+    source: neutralizeFormula(b.source ?? ""),
+    status: neutralizeFormula(b.status),
+    notes: neutralizeFormula(b.notes ?? ""),
+  };
+}
+
 export function buyersToCsv(buyers: Buyer[]): string {
-  const rows = buyers.map((b) => ({
-    first_name: b.firstName,
-    last_name: b.lastName,
-    company: b.company,
-    email: b.email,
-    phone: b.phone ?? "",
-    whatsapp: b.whatsapp ?? "",
-    website: b.website ?? "",
-    country: b.country,
-    city: b.city ?? "",
-    buyer_type: b.buyerType ?? "",
-    product: b.productInterest ?? "",
-    source: b.source ?? "",
-    status: b.status,
-    notes: b.notes ?? "",
-  }));
-  return Papa.unparse(rows);
+  return Papa.unparse(buyers.map(buyerToCsvRow));
 }

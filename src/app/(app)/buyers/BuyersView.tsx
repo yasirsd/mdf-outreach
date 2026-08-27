@@ -1,8 +1,16 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
-import { Plus, Search, Download, Upload, X as XIcon } from "lucide-react";
+import { useEffect, useMemo, useState, useTransition } from "react";
+import { useRouter, useSearchParams, usePathname } from "next/navigation";
+import {
+  Plus,
+  Search,
+  Download,
+  Upload,
+  X as XIcon,
+  ChevronLeft,
+  ChevronRight,
+} from "lucide-react";
 import type { Buyer, BuyerStatus } from "@/lib/types";
 import { BUYER_STATUS_LABELS, BUYER_STATUS_ORDER } from "@/lib/types";
 import { PageContainer, PageHeader } from "@/components/ui/Page";
@@ -12,55 +20,131 @@ import { Modal } from "@/components/ui/Modal";
 import { BuyerForm } from "@/components/buyers/BuyerForm";
 import { BuyerDetail } from "@/components/buyers/BuyerDetail";
 import { CsvImportModal } from "@/components/buyers/CsvImportModal";
-import { buyersToCsv } from "@/lib/csv";
 import { toast } from "@/components/ui/Toast";
 import { formatRelative } from "@/lib/utils";
 import { saveBuyerAction } from "./actions";
+import { exportFilteredBuyersAction } from "./exportAction";
 import { SearchableCombobox, type ComboboxOption } from "@/components/ui/SearchableCombobox";
 import { Select } from "@/components/ui/Select";
 import { activeProducts } from "@/lib/catalogue/products";
+import { COUNTRIES } from "@/lib/catalogue/countries";
 
-export function BuyersView({ initialBuyers }: { initialBuyers: Buyer[] }) {
+interface Filters {
+  search: string;
+  status: string;
+  country: string;
+  product: string;
+}
+
+interface Props {
+  initialRows: Buyer[];
+  total: number;
+  page: number;
+  pageSize: number;
+  pageCount: number;
+  initialFilters: Filters;
+}
+
+/**
+ * F9 — server-side paginated Buyers view.
+ *
+ * State lives in the URL (search / status / country / product / page /
+ * pageSize). Every filter change performs a `router.replace` and Next
+ * re-runs the server loader — which calls repos.buyers.listPaginated —
+ * and returns the authoritative bounded slice. Nothing is client-filtered.
+ */
+export function BuyersView({
+  initialRows,
+  total,
+  page,
+  pageSize,
+  pageCount,
+  initialFilters,
+}: Props) {
   const router = useRouter();
-  const buyers = initialBuyers;
-  const [q, setQ] = useState("");
-  const [country, setCountry] = useState<string>("");
-  const [status, setStatus] = useState<BuyerStatus | "">("");
-  const [product, setProduct] = useState<string>("");
+  const pathname = usePathname();
+  const params = useSearchParams();
+  const [isPending, startTransition] = useTransition();
+
+  // Local UI-only state.
   const [selected, setSelected] = useState<Buyer | null>(null);
   const [editing, setEditing] = useState<Buyer | null>(null);
   const [adding, setAdding] = useState(false);
   const [importing, setImporting] = useState(false);
 
-  const countries = useMemo(
-    () => Array.from(new Set(buyers.map((b) => b.country).filter(Boolean))).sort(),
-    [buyers],
-  );
-  const products = useMemo(
-    () => Array.from(new Set(buyers.map((b) => b.productInterest).filter(Boolean))) as string[],
-    [buyers],
-  );
+  // Debounced search input. The URL is the source of truth; the local
+  // state exists only so keystrokes feel immediate.
+  const [searchDraft, setSearchDraft] = useState(initialFilters.search);
 
-  const filtered = useMemo(() => {
-    const query = q.trim().toLowerCase();
-    return buyers.filter((b) => {
-      if (country && b.country !== country) return false;
-      if (status && b.status !== status) return false;
-      if (product && b.productInterest !== product) return false;
-      if (!query) return true;
-      const bag = [b.firstName, b.lastName, b.company, b.email, b.city, b.country, b.productInterest]
-        .filter(Boolean)
-        .join(" ")
-        .toLowerCase();
-      return bag.includes(query);
+  useEffect(() => {
+    // Sync draft when the URL changes from elsewhere (e.g. back/forward).
+    setSearchDraft(initialFilters.search);
+  }, [initialFilters.search]);
+
+  useEffect(() => {
+    const id = window.setTimeout(() => {
+      const current = params?.get("q") ?? "";
+      if (searchDraft === current) return;
+      pushFilters({ search: searchDraft, page: 1 });
+    }, 300);
+    return () => window.clearTimeout(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchDraft]);
+
+  function pushFilters(partial: Partial<Filters & { page: number; pageSize: number }>) {
+    const sp = new URLSearchParams(params?.toString() ?? "");
+    const write = (key: string, value: string | undefined | null) => {
+      if (value === undefined || value === null || value === "") sp.delete(key);
+      else sp.set(key, value);
+    };
+    if ("search" in partial) write("q", partial.search);
+    if ("status" in partial) write("status", partial.status);
+    if ("country" in partial) write("country", partial.country);
+    if ("product" in partial) write("product", partial.product);
+    if ("page" in partial) write("page", partial.page ? String(partial.page) : undefined);
+    if ("pageSize" in partial)
+      write("pageSize", partial.pageSize ? String(partial.pageSize) : undefined);
+    startTransition(() => {
+      router.replace(`${pathname}?${sp.toString()}`, { scroll: false });
     });
-  }, [buyers, q, country, status, product]);
+  }
 
-  const activeFilters = [country, status, product].filter(Boolean).length;
+  const activeFilterCount = [initialFilters.status, initialFilters.country, initialFilters.product]
+    .filter(Boolean).length;
+
+  // Canonical options + LEGACY passthrough. If the current URL-state
+  // value is not present in the canonical set, we append it as a
+  // "Legacy" option so the selected chip renders correctly and the
+  // operator can clear/change it. Selecting a canonical value in the
+  // dropdown replaces the legacy one; the legacy value never appears
+  // in `BuyerForm` (that stays canonical-only).
+  const countryOptions = useMemo<ComboboxOption[]>(() => {
+    const opts: ComboboxOption[] = COUNTRIES.map((c) => ({
+      value: c.name,
+      label: c.name,
+    }));
+    const legacy = initialFilters.country.trim();
+    if (legacy && !opts.some((o) => o.value === legacy)) {
+      opts.push({ value: legacy, label: legacy, description: "Legacy" });
+    }
+    return opts;
+  }, [initialFilters.country]);
+
+  const productOptions = useMemo<ComboboxOption[]>(() => {
+    const opts: ComboboxOption[] = activeProducts().map((p) => ({
+      value: p.displayName,
+      label: p.displayName,
+    }));
+    const legacy = initialFilters.product.trim();
+    if (legacy && !opts.some((o) => o.value === legacy)) {
+      opts.push({ value: legacy, label: legacy, description: "Legacy" });
+    }
+    return opts;
+  }, [initialFilters.product]);
 
   async function saveBuyer(b: Buyer) {
     try {
-      const isNew = !buyers.some((x) => x.id === b.id);
+      const isNew = !initialRows.some((x) => x.id === b.id);
       await saveBuyerAction(b);
       toast.success(isNew ? "Buyer added" : "Buyer updated");
       setAdding(false);
@@ -72,27 +156,48 @@ export function BuyersView({ initialBuyers }: { initialBuyers: Buyer[] }) {
     }
   }
 
-  function exportCsv() {
-    const rows = filtered;
-    if (rows.length === 0) {
+  const [exporting, setExporting] = useState(false);
+  async function exportCsv() {
+    if (total === 0) {
       toast.info("No buyers to export.");
       return;
     }
-    const csv = buyersToCsv(rows);
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `mdf-buyers-${new Date().toISOString().slice(0, 10)}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
+    setExporting(true);
+    try {
+      const result = await exportFilteredBuyersAction({
+        search: initialFilters.search || undefined,
+        status: initialFilters.status || undefined,
+        country: initialFilters.country || undefined,
+        product: initialFilters.product || undefined,
+      });
+      const blob = new Blob([result.csv], { type: "text/csv;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `mdf-buyers-${new Date().toISOString().slice(0, 10)}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast.success(
+        `Exported ${result.rowCount.toLocaleString()} buyer${result.rowCount === 1 ? "" : "s"}`,
+      );
+    } catch (err) {
+      const message =
+        err instanceof Error && err.message.includes("safety limit")
+          ? err.message
+          : "Could not export buyers.";
+      toast.error(message);
+    } finally {
+      setExporting(false);
+    }
   }
 
   function clearFilters() {
-    setCountry("");
-    setStatus("");
-    setProduct("");
+    pushFilters({ search: "", status: "", country: "", product: "", page: 1 });
+    setSearchDraft("");
   }
+
+  const start = total === 0 ? 0 : (page - 1) * pageSize + 1;
+  const end = Math.min(page * pageSize, total);
 
   return (
     <PageContainer size="wide">
@@ -104,8 +209,8 @@ export function BuyersView({ initialBuyers }: { initialBuyers: Buyer[] }) {
             <button className="btn-secondary" onClick={() => setImporting(true)}>
               <Upload size={13} /> Import
             </button>
-            <button className="btn-secondary" onClick={exportCsv}>
-              <Download size={13} /> Export
+            <button className="btn-secondary" onClick={exportCsv} disabled={exporting}>
+              <Download size={13} /> {exporting ? "Exporting…" : "Export"}
             </button>
             <button className="btn-primary" onClick={() => setAdding(true)}>
               <Plus size={13} /> Add buyer
@@ -127,26 +232,25 @@ export function BuyersView({ initialBuyers }: { initialBuyers: Buyer[] }) {
             <input
               className="input pl-8 h-9"
               placeholder="Search company, contact, email…"
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
+              value={searchDraft}
+              onChange={(e) => setSearchDraft(e.target.value.slice(0, 128))}
               aria-label="Search buyers"
             />
           </div>
           <div className="w-[200px]">
             <SearchableCombobox
-              value={country || null}
-              onChange={setCountry}
-              onClear={() => setCountry("")}
-              options={countries.map<ComboboxOption>((c) => ({ value: c, label: c }))}
+              value={initialFilters.country || null}
+              onChange={(v) => pushFilters({ country: v ?? "", page: 1 })}
+              onClear={() => pushFilters({ country: "", page: 1 })}
+              options={countryOptions}
               placeholder="Search country…"
               emptyLabel="All countries"
-              emptyMessage="No match in current buyers."
             />
           </div>
           <div className="w-[180px]">
             <Select
-              value={status || null}
-              onChange={(v) => setStatus(v as BuyerStatus | "")}
+              value={initialFilters.status || null}
+              onChange={(v) => pushFilters({ status: (v ?? "") as string, page: 1 })}
               emptyLabel="All statuses"
               options={BUYER_STATUS_ORDER.map<ComboboxOption>((s) => ({
                 value: s,
@@ -156,15 +260,15 @@ export function BuyersView({ initialBuyers }: { initialBuyers: Buyer[] }) {
           </div>
           <div className="w-[200px]">
             <SearchableCombobox
-              value={product || null}
-              onChange={setProduct}
-              onClear={() => setProduct("")}
-              options={buildProductFilterOptions(products)}
+              value={initialFilters.product || null}
+              onChange={(v) => pushFilters({ product: v ?? "", page: 1 })}
+              onClear={() => pushFilters({ product: "", page: 1 })}
+              options={productOptions}
               placeholder="Search product…"
               emptyLabel="All products"
             />
           </div>
-          {activeFilters > 0 && (
+          {activeFilterCount > 0 && (
             <button
               className="text-[11.5px] text-text-muted hover:text-text-primary flex items-center gap-1 px-2"
               onClick={clearFilters}
@@ -173,16 +277,17 @@ export function BuyersView({ initialBuyers }: { initialBuyers: Buyer[] }) {
             </button>
           )}
           <div className="ml-auto text-[11.5px] text-text-muted tabular-nums pr-1">
-            {filtered.length} of {buyers.length}
+            {total === 0 ? "0 buyers" : `${start.toLocaleString()}–${end.toLocaleString()} of ${total.toLocaleString()}`}
+            {isPending ? " · loading…" : ""}
           </div>
         </div>
       </div>
 
-      {filtered.length === 0 ? (
+      {initialRows.length === 0 ? (
         <EmptyState
           onAdd={() => setAdding(true)}
           onImport={() => setImporting(true)}
-          isEmpty={buyers.length === 0}
+          isEmpty={total === 0}
         />
       ) : (
         <div
@@ -200,8 +305,12 @@ export function BuyersView({ initialBuyers }: { initialBuyers: Buyer[] }) {
             <div>Status</div>
             <div className="text-right">Last activity</div>
           </div>
-          <ul className="divide-y" style={{ borderColor: "var(--app-border)" }}>
-            {filtered.map((b) => (
+          <ul
+            className="divide-y"
+            style={{ borderColor: "var(--app-border)" }}
+            aria-busy={isPending}
+          >
+            {initialRows.map((b) => (
               <li
                 key={b.id}
                 className="grid grid-cols-[minmax(0,2.2fr)_minmax(0,1.6fr)_minmax(0,1fr)_minmax(0,1.2fr)_140px_100px] items-center px-5 py-3 cursor-pointer row-hover"
@@ -242,6 +351,18 @@ export function BuyersView({ initialBuyers }: { initialBuyers: Buyer[] }) {
             ))}
           </ul>
         </div>
+      )}
+
+      {pageCount > 1 && (
+        <PaginationBar
+          page={page}
+          pageCount={pageCount}
+          pageSize={pageSize}
+          total={total}
+          onChangePage={(next) => pushFilters({ page: next })}
+          onChangePageSize={(size) => pushFilters({ pageSize: size, page: 1 })}
+          isPending={isPending}
+        />
       )}
 
       <Drawer
@@ -295,30 +416,72 @@ export function BuyersView({ initialBuyers }: { initialBuyers: Buyer[] }) {
   );
 }
 
-/**
- * Product filter options — merge the canonical product list with any
- * distinct product-interest values already present in the workspace
- * (legacy free-text values remain filterable).
- */
-function buildProductFilterOptions(fromBuyers: string[]): ComboboxOption[] {
-  const canonical = activeProducts().map<ComboboxOption>((p) => ({
-    value: p.displayName,
-    label: p.displayName,
-  }));
-  const seen = new Set(canonical.map((o) => o.value.toLowerCase()));
-  const legacy: ComboboxOption[] = [];
-  for (const raw of fromBuyers) {
-    if (!raw) continue;
-    if (seen.has(raw.toLowerCase())) continue;
-    legacy.push({ value: raw, label: raw, description: "Legacy" });
-    seen.add(raw.toLowerCase());
-  }
-  return legacy.length
-    ? [
-        ...canonical.map((o) => ({ ...o, group: "MDF products" })),
-        ...legacy.map((o) => ({ ...o, group: "Legacy values" })),
-      ]
-    : canonical;
+function PaginationBar({
+  page,
+  pageCount,
+  pageSize,
+  total,
+  onChangePage,
+  onChangePageSize,
+  isPending,
+}: {
+  page: number;
+  pageCount: number;
+  pageSize: number;
+  total: number;
+  onChangePage: (page: number) => void;
+  onChangePageSize: (size: number) => void;
+  isPending: boolean;
+}) {
+  const canPrev = page > 1;
+  const canNext = page < pageCount;
+  return (
+    <div
+      className="mt-4 flex items-center gap-3 flex-wrap px-1"
+      role="navigation"
+      aria-label="Buyers pagination"
+    >
+      <button
+        type="button"
+        className="btn-secondary h-9 px-3"
+        onClick={() => onChangePage(page - 1)}
+        disabled={!canPrev || isPending}
+        aria-label="Previous page"
+      >
+        <ChevronLeft size={14} /> Previous
+      </button>
+      <div className="text-[12px] text-text-muted tabular-nums" aria-live="polite">
+        Page <span className="text-text-primary font-medium">{page.toLocaleString()}</span> of{" "}
+        <span className="text-text-primary font-medium">{pageCount.toLocaleString()}</span>
+      </div>
+      <button
+        type="button"
+        className="btn-secondary h-9 px-3"
+        onClick={() => onChangePage(page + 1)}
+        disabled={!canNext || isPending}
+        aria-label="Next page"
+      >
+        Next <ChevronRight size={14} />
+      </button>
+      <div className="ml-auto flex items-center gap-2 text-[11.5px] text-text-muted">
+        <span className="tabular-nums">{total.toLocaleString()} total</span>
+        <span>·</span>
+        <label className="flex items-center gap-1.5">
+          <span>Rows</span>
+          <select
+            className="input h-8 text-[12px] py-0 w-[70px]"
+            value={pageSize}
+            onChange={(e) => onChangePageSize(Number(e.target.value))}
+            aria-label="Rows per page"
+          >
+            <option value={25}>25</option>
+            <option value={50}>50</option>
+            <option value={100}>100</option>
+          </select>
+        </label>
+      </div>
+    </div>
+  );
 }
 
 function EmptyState({

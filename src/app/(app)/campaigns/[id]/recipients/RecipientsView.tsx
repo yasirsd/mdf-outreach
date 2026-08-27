@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Plus, Search, X, CheckCircle2, AlertCircle } from "lucide-react";
 import type { Buyer, BuyerStatus, CampaignRecipient } from "@/lib/types";
@@ -10,6 +10,10 @@ import { Modal } from "@/components/ui/Modal";
 import { isValidEmail } from "@/lib/utils";
 import { BUYER_STATUS_LABELS, BUYER_STATUS_ORDER } from "@/lib/types";
 import { addRecipientsAction, removeRecipientAction } from "@/app/(app)/campaigns/actions";
+import {
+  searchAvailableRecipientsAction,
+  type AvailableBuyerRow,
+} from "./actions";
 
 interface Props {
   campaignId: string;
@@ -163,47 +167,88 @@ export function RecipientsView({ campaignId, recipients, buyers }: Props) {
         open={showAdd}
         onClose={() => setShowAdd(false)}
         campaignId={campaignId}
-        allBuyers={buyers}
-        existingBuyerIds={new Set(recipients.map((r) => r.buyerId))}
       />
     </div>
   );
 }
 
+/**
+ * F9 — server-side candidate search. Debounces typing, calls
+ * searchAvailableRecipientsAction with query/filters, keeps a stable
+ * multi-select set across searches while the modal is open, and clears
+ * that set on close/add.
+ */
 function AddBuyersModal({
   open,
   onClose,
   campaignId,
-  allBuyers,
-  existingBuyerIds,
 }: {
   open: boolean;
   onClose: () => void;
   campaignId: string;
-  allBuyers: Buyer[];
-  existingBuyerIds: Set<string>;
 }) {
   const router = useRouter();
   const [q, setQ] = useState("");
-  const [checked, setChecked] = useState<Set<string>>(new Set());
+  const [debouncedQ, setDebouncedQ] = useState("");
+  const [rows, setRows] = useState<AvailableBuyerRow[]>([]);
+  const [exhausted, setExhausted] = useState(false);
+  const [hitScanCap, setHitScanCap] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [checked, setChecked] = useState<Map<string, AvailableBuyerRow>>(new Map());
+  const [submitting, setSubmitting] = useState(false);
+  const requestSeq = useRef(0);
 
-  const available = useMemo(
-    () => allBuyers.filter((b) => !existingBuyerIds.has(b.id)),
-    [allBuyers, existingBuyerIds],
-  );
-  const filtered = useMemo(() => {
-    const query = q.trim().toLowerCase();
-    if (!query) return available;
-    return available.filter((b) =>
-      [b.firstName, b.lastName, b.company, b.email, b.country].filter(Boolean).join(" ").toLowerCase().includes(query),
-    );
-  }, [available, q]);
+  // Reset local state whenever the modal opens fresh.
+  useEffect(() => {
+    if (!open) return;
+    setQ("");
+    setDebouncedQ("");
+    setChecked(new Map());
+    setError(null);
+  }, [open]);
 
-  function toggle(id: string) {
-    const next = new Set(checked);
-    if (next.has(id)) next.delete(id);
-    else next.add(id);
-    setChecked(next);
+  // Debounce search input.
+  useEffect(() => {
+    if (!open) return;
+    const id = window.setTimeout(() => setDebouncedQ(q.trim()), 280);
+    return () => window.clearTimeout(id);
+  }, [q, open]);
+
+  // Load candidates whenever the debounced query changes.
+  useEffect(() => {
+    if (!open) return;
+    const seq = ++requestSeq.current;
+    setLoading(true);
+    setError(null);
+    searchAvailableRecipientsAction({
+      campaignId,
+      query: debouncedQ || undefined,
+      pageSize: 25,
+    })
+      .then((r) => {
+        if (seq !== requestSeq.current) return; // stale
+        setRows(r.rows);
+        setExhausted(r.exhausted);
+        setHitScanCap(r.hitScanCap);
+      })
+      .catch(() => {
+        if (seq !== requestSeq.current) return;
+        setError("Could not load buyers. Try again.");
+      })
+      .finally(() => {
+        if (seq !== requestSeq.current) return;
+        setLoading(false);
+      });
+  }, [debouncedQ, open, campaignId]);
+
+  function toggle(row: AvailableBuyerRow) {
+    setChecked((prev) => {
+      const next = new Map(prev);
+      if (next.has(row.id)) next.delete(row.id);
+      else next.set(row.id, row);
+      return next;
+    });
   }
 
   async function add() {
@@ -211,30 +256,51 @@ function AddBuyersModal({
       onClose();
       return;
     }
+    setSubmitting(true);
     try {
-      const { added } = await addRecipientsAction(campaignId, Array.from(checked));
+      const { added } = await addRecipientsAction(
+        campaignId,
+        Array.from(checked.keys()),
+      );
       toast.success(`${added} buyer${added === 1 ? "" : "s"} added`);
-      setChecked(new Set());
+      setChecked(new Map());
       onClose();
       router.refresh();
     } catch {
       toast.error("Could not add buyers");
+    } finally {
+      setSubmitting(false);
     }
   }
+
+  const noQuery = debouncedQ === "";
+  const empty = !loading && rows.length === 0;
+  const selectedRows = Array.from(checked.values());
 
   return (
     <Modal
       open={open}
       onClose={onClose}
       title="Add buyers to campaign"
-      subtitle={`${available.length} buyer${available.length === 1 ? "" : "s"} not yet in this campaign.`}
+      subtitle={
+        noQuery && rows.length === 0
+          ? "Search for buyers to add. Existing recipients are excluded automatically."
+          : rows.length > 0
+            ? `Showing up to ${rows.length} eligible buyer${rows.length === 1 ? "" : "s"}${!exhausted ? " — refine your search for more" : ""}`
+            : "Search for buyers to add."
+      }
       size="lg"
+      busy={submitting}
       actions={
         <>
-          <button className="btn-ghost" onClick={onClose}>
+          <button className="btn-ghost" onClick={onClose} disabled={submitting}>
             Cancel
           </button>
-          <button className="btn-primary" onClick={add}>
+          <button
+            className="btn-primary"
+            onClick={add}
+            disabled={submitting || checked.size === 0}
+          >
             Add {checked.size > 0 ? `${checked.size} ` : ""}buyer{checked.size === 1 ? "" : "s"}
           </button>
         </>
@@ -245,38 +311,88 @@ function AddBuyersModal({
           <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-text-muted pointer-events-none" />
           <input
             className="input pl-8"
-            placeholder="Search buyers…"
+            placeholder="Search company, contact or email…"
             value={q}
             onChange={(e) => setQ(e.target.value)}
+            aria-label="Search available buyers"
+            autoFocus
           />
         </div>
-        <div className="border border-white/[0.08] rounded-xl max-h-[400px] overflow-y-auto">
-          {filtered.length === 0 && (
-            <div className="p-8 text-center text-sm text-text-muted">
-              No buyers left to add. Import or create buyers on the Buyers page.
+
+        {checked.size > 0 && (
+          <div className="mb-3 text-[11.5px] text-text-muted">
+            {checked.size} selected · selection is preserved as you search.
+          </div>
+        )}
+
+        <div
+          className="border border-white/[0.08] rounded-xl max-h-[420px] overflow-y-auto"
+          aria-busy={loading}
+          aria-live="polite"
+        >
+          {loading && (
+            <div className="p-6 text-center text-[13px] text-text-muted">Searching…</div>
+          )}
+          {error && !loading && (
+            <div className="p-6 text-center text-[13px]" style={{ color: "#F08B7E" }}>
+              {error}
             </div>
           )}
-          <ul className="divide-y divide-white/[0.06]">
-            {filtered.map((b) => (
-              <li
-                key={b.id}
-                className="flex items-center gap-3 px-4 py-2.5 hover:bg-[color:var(--app-sidebar)]/[0.03] cursor-pointer"
-                onClick={() => toggle(b.id)}
-              >
-                <input type="checkbox" checked={checked.has(b.id)} onChange={() => toggle(b.id)} />
-                <div className="min-w-0 flex-1">
-                  <div className="text-[13.5px] font-medium text-text-primary truncate">
-                    {b.company || `${b.firstName} ${b.lastName}`.trim() || b.email}
-                  </div>
-                  <div className="text-[12px] text-text-muted truncate">
-                    {b.email} · {b.country}
-                  </div>
-                </div>
-                <StatusPill status={b.status} small />
-              </li>
-            ))}
-          </ul>
+          {!loading && !error && empty && (
+            <div className="p-8 text-center text-[13px] text-text-muted">
+              {noQuery
+                ? "Start typing to search buyers."
+                : hitScanCap
+                  ? "Too many matches to scan. Refine your search."
+                  : exhausted
+                    ? "No additional matching buyers."
+                    : "No matching buyers. Try a different search."}
+            </div>
+          )}
+          {!loading && !error && rows.length > 0 && (
+            <ul className="divide-y divide-white/[0.06]">
+              {rows.map((b) => {
+                const isChecked = checked.has(b.id);
+                return (
+                  <li
+                    key={b.id}
+                    className="flex items-center gap-3 px-4 py-2.5 hover:bg-[color:var(--app-sidebar)]/[0.03] cursor-pointer"
+                    onClick={() => toggle(b)}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={isChecked}
+                      onChange={() => toggle(b)}
+                      aria-label={`Select ${b.company || b.email}`}
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="text-[13.5px] font-medium text-text-primary truncate">
+                        {b.company || `${b.firstName} ${b.lastName}`.trim() || b.email}
+                      </div>
+                      <div className="text-[12px] text-text-muted truncate">
+                        {b.email}
+                        {b.country ? ` · ${b.country}` : ""}
+                        {b.productInterest ? ` · ${b.productInterest}` : ""}
+                      </div>
+                    </div>
+                    <StatusPill status={b.status as BuyerStatus} small />
+                  </li>
+                );
+              })}
+            </ul>
+          )}
         </div>
+
+        {selectedRows.length > 0 && (
+          <div className="mt-4 text-[11.5px] text-text-muted">
+            <span className="text-text-primary font-medium">Selected:</span>{" "}
+            {selectedRows
+              .slice(0, 4)
+              .map((r) => r.company || r.email)
+              .join(", ")}
+            {selectedRows.length > 4 ? `, +${selectedRows.length - 4} more` : ""}
+          </div>
+        )}
       </div>
     </Modal>
   );

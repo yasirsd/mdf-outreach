@@ -2,6 +2,7 @@ import type { ProductKey } from "@/lib/email/themes/types";
 import type {
   BuyerTypeOption,
   CandidateEvidence,
+  CandidateSource,
   ContactPriorityId,
   EmailStatus,
 } from "@/lib/buyerFinder/types";
@@ -14,6 +15,11 @@ export interface CompanyDiscoveryQuery {
   industry?: string;
   limit?: number;
   contactPriorities?: ContactPriorityId[];
+  /**
+   * Hunter Discover keyword strategy only. Mock provider ignores this.
+   * `product-led` omits generic import/export/logistics terms.
+   */
+  keywordIntent?: "product-led" | "food-trade" | "hybrid";
 }
 
 export interface DiscoveredCompany {
@@ -30,7 +36,8 @@ export interface DiscoveredCompany {
   companyLinkedinUrl?: string;
   generalEmail?: string;
   evidence: CandidateEvidence[];
-  source: "mock";
+  /** Provenance. Mock hits stay `"mock"`; Hunter Discover hits use `"hunter"`. */
+  source: CandidateSource;
   sourceUrl?: string;
   /** Relevance of this company to the query product (0–100). */
   productRelevance?: number;
