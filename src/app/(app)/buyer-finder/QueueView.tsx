@@ -1,10 +1,11 @@
 "use client";
 
-import type { BuyerCandidateRecord } from "@/lib/buyerFinder/types";
-import { CandidateCard } from "@/components/buyerFinder/CandidateCard";
+import { CandidateCard, type CandidateCardInput } from "@/components/buyerFinder/CandidateCard";
 
-export function QueueView({ records }: { records: BuyerCandidateRecord[] }) {
-  if (records.length === 0) {
+export type QueueRowInput = CandidateCardInput;
+
+export function QueueView({ rows }: { rows: QueueRowInput[] }) {
+  if (rows.length === 0) {
     return (
       <div
         className="rounded-[16px] p-14 text-center"
@@ -14,13 +15,13 @@ export function QueueView({ records }: { records: BuyerCandidateRecord[] }) {
         }}
       >
         <div className="text-[10.5px] tracking-[0.16em] uppercase text-brand-orange font-medium mb-3">
-          Empty
+          Empty queue
         </div>
         <h2 className="text-[22px] font-semibold tracking-tight text-text-primary">
-          No mock candidates match.
+          No candidates yet.
         </h2>
         <p className="mt-2 text-[13.5px] text-text-secondary leading-relaxed max-w-md mx-auto">
-          Adjust search filters or clear them to see the local review queue.
+          Use Search to discover companies via Hunter. Candidates persist here for review.
         </p>
       </div>
     );
@@ -28,8 +29,8 @@ export function QueueView({ records }: { records: BuyerCandidateRecord[] }) {
 
   return (
     <div className="grid md:grid-cols-2 gap-4">
-      {records.map((record) => (
-        <CandidateCard key={record.candidate.id} record={record} />
+      {rows.map((row) => (
+        <CandidateCard key={row.candidate.id} record={row} />
       ))}
     </div>
   );

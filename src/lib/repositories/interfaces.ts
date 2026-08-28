@@ -12,8 +12,14 @@ import type {
   BuyerCandidate,
   BuyerCandidateContact,
   BuyerCandidateProductMatch,
+  BuyerTypeOption,
+  ContactPriorityId,
 } from "@/lib/buyerFinder/types";
-import type { ProductKey } from "@/lib/email/themes/types";
+import type { BusinessProductId } from "@/lib/buyerFinder/types";
+import type {
+  BuyerFinderSearchRun,
+  SearchRunPatch,
+} from "@/lib/buyerFinder/searchRun";
 
 export interface BuyerListFilter {
   search?: string;
@@ -152,6 +158,7 @@ export interface BuyerCandidateContactRepository {
   update(id: string, patch: Partial<BuyerCandidateContact>): Promise<BuyerCandidateContact>;
   delete(id: string): Promise<void>;
   findByEmail(email: string): Promise<BuyerCandidateContact | undefined>;
+  findByProviderRef(source: string, providerRef: string): Promise<BuyerCandidateContact | undefined>;
 }
 
 export interface BuyerCandidateProductMatchRepository {
@@ -161,6 +168,42 @@ export interface BuyerCandidateProductMatchRepository {
   delete(id: string): Promise<void>;
   findByCandidateAndProduct(
     candidateId: string,
-    productKey: ProductKey,
+    productId: BusinessProductId,
   ): Promise<BuyerCandidateProductMatch | undefined>;
+}
+
+/**
+ * BF2.2 — Search Run persistence.
+ *
+ * Workspace isolation comes from the request-scoped authenticated
+ * Supabase client + RLS. Callers never pass a browser-supplied
+ * workspaceId; `create` stamps the constructor workspace.
+ */
+export interface BuyerFinderSearchRunCreateInput {
+  country: string;
+  businessProductId: string;
+  desiredBuyerTypes: BuyerTypeOption[];
+  contactPriorities: ContactPriorityId[];
+}
+
+export class SearchRunActiveExistsError extends Error {
+  readonly code = "ACTIVE_RUN_EXISTS" as const;
+  constructor() {
+    super("A Buyer Finder search is already running.");
+    this.name = "SearchRunActiveExistsError";
+  }
+}
+
+export interface BuyerFinderSearchRunRepository {
+  create(input: BuyerFinderSearchRunCreateInput): Promise<BuyerFinderSearchRun>;
+  get(id: string): Promise<BuyerFinderSearchRun | undefined>;
+  update(id: string, patch: SearchRunPatch): Promise<BuyerFinderSearchRun>;
+  /** Newest queued or running run for this workspace, if any. */
+  getLatestActive(): Promise<BuyerFinderSearchRun | undefined>;
+  /**
+   * Atomic queued → running claim. Returns the claimed row, or
+   * `undefined` when the row is missing, already running, or terminal.
+   * Exactly one concurrent caller can succeed.
+   */
+  claimQueued(id: string): Promise<BuyerFinderSearchRun | undefined>;
 }

@@ -1,14 +1,19 @@
 import Link from "next/link";
 import { PageContainer, PageHeader } from "@/components/ui/Page";
-import { getMockCandidate } from "@/lib/buyerFinder/mock/candidates";
+import { loadBuyerCandidateAction } from "@/app/(app)/buyer-finder/actions";
 import { CandidateView } from "./CandidateView";
 
-export default function CandidatePage({ params }: { params: { id: string } }) {
-  const record = getMockCandidate(params.id);
+export const dynamic = "force-dynamic";
+
+export default async function CandidatePage({ params }: { params: { id: string } }) {
+  const record = await loadBuyerCandidateAction(params.id);
   if (!record) {
     return (
       <PageContainer>
-        <PageHeader title="Candidate not found" subtitle="This mock candidate is not in the local sample set." />
+        <PageHeader
+          title="Candidate not found"
+          subtitle="This candidate does not exist in your workspace or has been removed."
+        />
         <Link href="/buyer-finder" className="btn-secondary">
           Back to Buyer Finder
         </Link>

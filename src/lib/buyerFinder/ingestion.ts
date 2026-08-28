@@ -1,7 +1,6 @@
 import "server-only";
 
-import { isProductKey } from "@/lib/email/themes/catalogue";
-import type { ProductKey } from "@/lib/email/themes/types";
+import { isActiveBusinessProductId } from "./businessCatalogue";
 import type { Buyer } from "@/lib/types";
 import type {
   BuyerCandidateContactRepository,
@@ -28,24 +27,46 @@ import type {
 } from "./providers/types";
 import type { ContactEnrichmentProvider } from "./providers/types";
 import { scoreBuyerCandidate, scoreContactRole } from "./scoring";
+import { newEntityId } from "./ids";
+import { resolveBuyerFinderProcessCap } from "./searchRun";
+import { normalizeCandidateSource, preferCandidateSource } from "./source";
 import type {
+  BusinessProductId,
   BuyerCandidate,
   BuyerCandidateContact,
   BuyerCandidateProductMatch,
   BuyerCandidateRecord,
   BuyerTypeOption,
   CandidateEvidence,
+  CandidateSource,
   ContactPriorityId,
   EmailStatus,
 } from "./types";
 
 export interface IngestionQuery {
   country: string;
-  productKey: string;
+  productId: BusinessProductId;
   buyerTypes?: BuyerTypeOption[];
   industry?: string;
+  /**
+   * Optional LOWER bound on companies processed. Cannot raise the
+   * server cap (BUYER_FINDER_PROCESS_CAP). Never forwarded to the
+   * company provider — Hunter free Discover does not accept request limit.
+   */
   limit?: number;
   contactPriorities?: ContactPriorityId[];
+}
+
+/**
+ * BF2.1 — Progress reporter injected by the orchestration layer.
+ * Domain logic emits stage-boundary and per-record events; the caller
+ * decides how / how often to persist them.
+ */
+export interface IngestionProgressReporter {
+  discoveryStarted?: (info: { provider: string }) => void | Promise<void>;
+  discoveryCompleted?: (info: { discovered: number; usable: number }) => void | Promise<void>;
+  candidateProcessed?: (info: { processed: number; total: number }) => void | Promise<void>;
+  complete?: (info: { summary: IngestionBatchResult }) => void | Promise<void>;
 }
 
 export interface BuyerFinderIngestionRepos {
@@ -59,6 +80,8 @@ export interface IngestionFailure {
   companyName?: string;
   stage: "discovery" | "validation" | "contacts" | "persist";
   message: string;
+  /** Optional provider error code (e.g. Hunter `rate_limited`). Never a raw body. */
+  code?: string;
 }
 
 export interface PossibleDuplicateFinding {
@@ -78,6 +101,14 @@ export interface BuyerDuplicateFinding {
 
 export interface IngestionBatchResult {
   discovered: number;
+  /**
+   * Normalized/valid provider company records that entered the
+   * candidate-processing loop (BF2.2A: ≤ BUYER_FINDER_PROCESS_CAP).
+   * Not "unique" (dedupe happens inside the loop) and not "qualified".
+   * May be lower than discovered when the provider returned more rows
+   * than the server processes, or when some rows failed validation.
+   */
+  usable: number;
   created: number;
   enrichedExisting: number;
   skippedExactDuplicates: number;
@@ -91,15 +122,39 @@ export interface IngestionBatchResult {
 export interface DiscoverAndIngestInput {
   query: IngestionQuery;
   companyProvider: CompanyDiscoveryProvider;
-  contactProvider: ContactEnrichmentProvider;
+  /**
+   * OPTIONAL — BF2.
+   *
+   * When absent, ingestion runs in "no-enrichment" mode: contacts are
+   * NOT fetched, `contacts` for every persisted candidate is `[]`, and
+   * `contactsAdded` remains 0. The candidate is still persisted with
+   * its company score (contactQuality contributes zero naturally); the
+   * operator sees an intentional "contact enrichment not run yet"
+   * state in the UI.
+   *
+   * The BF2 Hunter production path deliberately runs in this mode so
+   * we NEVER attach fabricated / mock people or emails to real
+   * companies. Mock enrichment is only injected here by tests and by
+   * legacy demo flows.
+   */
+  contactProvider?: ContactEnrichmentProvider;
   repositories: BuyerFinderIngestionRepos;
   /** Optional snapshot for analysis only. Never loaded via BuyerRepository. */
   existingBuyers?: Buyer[];
+  /**
+   * BF2.2 — injected by Search Run orchestration. Ingestion emits
+   * truthful events; the reporter decides how often to persist them.
+   * Reporter exceptions are swallowed so they cannot break ingestion.
+   */
+  progress?: IngestionProgressReporter;
+  /** Provider id reported on `discoveryStarted` (e.g. "hunter"). */
+  progressProvider?: string;
 }
 
 function emptyResult(): IngestionBatchResult {
   return {
     discovered: 0,
+    usable: 0,
     created: 0,
     enrichedExisting: 0,
     skippedExactDuplicates: 0,
@@ -111,22 +166,25 @@ function emptyResult(): IngestionBatchResult {
   };
 }
 
+async function emitProgress(fn: undefined | (() => void | Promise<void>)): Promise<void> {
+  if (!fn) return;
+  try {
+    await fn();
+  } catch {
+    // Reporter failure must never break ingestion.
+  }
+}
+
+function errorCodeOf(err: unknown): string | undefined {
+  if (err && typeof err === "object" && "code" in err) {
+    const code = (err as { code?: unknown }).code;
+    if (typeof code === "string" && code.length > 0 && code.length <= 64) return code;
+  }
+  return undefined;
+}
+
 function slug(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "unknown";
-}
-
-function candidateIdFor(company: { domain?: string; companyName: string; country: string }): string {
-  if (company.domain && !isPublicEmailDomain(company.domain)) return `cand-${slug(company.domain)}`;
-  return `cand-${slug(company.companyName)}-${slug(company.country)}`;
-}
-
-function contactIdFor(candidateId: string, email: string | undefined, jobTitle: string): string {
-  const key = email ? slug(email) : slug(jobTitle);
-  return `ctc-${candidateId}-${key}`;
-}
-
-function matchIdFor(candidateId: string, productKey: ProductKey): string {
-  return `match-${candidateId}-${productKey}`;
 }
 
 function clampScore(n: number | undefined): number | undefined {
@@ -161,7 +219,7 @@ interface NormalizedHit {
   companyLinkedinUrl?: string;
   generalEmail?: string;
   evidence: CandidateEvidence[];
-  source: "mock";
+  source: CandidateSource;
   sourceUrl?: string;
   productRelevance: number;
 }
@@ -187,8 +245,10 @@ function validateAndNormalize(raw: DiscoveredCompany): NormalizedHit | string {
     companyLinkedinUrl: normalizeOptionalUrl(raw.companyLinkedinUrl),
     generalEmail: normalizeOptionalEmail(raw.generalEmail),
     evidence: evidenceSafe(raw.evidence),
-    source: "mock",
+    source: normalizeCandidateSource(raw.source),
     sourceUrl: normalizeOptionalUrl(raw.sourceUrl),
+    // Placeholder when the provider omitted relevance — not a measured
+    // Hunter score. UI must not present this as precise "50% relevance".
     productRelevance: clampScore(raw.productRelevance) ?? 50,
   };
 }
@@ -223,7 +283,7 @@ function normalizeDiscoveredContacts(raw: DiscoveredContact[]): DiscoveredContac
     businessEmail: normalizeOptionalEmail(c.businessEmail),
     emailConfidence: clampScore(c.emailConfidence),
     linkedinUrl: normalizeOptionalUrl(c.linkedinUrl),
-    source: "mock" as const,
+    source: normalizeCandidateSource(c.source),
   })).filter((c) => Boolean(c.jobTitle || c.businessEmail || c.fullName));
 }
 
@@ -233,7 +293,7 @@ function toContactRow(
   isPrimary: boolean,
 ): BuyerCandidateContact {
   return {
-    id: contactIdFor(candidateId, c.businessEmail, c.jobTitle),
+    id: newEntityId(),
     candidateId,
     firstName: c.firstName ?? "",
     lastName: c.lastName ?? "",
@@ -244,7 +304,7 @@ function toContactRow(
     emailConfidence: c.emailConfidence,
     linkedinUrl: c.linkedinUrl,
     isPrimary,
-    source: "mock",
+    source: normalizeCandidateSource(c.source),
   };
 }
 
@@ -274,7 +334,8 @@ function fillMissingCandidate(existing: BuyerCandidate, incoming: NormalizedHit)
     const extra = incoming.evidence.filter((e) => !notes.has(e.note));
     if (extra.length > 0) patch.evidence = [...existing.evidence, ...extra].slice(0, 20);
   }
-  if (!blankToUndefined(existing.source) && incoming.source) patch.source = incoming.source;
+  const nextSource = preferCandidateSource(existing.source, incoming.source);
+  if (nextSource !== existing.source) patch.source = nextSource;
   return patch;
 }
 
@@ -306,7 +367,7 @@ async function applyPrimary(repos: BuyerFinderIngestionRepos, candidateId: strin
 async function rescore(
   repos: BuyerFinderIngestionRepos,
   candidateId: string,
-  productKey: ProductKey,
+  productId: BusinessProductId,
   country: string,
 ): Promise<void> {
   const candidate = await repos.candidates.get(candidateId);
@@ -317,7 +378,7 @@ async function rescore(
     candidate,
     contacts,
     productMatches,
-    targetProductKey: productKey,
+    targetProductId: productId,
     targetCountry: country,
   });
   await repos.candidates.update(candidateId, {
@@ -329,21 +390,21 @@ async function rescore(
 async function addProductMatch(
   repos: BuyerFinderIngestionRepos,
   candidateId: string,
-  productKey: ProductKey,
+  productId: BusinessProductId,
   queryCountry: string,
   hit: NormalizedHit,
 ): Promise<boolean> {
-  const existing = await repos.productMatches.findByCandidateAndProduct(candidateId, productKey);
+  const existing = await repos.productMatches.findByCandidateAndProduct(candidateId, productId);
   if (existing) return false;
   const row: BuyerCandidateProductMatch = {
-    id: matchIdFor(candidateId, productKey),
+    id: newEntityId(),
     candidateId,
-    productKey,
+    productId,
     country: hit.country,
-    query: `${queryCountry} ${productKey}`,
+    query: `${queryCountry} ${productId}`,
     relevance: hit.productRelevance,
     evidence: hit.evidence,
-    source: "mock",
+    source: hit.source,
   };
   await repos.productMatches.create(row);
   return true;
@@ -401,21 +462,36 @@ export async function discoverAndIngestCandidates(
   input: DiscoverAndIngestInput,
 ): Promise<IngestionBatchResult> {
   const result = emptyResult();
-  const { query, companyProvider, contactProvider, repositories: repos } = input;
+  const { query, companyProvider, repositories: repos } = input;
+  const contactProvider = input.contactProvider;
 
   if (!blankToUndefined(query.country)) {
     result.failures.push({ stage: "validation", message: "country is required" });
     return result;
   }
-  if (!isProductKey(query.productKey)) {
+  if (!isActiveBusinessProductId(query.productId)) {
     result.failures.push({
       stage: "validation",
-      message: `Invalid MDF product key: ${String(query.productKey || "(empty)")}`,
+      message: `Invalid MDF business product id: ${String(query.productId || "(empty)")}`,
     });
     return result;
   }
-  const productKey = query.productKey;
-  const discoveryQuery: CompanyDiscoveryQuery = { ...query, productKey };
+  const productId = query.productId;
+  // Do not forward process-cap as query.limit. Hunter's free Discover
+  // contract does not accept request limit; applying it locally would
+  // silently shrink `discovered` and hide leftover provider rows.
+  const discoveryQuery: CompanyDiscoveryQuery = {
+    country: query.country,
+    productId,
+    buyerTypes: query.buyerTypes,
+    industry: query.industry,
+    contactPriorities: query.contactPriorities,
+  };
+  const reporter = input.progress;
+
+  await emitProgress(() =>
+    reporter?.discoveryStarted?.({ provider: input.progressProvider ?? "company" }),
+  );
 
   let hits: DiscoveredCompany[];
   try {
@@ -424,12 +500,14 @@ export async function discoverAndIngestCandidates(
     result.failures.push({
       stage: "discovery",
       message: err instanceof Error ? err.message : "Company discovery failed",
+      code: errorCodeOf(err),
     });
     return result;
   }
 
   result.discovered = hits.length;
 
+  const allUsable: Array<{ raw: DiscoveredCompany; normalized: NormalizedHit }> = [];
   for (const raw of hits) {
     const normalized = validateAndNormalize(raw);
     if (typeof normalized === "string") {
@@ -441,23 +519,47 @@ export async function discoverAndIngestCandidates(
       });
       continue;
     }
+    allUsable.push({ raw, normalized });
+  }
+  const cap = resolveBuyerFinderProcessCap(query.limit);
+  const usableHits = allUsable.slice(0, cap);
+  result.usable = usableHits.length;
 
+  await emitProgress(() =>
+    reporter?.discoveryCompleted?.({
+      discovered: result.discovered,
+      usable: result.usable,
+    }),
+  );
+
+  let processed = 0;
+  for (const { raw, normalized } of usableHits) {
     let people: DiscoveredContact[] = [];
-    try {
-      people = normalizeDiscoveredContacts(
-        await contactProvider.findContacts({
-          company: raw,
-          roles: query.contactPriorities,
-        }),
-      );
-    } catch (err) {
-      result.failures.push({
-        providerRecordId: normalized.providerRecordId,
-        companyName: normalized.companyName,
-        stage: "contacts",
-        message: err instanceof Error ? err.message : "Contact enrichment failed",
-      });
-      continue;
+    // BF2 — when no contactProvider is supplied, we deliberately skip
+    // enrichment. The candidate is still persisted with empty contacts;
+    // this is the normal path for the Hunter production flow. Zero
+    // contacts is NOT treated as a failure.
+    if (contactProvider) {
+      try {
+        people = normalizeDiscoveredContacts(
+          await contactProvider.findContacts({
+            company: raw,
+            roles: query.contactPriorities,
+          }),
+        );
+      } catch (err) {
+        result.failures.push({
+          providerRecordId: normalized.providerRecordId,
+          companyName: normalized.companyName,
+          stage: "contacts",
+          message: err instanceof Error ? err.message : "Contact enrichment failed",
+        });
+        processed += 1;
+        await emitProgress(() =>
+          reporter?.candidateProcessed?.({ processed, total: result.usable }),
+        );
+        continue;
+      }
     }
 
     try {
@@ -475,29 +577,33 @@ export async function discoverAndIngestCandidates(
             stage: "persist",
             message: "Matched candidate disappeared",
           });
-          continue;
-        }
-        const patch = fillMissingCandidate(existing, normalized);
-        const hadPatch = Object.keys(patch).length > 0;
-        if (hadPatch) await repos.candidates.update(existing.id, patch);
-
-        const contactsAdded = await addNewContacts(repos, existing.id, people);
-        const productAdded = await addProductMatch(
-          repos,
-          existing.id,
-          productKey,
-          query.country,
-          normalized,
-        );
-        await rescore(repos, existing.id, productKey, query.country);
-
-        if (hadPatch || contactsAdded > 0 || productAdded) {
-          result.enrichedExisting += 1;
-          result.contactsAdded += contactsAdded;
-          if (productAdded) result.productMatchesAdded += 1;
         } else {
-          result.skippedExactDuplicates += 1;
+          const patch = fillMissingCandidate(existing, normalized);
+          const hadPatch = Object.keys(patch).length > 0;
+          if (hadPatch) await repos.candidates.update(existing.id, patch);
+
+          const contactsAdded = await addNewContacts(repos, existing.id, people);
+          const productAdded = await addProductMatch(
+            repos,
+            existing.id,
+            productId,
+            query.country,
+            normalized,
+          );
+          await rescore(repos, existing.id, productId, query.country);
+
+          if (hadPatch || contactsAdded > 0 || productAdded) {
+            result.enrichedExisting += 1;
+            result.contactsAdded += contactsAdded;
+            if (productAdded) result.productMatchesAdded += 1;
+          } else {
+            result.skippedExactDuplicates += 1;
+          }
         }
+        processed += 1;
+        await emitProgress(() =>
+          reporter?.candidateProcessed?.({ processed, total: result.usable }),
+        );
         continue;
       }
 
@@ -511,20 +617,10 @@ export async function discoverAndIngestCandidates(
         });
       }
 
-      const id = candidateIdFor(normalized);
-      const already = await repos.candidates.get(id);
-      if (already) {
-        const patch = fillMissingCandidate(already, normalized);
-        if (Object.keys(patch).length > 0) await repos.candidates.update(id, patch);
-        const contactsAdded = await addNewContacts(repos, id, people);
-        const productAdded = await addProductMatch(repos, id, productKey, query.country, normalized);
-        await rescore(repos, id, productKey, query.country);
-        result.enrichedExisting += 1;
-        result.contactsAdded += contactsAdded;
-        if (productAdded) result.productMatchesAdded += 1;
-        continue;
-      }
-
+      // DB identity is a random UUID. Idempotency is the dedupe layer
+      // above (exact/high → update existing). Possible matches stay as
+      // separate rows pending human review — still with a UUID id.
+      const id = newEntityId();
       const candidate: BuyerCandidate = {
         id,
         companyName: normalized.companyName,
@@ -555,10 +651,10 @@ export async function discoverAndIngestCandidates(
       }
       await applyPrimary(repos, id);
 
-      if (await addProductMatch(repos, id, productKey, query.country, normalized)) {
+      if (await addProductMatch(repos, id, productId, query.country, normalized)) {
         result.productMatchesAdded += 1;
       }
-      await rescore(repos, id, productKey, query.country);
+      await rescore(repos, id, productId, query.country);
       result.created += 1;
     } catch (err) {
       result.failures.push({
@@ -568,6 +664,10 @@ export async function discoverAndIngestCandidates(
         message: err instanceof Error ? err.message : "Persist failed",
       });
     }
+    processed += 1;
+    await emitProgress(() =>
+      reporter?.candidateProcessed?.({ processed, total: result.usable }),
+    );
   }
 
   if (input.existingBuyers) {
@@ -589,5 +689,6 @@ export async function discoverAndIngestCandidates(
     }
   }
 
+  await emitProgress(() => reporter?.complete?.({ summary: result }));
   return result;
 }

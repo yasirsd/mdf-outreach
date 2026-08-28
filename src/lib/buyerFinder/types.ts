@@ -1,4 +1,9 @@
-import type { ProductKey } from "@/lib/email/themes/types";
+/**
+ * BF2.1 — Buyer Finder domain types are decoupled from
+ * `@/lib/email/themes/*`. Persisted product identity is a BUSINESS
+ * product id (string) from `@/lib/catalogue/products.ts`.
+ */
+export type BusinessProductId = string;
 
 export type DiscoveryStatus = "new" | "enriching" | "ready" | "archived";
 
@@ -35,6 +40,8 @@ export interface CandidateEvidence {
   confidence: number;
 }
 
+export type ContactEmailType = "personal" | "generic";
+
 export interface BuyerCandidateContact {
   id: string;
   candidateId: string;
@@ -49,6 +56,20 @@ export interface BuyerCandidateContact {
   contactScore?: number;
   isPrimary: boolean;
   source?: CandidateSource | string;
+  /**
+   * Opaque provider person reference (Hunter reveal_handle).
+   * Server-only. Never send to the browser.
+   */
+  providerRef?: string;
+  department?: string;
+  seniority?: string;
+  isDecisionMaker?: boolean;
+  emailType?: ContactEmailType;
+  verificationStatus?: string;
+  fullNameAvailable?: boolean;
+  linkedinAvailable?: boolean;
+  phoneAvailable?: boolean;
+  evidence?: CandidateEvidence[];
   discoveredAt?: string;
   createdAt?: string;
   updatedAt?: string;
@@ -57,7 +78,11 @@ export interface BuyerCandidateContact {
 export interface BuyerCandidateProductMatch {
   id: string;
   candidateId: string;
-  productKey: ProductKey;
+  /**
+   * Business product id (e.g. "guntur-dry-red-chilli").
+   * See `@/lib/catalogue/products.ts`.
+   */
+  productId: BusinessProductId;
   country?: string;
   query?: string;
   relevance?: number;
@@ -87,6 +112,8 @@ export interface BuyerCandidate {
   isDistributor?: boolean;
   evidence?: CandidateEvidence[];
   companyScore?: number;
+  peopleSearchedAt?: string;
+  peopleHasMore?: boolean;
   discoveryStatus: DiscoveryStatus;
   reviewStatus: ReviewStatus;
   rejectionReason?: string;
@@ -115,7 +142,7 @@ export type ContactPriorityId = (typeof CONTACT_PRIORITY_OPTIONS)[number]["id"];
 
 export interface BuyerFinderSearchQuery {
   country: string;
-  productKey: ProductKey | "";
+  productId: BusinessProductId | "";
   buyerType: BuyerTypeOption | "";
   industry: string;
   contactPriorities: ContactPriorityId[];

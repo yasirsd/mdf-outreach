@@ -1,6 +1,6 @@
 import "server-only";
 
-import { isProductKey } from "@/lib/email/themes/catalogue";
+import { isActiveBusinessProductId } from "@/lib/buyerFinder/businessCatalogue";
 import { blankToUndefined, normalizeDomain, normalizeOptionalUrl } from "@/lib/buyerFinder/normalize";
 import type { CandidateEvidence } from "@/lib/buyerFinder/types";
 import type { CompanyDiscoveryProvider, CompanyDiscoveryQuery, DiscoveredCompany } from "../types";
@@ -38,7 +38,7 @@ function evidenceFor(query: CompanyDiscoveryQuery, isoCountry: string, keywords:
   const types = (query.buyerTypes ?? []).join(", ") || "none";
   return [
     {
-      note: `Hunter Discover company match. Country ${query.country} (${isoCountry}). ProductKey ${query.productKey}. Keywords (match any): ${keywords.join(", ")}. Buyer types searched: ${types}. Directory match only — not proof of import or distribution.`,
+      note: `Hunter Discover company match. Country ${query.country} (${isoCountry}). Product ${query.productId}. Keywords (match any): ${keywords.join(", ")}. Buyer type SEARCH INTENT (not fact): ${types}. Directory match only — not proof of import or distribution.`,
       confidence: 40,
     },
   ];
@@ -56,6 +56,11 @@ function mapHunterRecord(
   const domain = normalizeDomain(typeof rec.domain === "string" ? rec.domain : undefined);
   if (!companyName || !domain) return undefined;
   const website = normalizeOptionalUrl(`https://${domain}`);
+  // Free Discover fields we persist: organization → companyName, domain,
+  // synthesized website. Country is the search query, not a Hunter row field.
+  // Fixture `emails_count` is discarded — no persisted column and it is not
+  // a buyer-quality signal. Industry, headcount, description, city, and
+  // company type are not present in our mapped Discover records.
   return {
     providerRecordId: `hunter-${domain}`,
     companyName,
@@ -83,10 +88,10 @@ export class HunterCompanyDiscoveryProvider implements CompanyDiscoveryProvider 
   }
 
   async discover(query: CompanyDiscoveryQuery): Promise<DiscoveredCompany[]> {
-    if (!isProductKey(query.productKey)) {
+    if (!isActiveBusinessProductId(query.productId)) {
       throw new HunterDiscoveryError(
         "invalid_input",
-        `Invalid MDF product key: ${String(query.productKey || "(empty)")}`,
+        `Invalid MDF business product id: ${String(query.productId || "(empty)")}`,
       );
     }
     const plan = buildHunterDiscoverPlan(query);

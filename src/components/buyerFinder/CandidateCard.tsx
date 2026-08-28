@@ -1,19 +1,27 @@
 import Link from "next/link";
-import { MapPin } from "lucide-react";
-import type { BuyerCandidateRecord } from "@/lib/buyerFinder/types";
+import { MapPin, UsersRound } from "lucide-react";
+import type {
+  BuyerCandidate,
+  BuyerCandidateProductMatch,
+} from "@/lib/buyerFinder/types";
 import { REVIEW_STATUS_LABELS } from "@/lib/buyerFinder/types";
-import { PRODUCT_CATALOGUE } from "@/lib/email/themes/catalogue";
-import { otherContacts, primaryContact } from "@/lib/buyerFinder/mock/candidates";
+import { findBusinessProductById } from "@/lib/buyerFinder/businessCatalogue";
+import { productMatchStrengthLabel } from "@/lib/buyerFinder/scorePresentation";
 import { ScoreBadge } from "./ScoreBadge";
 
-function productName(key: string): string {
-  return PRODUCT_CATALOGUE.find((p) => p.key === key)?.name ?? key;
+function productDisplay(id: string): string {
+  return findBusinessProductById(id)?.displayName ?? id;
 }
 
-export function CandidateCard({ record }: { record: BuyerCandidateRecord }) {
-  const { candidate, productMatches } = record;
-  const primary = primaryContact(record);
-  const others = otherContacts(record);
+export interface CandidateCardInput {
+  candidate: BuyerCandidate;
+  productMatches: BuyerCandidateProductMatch[];
+  /** Number of persisted contacts; may be 0 for BF2 Hunter candidates. */
+  contactCount: number;
+}
+
+export function CandidateCard({ record }: { record: CandidateCardInput }) {
+  const { candidate, productMatches, contactCount } = record;
 
   return (
     <article
@@ -38,7 +46,7 @@ export function CandidateCard({ record }: { record: BuyerCandidateRecord }) {
           </div>
         </div>
         <div className="flex flex-col items-end gap-2 shrink-0">
-          <ScoreBadge value={candidate.companyScore ?? 0} label="Buyer" />
+          <ScoreBadge value={candidate.companyScore ?? 0} label="Overall" />
           <span className="text-[11px] text-text-muted">
             {REVIEW_STATUS_LABELS[candidate.reviewStatus]}
           </span>
@@ -49,35 +57,32 @@ export function CandidateCard({ record }: { record: BuyerCandidateRecord }) {
         <div className="text-[10.5px] tracking-[0.14em] uppercase text-text-muted font-medium mb-2">
           Product matches
         </div>
-        <ul className="space-y-1.5">
-          {productMatches.map((m) => (
-            <li key={m.id} className="flex items-baseline justify-between gap-3 text-[13px]">
-              <span className="text-text-primary">{productName(m.productKey)}</span>
-              <span className="tabular-nums text-text-secondary">{m.relevance ?? 0}% relevance</span>
-            </li>
-          ))}
-        </ul>
+        {productMatches.length === 0 ? (
+          <div className="text-[12.5px] text-text-muted">No product match recorded.</div>
+        ) : (
+          <ul className="space-y-1.5">
+            {productMatches.map((m) => (
+              <li key={m.id} className="flex items-baseline justify-between gap-3 text-[13px]">
+                <span className="text-text-primary">{productDisplay(m.productId)}</span>
+                <span className="tabular-nums text-text-secondary">
+                  {productMatchStrengthLabel(m)}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
       </div>
 
-      {primary && (
-        <div className="mt-4 pt-4" style={{ borderTop: "1px solid var(--app-border)" }}>
-          <div className="text-[10.5px] tracking-[0.14em] uppercase text-text-muted font-medium mb-2">
-            Contacts
-          </div>
-          <div className="text-[13.5px] font-medium text-text-primary">
-            ★ {primary.fullName}
-          </div>
-          <div className="text-[12.5px] text-text-secondary">{primary.jobTitle}</div>
-          <div className="mt-0.5 text-[12.5px] text-text-muted truncate">
-            {primary.businessEmail}
-          </div>
-          {others.length > 0 && (
-            <div className="mt-2 text-[12px] text-text-muted">
-              Other contacts: {others.map((c) => c.jobTitle).join(" · ")}
-            </div>
-          )}
-        </div>
-      )}
+      <div className="mt-4 pt-4 flex items-center gap-2 text-[12.5px] text-text-muted" style={{ borderTop: "1px solid var(--app-border)" }}>
+        <UsersRound size={13} />
+        {contactCount === 0 ? (
+          <span>Contact enrichment not run yet</span>
+        ) : (
+          <span>
+            {contactCount} contact{contactCount === 1 ? "" : "s"} on file
+          </span>
+        )}
+      </div>
 
       <div className="mt-5">
         <Link href={`/buyer-finder/candidate/${candidate.id}`} className="btn-secondary">

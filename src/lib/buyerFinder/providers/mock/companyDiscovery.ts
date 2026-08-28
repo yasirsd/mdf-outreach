@@ -1,9 +1,32 @@
 import "server-only";
 
-import type { ProductKey } from "@/lib/email/themes/types";
 import type { BuyerTypeOption } from "@/lib/buyerFinder/types";
 import { blankToUndefined } from "@/lib/buyerFinder/normalize";
-import type { CompanyDiscoveryProvider, CompanyDiscoveryQuery, DiscoveredCompany } from "../types";
+import type {
+  BusinessProductId,
+  CompanyDiscoveryProvider,
+  CompanyDiscoveryQuery,
+  DiscoveredCompany,
+} from "../types";
+
+/**
+ * Business product ids the mock supports. Tests should use these BF2.1
+ * business ids directly, e.g. `productId: "guntur-dry-red-chilli"`.
+ * Legacy seed data below uses short slugs internally; the `toBiz` map
+ * bridges them at read time.
+ */
+type LegacySeedKey =
+  | "guntur-chilli"
+  | "banganapalli-mango"
+  | "pomegranate"
+  | "indian-apple";
+
+const LEGACY_TO_BIZ: Record<LegacySeedKey, BusinessProductId> = {
+  "guntur-chilli": "guntur-dry-red-chilli",
+  "banganapalli-mango": "banganapalli-mango",
+  pomegranate: "indian-pomegranate",
+  "indian-apple": "indian-apples",
+};
 
 interface MockCompanySeed {
   providerRecordId: string;
@@ -18,8 +41,8 @@ interface MockCompanySeed {
   isDistributor: boolean;
   companyLinkedinUrl: string;
   generalEmail: string;
-  productKeys: ProductKey[];
-  relevanceByProduct: Partial<Record<ProductKey, number>>;
+  productKeys: LegacySeedKey[];
+  relevanceByProduct: Partial<Record<LegacySeedKey, number>>;
   evidenceNote: string;
 }
 
@@ -185,7 +208,7 @@ function buyerTypeMatches(seed: MockCompanySeed, types: BuyerTypeOption[] | unde
   });
 }
 
-function toHit(seed: MockCompanySeed, productKey: ProductKey): DiscoveredCompany {
+function toHit(seed: MockCompanySeed, seedKey: LegacySeedKey): DiscoveredCompany {
   return {
     providerRecordId: seed.providerRecordId,
     companyName: seed.companyName,
@@ -200,15 +223,26 @@ function toHit(seed: MockCompanySeed, productKey: ProductKey): DiscoveredCompany
     companyLinkedinUrl: seed.companyLinkedinUrl,
     generalEmail: seed.generalEmail,
     source: "mock",
-    productRelevance: seed.relevanceByProduct[productKey] ?? 50,
+    productRelevance: seed.relevanceByProduct[seedKey] ?? 50,
     evidence: [
       {
         note: seed.evidenceNote,
-        confidence: seed.relevanceByProduct[productKey] ?? 50,
+        confidence: seed.relevanceByProduct[seedKey] ?? 50,
         url: `${seed.website}/products`,
       },
     ],
   };
+}
+
+/**
+ * BF2.1 — mock discovery accepts BUSINESS product ids. The internal seed
+ * table still uses legacy short slugs; we translate at query time.
+ */
+function bizToSeedKey(id: BusinessProductId): LegacySeedKey | undefined {
+  for (const [seedKey, biz] of Object.entries(LEGACY_TO_BIZ) as [LegacySeedKey, string][]) {
+    if (biz === id) return seedKey;
+  }
+  return undefined;
 }
 
 export function createMockCompanyDiscoveryProvider(options?: {
@@ -221,6 +255,8 @@ export function createMockCompanyDiscoveryProvider(options?: {
       }
       const country = blankToUndefined(query.country);
       if (!country) return [];
+      const seedKey = bizToSeedKey(query.productId);
+      if (!seedKey) return [];
       const limitRaw = query.limit;
       const limit =
         limitRaw == null || !Number.isFinite(limitRaw) ? 20 : Math.max(0, Math.floor(limitRaw));
@@ -228,12 +264,12 @@ export function createMockCompanyDiscoveryProvider(options?: {
       return MOCK_COMPANIES.filter(
         (s) =>
           countryMatches(s, country) &&
-          s.productKeys.includes(query.productKey) &&
+          s.productKeys.includes(seedKey) &&
           buyerTypeMatches(s, query.buyerTypes) &&
           industryMatches(s, query.industry),
       )
         .slice(0, limit)
-        .map((s) => toHit(s, query.productKey));
+        .map((s) => toHit(s, seedKey));
     },
   };
 }

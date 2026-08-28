@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import type { ProductKey } from "@/lib/email/themes/types";
+
 import { HunterDiscoveryError } from "./errors";
 import { HunterCompanyDiscoveryProvider } from "./companyDiscovery";
 import { HUNTER_DISCOVER_URL } from "./query";
@@ -10,7 +10,7 @@ const API_KEY = "test-hunter-key-DO-NOT-LEAK";
 
 const BASE_QUERY: CompanyDiscoveryQuery = {
   country: "Thailand",
-  productKey: "guntur-chilli",
+  productId: "guntur-dry-red-chilli",
   buyerTypes: ["Importer"],
 };
 
@@ -57,6 +57,15 @@ describe("HunterCompanyDiscoveryProvider", () => {
     expect(headers.get("Accept")).toBe("application/json");
   });
 
+  it("does not call paid email/person endpoints or send credit fields (0 credits)", async () => {
+    const { fetchImpl, calls } = captureFetch(() => jsonResponse({ data: [] }));
+    await provider(fetchImpl).discover(BASE_QUERY);
+    expect(calls[0]?.url).toBe(HUNTER_DISCOVER_URL);
+    expect(calls[0]?.url).not.toMatch(/email-finder|people\/find|combined/i);
+    const body = JSON.parse(String(calls[0]?.init.body));
+    expect(body).not.toHaveProperty("credits");
+  });
+
   it("does not send premium limit or offset on the free-plan request", async () => {
     const { fetchImpl, calls } = captureFetch(() => jsonResponse({ data: [] }));
     await provider(fetchImpl).discover({ ...BASE_QUERY, limit: 20 });
@@ -91,6 +100,9 @@ describe("HunterCompanyDiscoveryProvider", () => {
     expect(hits[0]?.isDistributor).toBeUndefined();
     expect(hits[0]?.evidence[0]?.note).toMatch(/directory match only/i);
     expect(hits[0]?.evidence[0]?.note).not.toMatch(/verified importer/i);
+    expect(hits[0]?.productRelevance).toBeUndefined();
+    expect(hits[0]).not.toHaveProperty("emails_count");
+    expect(JSON.stringify(hits[0])).not.toMatch(/emails_count/);
   });
 
   it("does not fabricate isImporter or isDistributor from search intent", async () => {
@@ -181,9 +193,9 @@ describe("HunterCompanyDiscoveryProvider", () => {
     const { fetchImpl, calls } = captureFetch(() => jsonResponse({ data: [] }));
     const p = provider(fetchImpl);
     await expect(
-      p.discover({ country: "Thailand", productKey: "not-real" as ProductKey }),
+      p.discover({ country: "Thailand", productId: "not-real" as string }),
     ).rejects.toMatchObject({ code: "invalid_input" });
-    await expect(p.discover({ country: "Narnia", productKey: "guntur-chilli" })).rejects.toMatchObject({
+    await expect(p.discover({ country: "Narnia", productId: "guntur-dry-red-chilli" })).rejects.toMatchObject({
       code: "invalid_input",
     });
     expect(calls).toHaveLength(0);

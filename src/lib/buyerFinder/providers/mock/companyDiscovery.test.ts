@@ -3,7 +3,7 @@ import { createMockCompanyDiscoveryProvider } from "./companyDiscovery";
 
 const chilliTh = {
   country: "Thailand",
-  productKey: "guntur-chilli" as const,
+  productId: "guntur-dry-red-chilli" as const,
 };
 
 describe("MockCompanyDiscoveryProvider", () => {
@@ -20,7 +20,7 @@ describe("MockCompanyDiscoveryProvider", () => {
     const chilli = await provider.discover(chilliTh);
     const mango = await provider.discover({
       country: "Thailand",
-      productKey: "banganapalli-mango",
+      productId: "banganapalli-mango",
     });
     expect(chilli.some((c) => c.providerRecordId === "mock-th-siam-spice")).toBe(true);
     expect(mango.some((c) => c.providerRecordId === "mock-th-siam-spice")).toBe(true);
@@ -37,7 +37,7 @@ describe("MockCompanyDiscoveryProvider", () => {
 
   it("honors country filter", async () => {
     const th = await provider.discover(chilliTh);
-    const ae = await provider.discover({ country: "UAE", productKey: "guntur-chilli" });
+    const ae = await provider.discover({ country: "UAE", productId: "guntur-dry-red-chilli" });
     expect(th.every((c) => c.country === "Thailand")).toBe(true);
     expect(ae.every((c) => c.country === "UAE")).toBe(true);
     expect(ae.some((c) => c.providerRecordId === "mock-ae-gulf-spice")).toBe(true);
@@ -57,8 +57,8 @@ describe("MockCompanyDiscoveryProvider", () => {
   });
 
   it("uses only fake .example domains and mock source", async () => {
-    const hits = await provider.discover({ country: "Thailand", productKey: "pomegranate" });
-    const uae = await provider.discover({ country: "UAE", productKey: "pomegranate" });
+    const hits = await provider.discover({ country: "Thailand", productId: "indian-pomegranate" });
+    const uae = await provider.discover({ country: "UAE", productId: "indian-pomegranate" });
     for (const c of [...hits, ...uae]) {
       expect(c.domain).toMatch(/\.example$/);
       expect(c.source).toBe("mock");

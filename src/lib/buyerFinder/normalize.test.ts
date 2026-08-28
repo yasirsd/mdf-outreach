@@ -52,11 +52,11 @@ describe("assertScore", () => {
 
 describe("requireProductKey", () => {
   it("accepts existing MDF ProductKeys and rejects others", () => {
-    expect(requireProductKey("guntur-chilli")).toBe("guntur-chilli");
+    expect(requireProductKey("guntur-dry-red-chilli")).toBe("guntur-dry-red-chilli");
     expect(requireProductKey("banganapalli-mango")).toBe("banganapalli-mango");
-    expect(requireProductKey("pomegranate")).toBe("pomegranate");
-    expect(requireProductKey("indian-apple")).toBe("indian-apple");
-    expect(() => requireProductKey("dry-red-chilli")).toThrow(/Invalid MDF product key/);
-    expect(() => requireProductKey("")).toThrow(/Invalid MDF product key/);
+    expect(requireProductKey("indian-pomegranate")).toBe("indian-pomegranate");
+    expect(requireProductKey("indian-apples")).toBe("indian-apples");
+    expect(() => requireProductKey("dry-red-chilli")).toThrow(/Invalid MDF business product id/);
+    expect(() => requireProductKey("")).toThrow(/Invalid MDF business product id/);
   });
 });

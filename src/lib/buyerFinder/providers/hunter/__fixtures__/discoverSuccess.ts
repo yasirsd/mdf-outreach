@@ -1,4 +1,12 @@
-/** Representative Hunter Discover payload. Not a live response. */
+/** Representative Hunter Discover payload. Not a live response.
+ *
+ * Fields present on company rows in this fixture:
+ *   organization, domain, emails_count (optional)
+ * Meta: results, limit, offset
+ *
+ * Mapped by HunterCompanyDiscoveryProvider: organization, domain.
+ * Discarded: emails_count, meta.
+ */
 export const HUNTER_DISCOVER_SUCCESS_FIXTURE = {
   data: [
     {

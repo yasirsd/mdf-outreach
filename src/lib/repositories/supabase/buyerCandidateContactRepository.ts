@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { randomUUID } from "node:crypto";
 import type { BuyerCandidateContact } from "@/lib/buyerFinder/types";
+import { isEntityUuid } from "@/lib/buyerFinder/ids";
 import { normalizeOptionalEmail } from "@/lib/buyerFinder/normalize";
 import type { BuyerCandidateContactRepository } from "../interfaces";
 import { contactFromRow, contactToPatchRow, contactToRow } from "./candidateMappers";
@@ -21,6 +22,7 @@ export class SupabaseBuyerCandidateContactRepository implements BuyerCandidateCo
   ) {}
 
   async listByCandidate(candidateId: string): Promise<BuyerCandidateContact[]> {
+    if (!isEntityUuid(candidateId)) return [];
     const { data, error } = await this.supabase
       .from("buyer_candidate_contacts")
       .select("*")
@@ -31,6 +33,7 @@ export class SupabaseBuyerCandidateContactRepository implements BuyerCandidateCo
   }
 
   async get(id: string): Promise<BuyerCandidateContact | undefined> {
+    if (!isEntityUuid(id)) return undefined;
     const { data, error } = await this.supabase
       .from("buyer_candidate_contacts")
       .select("*")
@@ -52,6 +55,7 @@ export class SupabaseBuyerCandidateContactRepository implements BuyerCandidateCo
   }
 
   async update(id: string, patch: Partial<BuyerCandidateContact>): Promise<BuyerCandidateContact> {
+    if (!isEntityUuid(id)) throw new Error("Invalid contact id");
     const fields = contactToPatchRow(patch);
     const { data, error } = await this.supabase
       .from("buyer_candidate_contacts")
@@ -64,6 +68,7 @@ export class SupabaseBuyerCandidateContactRepository implements BuyerCandidateCo
   }
 
   async delete(id: string): Promise<void> {
+    if (!isEntityUuid(id)) return;
     const { error } = await this.supabase.from("buyer_candidate_contacts").delete().eq("id", id);
     if (error) throw error;
   }
@@ -75,6 +80,21 @@ export class SupabaseBuyerCandidateContactRepository implements BuyerCandidateCo
       .from("buyer_candidate_contacts")
       .select("*")
       .eq("business_email", normalized)
+      .limit(1)
+      .maybeSingle();
+    if (error) throw error;
+    return data ? contactFromRow(data) : undefined;
+  }
+
+  async findByProviderRef(source: string, providerRef: string): Promise<BuyerCandidateContact | undefined> {
+    const src = source.trim();
+    const ref = providerRef.trim();
+    if (!src || !ref) return undefined;
+    const { data, error } = await this.supabase
+      .from("buyer_candidate_contacts")
+      .select("*")
+      .eq("source", src)
+      .eq("provider_ref", ref)
       .limit(1)
       .maybeSingle();
     if (error) throw error;

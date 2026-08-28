@@ -1,10 +1,17 @@
-import { isProductKey } from "@/lib/email/themes/catalogue";
-import type { ProductKey } from "@/lib/email/themes/types";
+import { isActiveBusinessProductId } from "./businessCatalogue";
+import type { BusinessProductId } from "./types";
 
-/** Reuses the existing MDF ProductKey catalogue. Does not define a second vocabulary. */
-export function requireProductKey(value: string | null | undefined): ProductKey {
-  if (!isProductKey(value)) {
-    throw new Error(`Invalid MDF product key: ${value ?? "(empty)"}`);
+/**
+ * BF2.1 — Buyer Finder domain uses BUSINESS product ids only.
+ * (`productKey.ts` filename retained for compatibility; new callers
+ * should prefer `requireBusinessProductId`.)
+ */
+export function requireBusinessProductId(value: string | null | undefined): BusinessProductId {
+  if (!isActiveBusinessProductId(value)) {
+    throw new Error(`Invalid MDF business product id: ${value ?? "(empty)"}`);
   }
-  return value;
+  return value as BusinessProductId;
 }
+
+/** @deprecated — kept only to avoid rippling into consumers this pass. */
+export const requireProductKey = requireBusinessProductId;

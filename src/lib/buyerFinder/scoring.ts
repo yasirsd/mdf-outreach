@@ -3,8 +3,7 @@
  * Pure functions only — no repositories, network, time, or persistence.
  */
 
-import { PRODUCT_CATALOGUE } from "@/lib/email/themes/catalogue";
-import type { ProductKey } from "@/lib/email/themes/types";
+import { findBusinessProductById } from "./businessCatalogue";
 import {
   blankToUndefined,
   normalizeDomain,
@@ -12,6 +11,7 @@ import {
   normalizeOptionalUrl,
 } from "./normalize";
 import type {
+  BusinessProductId,
   BuyerCandidate,
   BuyerCandidateContact,
   BuyerCandidateProductMatch,
@@ -45,7 +45,7 @@ export interface ScoreBuyerCandidateInput {
   contacts: BuyerCandidateContact[];
   productMatches: BuyerCandidateProductMatch[];
   /** When set, product points use this match only — not the max of all matches. */
-  targetProductKey?: ProductKey;
+  targetProductId?: BusinessProductId;
   /** When set, awards country-fit points for a case-insensitive country match. */
   targetCountry?: string;
 }
@@ -78,6 +78,10 @@ const EMAIL_UNVERIFIED_POINTS = 2;
 const EMAIL_CONFIDENCE_MAX = 4;
 const CONTACT_LINKEDIN_POINTS = 2;
 
+const DECISION_MAKER_POINTS = 3;
+const SENIORITY_EXECUTIVE_POINTS = 2;
+const SENIORITY_SENIOR_POINTS = 1;
+
 const TIER1_PHRASES = [
   "head of procurement",
   "head of purchasing",
@@ -96,7 +100,7 @@ const TIER1_PHRASES = [
   "sourcing manager",
   "category manager",
   "procurement lead",
-  "purchasing lead",
+  "category buying",
 ] as const;
 
 const TIER2_PHRASES = [
@@ -138,12 +142,26 @@ export function scoreContactRole(jobTitle: string | null | undefined): RoleScore
   const t1 = firstMatchingPhrase(title, TIER1_PHRASES);
   if (t1) return { tier: 1, points: ROLE_TIER1_POINTS, matched: t1 };
 
+  if (/\b(procurement|purchasing|purchase|buyer|buying|sourcing)\b/.test(title)) {
+    const matched =
+      ["procurement", "purchasing", "purchase", "buyer", "buying", "sourcing"].find((p) =>
+        title.includes(p),
+      ) ?? "procurement";
+    return { tier: 1, points: ROLE_TIER1_POINTS, matched };
+  }
+  if (/\b(importer|importing|imports|import)\b/.test(title)) {
+    return { tier: 1, points: ROLE_TIER1_POINTS, matched: "import" };
+  }
+
   const t2 = firstMatchingPhrase(title, TIER2_PHRASES);
   if (t2) return { tier: 2, points: ROLE_TIER2_POINTS, matched: t2 };
 
   if (/\b(owner|founder|co founder)\b/.test(title)) {
     const matched = title.includes("founder") ? "founder" : "owner";
     return { tier: 3, points: ROLE_TIER3_POINTS, matched };
+  }
+  if (/\b(chief executive|ceo)\b/.test(title)) {
+    return { tier: 3, points: ROLE_TIER3_POINTS, matched: "ceo" };
   }
   if (/\bdirector\b/.test(title)) {
     return { tier: 3, points: ROLE_TIER3_POINTS, matched: "director" };
@@ -152,8 +170,8 @@ export function scoreContactRole(jobTitle: string | null | undefined): RoleScore
   return { tier: 0, points: ROLE_GENERIC_POINTS, matched: "generic-title" };
 }
 
-function productLabel(key: ProductKey): string {
-  return PRODUCT_CATALOGUE.find((p) => p.key === key)?.name ?? key;
+function productLabel(id: BusinessProductId): string {
+  return findBusinessProductById(id)?.displayName ?? id;
 }
 
 function emailStatusPoints(status: EmailStatus | undefined): number {
@@ -182,10 +200,10 @@ function normalizeCountry(value: string | null | undefined): string | undefined 
 
 function strongestProductMatch(
   productMatches: BuyerCandidateProductMatch[],
-  targetProductKey: ProductKey | undefined,
+  targetProductId: BusinessProductId | undefined,
 ): BuyerCandidateProductMatch | undefined {
-  if (targetProductKey) {
-    return productMatches.find((m) => m.productKey === targetProductKey);
+  if (targetProductId) {
+    return productMatches.find((m) => m.productId === targetProductId);
   }
   let best: BuyerCandidateProductMatch | undefined;
   for (const m of productMatches) {
@@ -193,6 +211,116 @@ function strongestProductMatch(
     if (!best || rel > (best.relevance ?? 0)) best = m;
   }
   return best;
+}
+
+function scoreOneContactReasons(contact: BuyerCandidateContact): ScoreReason[] {
+  const personal: ScoreReason[] = [];
+  const role = scoreContactRole(contact.jobTitle);
+  if (role.points > 0) {
+    personal.push({
+      code: "contact-role",
+      label:
+        role.tier === 1
+          ? `High-priority role (${role.matched})`
+          : role.tier === 2
+            ? `Useful commercial role (${role.matched})`
+            : role.tier === 3
+              ? `Decision-maker role (${role.matched})`
+              : "Job title present",
+      points: role.points,
+      category: "contactQuality",
+    });
+  }
+
+  if (contact.isDecisionMaker) {
+    personal.push({
+      code: "decision-maker",
+      label: "Provider marks this person as a decision maker",
+      points: DECISION_MAKER_POINTS,
+      category: "contactQuality",
+    });
+  }
+
+  const seniority = (contact.seniority ?? "").trim().toLowerCase();
+  if (seniority === "executive") {
+    personal.push({
+      code: "seniority",
+      label: "Executive seniority",
+      points: SENIORITY_EXECUTIVE_POINTS,
+      category: "contactQuality",
+    });
+  } else if (seniority === "senior") {
+    personal.push({
+      code: "seniority",
+      label: "Senior seniority",
+      points: SENIORITY_SENIOR_POINTS,
+      category: "contactQuality",
+    });
+  }
+
+  const cs = scalePoints(contact.contactScore, CONTACT_SCORE_MAX);
+  const email = normalizeOptionalEmail(contact.businessEmail);
+  if (cs > 0 && email) {
+    personal.push({
+      code: "contact-score",
+      label: "Existing contact quality signal",
+      points: cs,
+      category: "contactQuality",
+    });
+  }
+
+  if (email) {
+    personal.push({
+      code: "business-email",
+      label: "Business email present",
+      points: EMAIL_EXISTS_POINTS,
+      category: "contactQuality",
+    });
+  }
+
+  const statusPts = email ? emailStatusPoints(contact.emailStatus) : 0;
+  const statusLbl = emailStatusLabel(contact.emailStatus);
+  if (statusPts > 0 && statusLbl) {
+    personal.push({
+      code: "email-status",
+      label: statusLbl,
+      points: statusPts,
+      category: "contactQuality",
+    });
+  }
+
+  const invalid = contact.emailStatus === "invalid";
+  const conf = email && !invalid ? scalePoints(contact.emailConfidence, EMAIL_CONFIDENCE_MAX) : 0;
+  if (conf > 0) {
+    personal.push({
+      code: "email-confidence",
+      label: "Email confidence",
+      points: conf,
+      category: "contactQuality",
+    });
+  }
+
+  if (normalizeOptionalUrl(contact.linkedinUrl)) {
+    personal.push({
+      code: "contact-linkedin",
+      label: "Contact LinkedIn URL present",
+      points: CONTACT_LINKEDIN_POINTS,
+      category: "contactQuality",
+    });
+  }
+
+  return personal;
+}
+
+/** Personal contact-quality points for one person (no primary bonus). */
+export function scoreOneContact(contact: BuyerCandidateContact): { points: number; reasons: ScoreReason[] } {
+  const reasons = scoreOneContactReasons(contact).filter((r) => r.points > 0);
+  const points = clampInt(
+    reasons.reduce((n, r) => n + r.points, 0),
+    0,
+    CONTACT_QUALITY_MAX,
+  );
+  return { points, reasons };
 }
 
 function scoreBestContact(contacts: BuyerCandidateContact[]): {
@@ -213,75 +341,7 @@ function scoreBestContact(contacts: BuyerCandidateContact[]): {
   let bestReasons: ScoreReason[] = [];
 
   for (const contact of contacts) {
-    const personal: ScoreReason[] = [];
-    const role = scoreContactRole(contact.jobTitle);
-    if (role.points > 0) {
-      personal.push({
-        code: "contact-role",
-        label:
-          role.tier === 1
-            ? `High-priority role (${role.matched})`
-            : role.tier === 2
-              ? `Useful commercial role (${role.matched})`
-              : role.tier === 3
-                ? `Decision-maker role (${role.matched})`
-                : "Job title present",
-        points: role.points,
-        category: "contactQuality",
-      });
-    }
-
-    const cs = scalePoints(contact.contactScore, CONTACT_SCORE_MAX);
-    if (cs > 0) {
-      personal.push({
-        code: "contact-score",
-        label: "Existing contact quality signal",
-        points: cs,
-        category: "contactQuality",
-      });
-    }
-
-    const email = normalizeOptionalEmail(contact.businessEmail);
-    if (email) {
-      personal.push({
-        code: "business-email",
-        label: "Business email present",
-        points: EMAIL_EXISTS_POINTS,
-        category: "contactQuality",
-      });
-    }
-
-    const statusPts = email ? emailStatusPoints(contact.emailStatus) : 0;
-    const statusLbl = emailStatusLabel(contact.emailStatus);
-    if (statusPts > 0 && statusLbl) {
-      personal.push({
-        code: "email-status",
-        label: statusLbl,
-        points: statusPts,
-        category: "contactQuality",
-      });
-    }
-
-    const invalid = contact.emailStatus === "invalid";
-    const conf = email && !invalid ? scalePoints(contact.emailConfidence, EMAIL_CONFIDENCE_MAX) : 0;
-    if (conf > 0) {
-      personal.push({
-        code: "email-confidence",
-        label: "Email confidence",
-        points: conf,
-        category: "contactQuality",
-      });
-    }
-
-    if (normalizeOptionalUrl(contact.linkedinUrl)) {
-      personal.push({
-        code: "contact-linkedin",
-        label: "Contact LinkedIn URL present",
-        points: CONTACT_LINKEDIN_POINTS,
-        category: "contactQuality",
-      });
-    }
-
+    const personal = scoreOneContactReasons(contact);
     const sum = personal.reduce((n, r) => n + r.points, 0);
     if (sum > bestPersonal) {
       bestPersonal = sum;
@@ -293,17 +353,17 @@ function scoreBestContact(contacts: BuyerCandidateContact[]): {
 }
 
 function scoreCompanyFit(input: ScoreBuyerCandidateInput): ScoreReason[] {
-  const { candidate, productMatches, targetProductKey, targetCountry } = input;
+  const { candidate, productMatches, targetProductId, targetCountry } = input;
   const reasons: ScoreReason[] = [];
 
-  const match = strongestProductMatch(productMatches, targetProductKey);
+  const match = strongestProductMatch(productMatches, targetProductId);
   const productPts = scalePoints(match?.relevance, PRODUCT_RELEVANCE_MAX);
   if (match && productPts > 0) {
-    const name = productLabel(match.productKey);
+    const name = productLabel(match.productId);
     reasons.push({
       code: "product-relevance",
       label:
-        targetProductKey && match.productKey === targetProductKey
+        targetProductId && match.productId === targetProductId
           ? `Target product match (${name})`
           : `Strongest product match (${name})`,
       points: productPts,

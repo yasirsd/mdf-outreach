@@ -7,7 +7,7 @@ describe("MockContactEnrichmentProvider", () => {
   const contacts = createMockContactEnrichmentProvider();
 
   it("returns deterministic contacts for the same company", async () => {
-    const [siam] = (await companies.discover({ country: "Thailand", productKey: "guntur-chilli" })).filter(
+    const [siam] = (await companies.discover({ country: "Thailand", productId: "guntur-dry-red-chilli" })).filter(
       (c) => c.providerRecordId === "mock-th-siam-spice",
     );
     const a = await contacts.findContacts({ company: siam! });
@@ -17,7 +17,7 @@ describe("MockContactEnrichmentProvider", () => {
   });
 
   it("returns deterministic roles including procurement, import, and managing director", async () => {
-    const siam = (await companies.discover({ country: "Thailand", productKey: "guntur-chilli" })).find(
+    const siam = (await companies.discover({ country: "Thailand", productId: "guntur-dry-red-chilli" })).find(
       (c) => c.providerRecordId === "mock-th-siam-spice",
     );
     const people = await contacts.findContacts({ company: siam! });
@@ -28,7 +28,7 @@ describe("MockContactEnrichmentProvider", () => {
   });
 
   it("filters by role priority when matches exist, otherwise returns all", async () => {
-    const siam = (await companies.discover({ country: "Thailand", productKey: "guntur-chilli" })).find(
+    const siam = (await companies.discover({ country: "Thailand", productId: "guntur-dry-red-chilli" })).find(
       (c) => c.providerRecordId === "mock-th-siam-spice",
     );
     const procurementOnly = await contacts.findContacts({
@@ -40,7 +40,7 @@ describe("MockContactEnrichmentProvider", () => {
   });
 
   it("uses only fake emails on .example domains", async () => {
-    const hits = await companies.discover({ country: "Thailand", productKey: "guntur-chilli" });
+    const hits = await companies.discover({ country: "Thailand", productId: "guntur-dry-red-chilli" });
     for (const company of hits) {
       const people = await contacts.findContacts({ company });
       for (const p of people) {
@@ -51,7 +51,7 @@ describe("MockContactEnrichmentProvider", () => {
   });
 
   it("contains no random values across repeated enrichment", async () => {
-    const gulf = (await companies.discover({ country: "UAE", productKey: "guntur-chilli" }))[0];
+    const gulf = (await companies.discover({ country: "UAE", productId: "guntur-dry-red-chilli" }))[0];
     const runs = await Promise.all(
       Array.from({ length: 5 }, () => contacts.findContacts({ company: gulf! })),
     );
@@ -62,7 +62,7 @@ describe("MockContactEnrichmentProvider", () => {
     const failing = createMockContactEnrichmentProvider({
       failForProviderRecordId: "mock-th-siam-spice",
     });
-    const chilli = await companies.discover({ country: "Thailand", productKey: "guntur-chilli" });
+    const chilli = await companies.discover({ country: "Thailand", productId: "guntur-dry-red-chilli" });
     const siam = chilli.find((c) => c.providerRecordId === "mock-th-siam-spice")!;
     const other = chilli.find((c) => c.providerRecordId !== "mock-th-siam-spice")!;
     await expect(failing.findContacts({ company: siam })).rejects.toThrow(/Mock contact enrichment failed/);

@@ -50,7 +50,7 @@ function match(over: Partial<BuyerCandidateProductMatch> = {}): BuyerCandidatePr
   return {
     id: "match-1",
     candidateId: "cand-1",
-    productKey: "guntur-chilli",
+    productId: "guntur-dry-red-chilli",
     relevance: 94,
     evidence: [{ note: "Chilli in catalogue", confidence: 90 }],
     source: "mock",
@@ -97,8 +97,8 @@ describe("scoreBuyerCandidate", () => {
     const result = scoreBuyerCandidate({
       candidate: candidate(),
       contacts: [contact()],
-      productMatches: [match(), match({ id: "match-2", productKey: "banganapalli-mango", relevance: 67 })],
-      targetProductKey: "guntur-chilli",
+      productMatches: [match(), match({ id: "match-2", productId: "banganapalli-mango", relevance: 67 })],
+      targetProductId: "guntur-dry-red-chilli",
       targetCountry: "Thailand",
     });
     expect(result.total).toBeGreaterThanOrEqual(80);
@@ -114,14 +114,14 @@ describe("scoreBuyerCandidate", () => {
       candidate: candidate(),
       contacts: [contact()],
       productMatches: [match()],
-      targetProductKey: "guntur-chilli",
+      targetProductId: "guntur-dry-red-chilli",
       targetCountry: "Thailand",
     });
     const without = scoreBuyerCandidate({
       candidate: candidate(),
       contacts: [],
       productMatches: [match()],
-      targetProductKey: "guntur-chilli",
+      targetProductId: "guntur-dry-red-chilli",
       targetCountry: "Thailand",
     });
     expect(without.contactQuality).toBe(0);
@@ -197,8 +197,8 @@ describe("scoreBuyerCandidate", () => {
       contacts: [contact()],
       productMatches: [
         match({ relevance: 90 }),
-        match({ id: "m2", productKey: "pomegranate", relevance: 90 }),
-        match({ id: "m3", productKey: "indian-apple", relevance: 90 }),
+        match({ id: "m2", productId: "indian-pomegranate", relevance: 90 }),
+        match({ id: "m3", productId: "indian-apples", relevance: 90 }),
       ],
     });
     expect(pointsFor(generic, "product-relevance")).toBeLessThanOrEqual(22);
@@ -208,19 +208,19 @@ describe("scoreBuyerCandidate", () => {
       candidate: candidate(),
       contacts: [contact()],
       productMatches: [
-        match({ productKey: "guntur-chilli", relevance: 50 }),
-        match({ id: "m2", productKey: "banganapalli-mango", relevance: 99 }),
+        match({ productId: "guntur-dry-red-chilli", relevance: 50 }),
+        match({ id: "m2", productId: "banganapalli-mango", relevance: 99 }),
       ],
-      targetProductKey: "guntur-chilli",
+      targetProductId: "guntur-dry-red-chilli",
     });
     const mango = scoreBuyerCandidate({
       candidate: candidate(),
       contacts: [contact()],
       productMatches: [
-        match({ productKey: "guntur-chilli", relevance: 50 }),
-        match({ id: "m2", productKey: "banganapalli-mango", relevance: 99 }),
+        match({ productId: "guntur-dry-red-chilli", relevance: 50 }),
+        match({ id: "m2", productId: "banganapalli-mango", relevance: 99 }),
       ],
-      targetProductKey: "banganapalli-mango",
+      targetProductId: "banganapalli-mango",
     });
     expect(mango.companyFit).toBeGreaterThan(chilli.companyFit);
   });
@@ -239,9 +239,9 @@ describe("scoreBuyerCandidate", () => {
       contacts: [contact({ contactScore: 100, emailConfidence: 100 })],
       productMatches: [
         match({ relevance: 100 }),
-        match({ id: "m2", productKey: "pomegranate", relevance: 100 }),
+        match({ id: "m2", productId: "indian-pomegranate", relevance: 100 }),
       ],
-      targetProductKey: "guntur-chilli",
+      targetProductId: "guntur-dry-red-chilli",
       targetCountry: "Thailand",
     });
     expect(strong.total).toBeLessThanOrEqual(100);
@@ -270,7 +270,7 @@ describe("scoreBuyerCandidate", () => {
       candidate: candidate(),
       contacts: [contact()],
       productMatches: [match()],
-      targetProductKey: "guntur-chilli" as const,
+      targetProductId: "guntur-dry-red-chilli" as const,
       targetCountry: "Thailand",
     };
     expect(scoreBuyerCandidate(input)).toEqual(scoreBuyerCandidate(input));
@@ -280,13 +280,58 @@ describe("scoreBuyerCandidate", () => {
     const result = scoreBuyerCandidate({
       candidate: candidate({ address: "1 Rd", generalEmail: "info@abcfoods.example" }),
       contacts: [contact()],
-      productMatches: [match(), match({ id: "m2", productKey: "pomegranate", relevance: 40 })],
-      targetProductKey: "guntur-chilli",
+      productMatches: [match(), match({ id: "m2", productId: "indian-pomegranate", relevance: 40 })],
+      targetProductId: "guntur-dry-red-chilli",
       targetCountry: "Thailand",
     });
     expect(result.companyFit + result.contactQuality + result.completeness).toBe(result.total);
     const fromReasons = result.reasons.reduce((n, r) => n + r.points, 0);
     expect(fromReasons).toBe(result.total);
     expect(result.reasons.length).toBeGreaterThan(0);
+  });
+
+  it("decomposes a typical free Hunter Discover candidate to 23/100", () => {
+    const hunterEvidence = [
+      {
+        note: "Hunter Discover company match. Country United Arab Emirates (AE). Product guntur-dry-red-chilli. Directory match only — not proof of import or distribution.",
+        confidence: 40,
+      },
+    ];
+    const result = scoreBuyerCandidate({
+      candidate: {
+        id: "cand-hunter",
+        companyName: "Mahmood & Sons",
+        website: "https://mahmoodsons.com",
+        domain: "mahmoodsons.com",
+        country: "United Arab Emirates",
+        source: "hunter",
+        evidence: hunterEvidence,
+        discoveryStatus: "ready",
+        reviewStatus: "pending",
+      },
+      contacts: [],
+      productMatches: [
+        {
+          id: "match-hunter",
+          candidateId: "cand-hunter",
+          productId: "guntur-dry-red-chilli",
+          relevance: 50,
+          evidence: hunterEvidence,
+          source: "hunter",
+        },
+      ],
+      targetProductId: "guntur-dry-red-chilli",
+      targetCountry: "United Arab Emirates",
+    });
+    expect(result.contactQuality).toBe(0);
+    expect(result.companyFit).toBe(15);
+    expect(result.completeness).toBe(8);
+    expect(result.total).toBe(23);
+    expect(pointsFor(result, "product-relevance")).toBe(11);
+    expect(pointsFor(result, "country-match")).toBe(4);
+    expect(reasonCodes(result)).not.toContain("importer");
+    expect(reasonCodes(result)).not.toContain("distributor");
+    expect(reasonCodes(result)).not.toContain("buyer-type");
+    expect(reasonCodes(result)).not.toContain("industry");
   });
 });

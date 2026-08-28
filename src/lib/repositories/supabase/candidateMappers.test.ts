@@ -55,7 +55,29 @@ describe("candidate mapper", () => {
     expect(back.companyName).toBe("ABC Foods Thailand");
     expect(back.companyScore).toBe(91);
     expect(back.evidence?.[0]?.note).toBe("Spice importer");
+    expect(back.source).toBe("mock");
   });
+
+  it("round-trips source=hunter without coercing it to mock", () => {
+    const candidate: BuyerCandidate = {
+      id: CANDIDATE_ID,
+      companyName: "Mahmood & Sons",
+      website: "https://mahmoodsons.com",
+      domain: "mahmoodsons.com",
+      country: "United Arab Emirates",
+      discoveryStatus: "ready",
+      reviewStatus: "pending",
+      source: "hunter",
+    };
+    const row = {
+      ...candidateToRow(candidate, WORKSPACE),
+      created_at: "2026-08-28T00:00:00.000Z",
+      updated_at: "2026-08-28T00:00:00.000Z",
+    } as BuyerCandidateRow;
+    expect(row.source).toBe("hunter");
+    expect(candidateFromRow(row).source).toBe("hunter");
+  });
+
 
   it("normalizes empty domain to null so it cannot occupy the unique index", () => {
     const row = candidateToRow(
@@ -188,7 +210,7 @@ describe("product-match mapper", () => {
     const match: BuyerCandidateProductMatch = {
       id: MATCH_ID,
       candidateId: CANDIDATE_ID,
-      productKey: "guntur-chilli",
+      productId: "guntur-dry-red-chilli",
       relevance: 94,
       evidence: [{ note: "Chilli in catalogue", confidence: 90 }],
       source: "mock",
@@ -199,9 +221,9 @@ describe("product-match mapper", () => {
       updated_at: "2026-08-01T00:00:00.000Z",
     } as BuyerCandidateProductMatchRow;
     expect(row.workspace_id).toBe(WORKSPACE);
-    expect(row.product_key).toBe("guntur-chilli");
+    expect(row.product_key).toBe("guntur-dry-red-chilli");
     const back = productMatchFromRow(row);
-    expect(back.productKey).toBe("guntur-chilli");
+    expect(back.productId).toBe("guntur-dry-red-chilli");
     expect(back.relevance).toBe(94);
   });
 
@@ -211,12 +233,12 @@ describe("product-match mapper", () => {
         {
           id: MATCH_ID,
           candidateId: CANDIDATE_ID,
-          productKey: "not-a-real-product" as BuyerCandidateProductMatch["productKey"],
+          productId: "not-a-real-product" as BuyerCandidateProductMatch["productId"],
           evidence: [],
         },
         WORKSPACE,
       ),
-    ).toThrow(/Invalid MDF product key/);
+    ).toThrow(/Invalid MDF business product id/);
   });
 });
 

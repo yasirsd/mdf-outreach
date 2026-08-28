@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import type { ProductKey } from "@/lib/email/themes/types";
+
 import {
   BUYER_TYPE_SEARCH_KEYWORDS,
   PRODUCT_SEARCH_KEYWORDS,
@@ -31,7 +31,7 @@ describe("countryToIsoAlpha2", () => {
 
 describe("collectHunterKeywords / buildHunterDiscoverPlan", () => {
   it("maps existing ProductKeys to the expected Hunter keywords", () => {
-    expect(PRODUCT_SEARCH_KEYWORDS["guntur-chilli"]).toEqual([
+    expect(PRODUCT_SEARCH_KEYWORDS["guntur-dry-red-chilli"]).toEqual([
       "dry red chilli",
       "red chilli",
       "chilli",
@@ -44,13 +44,13 @@ describe("collectHunterKeywords / buildHunterDiscoverPlan", () => {
       "fresh mango",
       "fresh fruit",
     ]);
-    expect(PRODUCT_SEARCH_KEYWORDS.pomegranate).toEqual(["pomegranate", "fresh fruit"]);
-    expect(PRODUCT_SEARCH_KEYWORDS["indian-apple"]).toEqual(["apple", "fresh apple", "fresh fruit"]);
+    expect(PRODUCT_SEARCH_KEYWORDS["indian-pomegranate"]).toEqual(["pomegranate", "fresh fruit"]);
+    expect(PRODUCT_SEARCH_KEYWORDS["indian-apples"]).toEqual(["apple", "fresh apple", "fresh fruit"]);
   });
 
   it("does not inject generic import/importer for MDF buyer types", () => {
     const keywords = collectHunterKeywords({
-      productKey: "guntur-chilli",
+      productId: "guntur-dry-red-chilli",
       buyerTypes: ["Importer", "Distributor"],
     });
     expect(keywords).not.toContain("import");
@@ -61,7 +61,7 @@ describe("collectHunterKeywords / buildHunterDiscoverPlan", () => {
     expect(BUYER_TYPE_SEARCH_KEYWORDS.Importer).toEqual([]);
     const body = buildHunterDiscoverPlan({
       country: "Thailand",
-      productKey: "guntur-chilli",
+      productId: "guntur-dry-red-chilli",
       buyerTypes: ["Importer"],
     }).body;
     expect(body).not.toHaveProperty("company_type");
@@ -69,7 +69,7 @@ describe("collectHunterKeywords / buildHunterDiscoverPlan", () => {
 
   it("product-led intent uses only product keywords", () => {
     const keywords = collectHunterKeywords({
-      productKey: "guntur-chilli",
+      productId: "guntur-dry-red-chilli",
       keywordIntent: "product-led",
     });
     expect(keywords).toEqual([
@@ -84,7 +84,7 @@ describe("collectHunterKeywords / buildHunterDiscoverPlan", () => {
 
   it("food-trade intent adds commercial phrases without standalone import", () => {
     const keywords = collectHunterKeywords({
-      productKey: "guntur-chilli",
+      productId: "guntur-dry-red-chilli",
       keywordIntent: "food-trade",
     });
     expect(keywords).toEqual(expect.arrayContaining(["food importer", "spice importer"]));
@@ -94,7 +94,7 @@ describe("collectHunterKeywords / buildHunterDiscoverPlan", () => {
 
   it("hybrid intent uses a small high-signal set", () => {
     const keywords = collectHunterKeywords({
-      productKey: "guntur-chilli",
+      productId: "guntur-dry-red-chilli",
       keywordIntent: "hybrid",
     });
     expect(keywords.length).toBeLessThanOrEqual(6);
@@ -111,7 +111,7 @@ describe("collectHunterKeywords / buildHunterDiscoverPlan", () => {
   it("treats arbitrary industry as a keyword, not a Hunter industry filter", () => {
     const plan = buildHunterDiscoverPlan({
       country: "Thailand",
-      productKey: "pomegranate",
+      productId: "indian-pomegranate",
       industry: "Food ingredients",
     });
     expect(plan.keywords).toContain("Food ingredients");
@@ -121,7 +121,7 @@ describe("collectHunterKeywords / buildHunterDiscoverPlan", () => {
   it("does not send Hunter company_type, limit, or offset", () => {
     const plan = buildHunterDiscoverPlan({
       country: "Thailand",
-      productKey: "guntur-chilli",
+      productId: "guntur-dry-red-chilli",
       buyerTypes: ["Importer"],
       limit: 20,
     });
@@ -136,7 +136,7 @@ describe("collectHunterKeywords / buildHunterDiscoverPlan", () => {
   it("is deterministic for the same query", () => {
     const q = {
       country: "Thailand",
-      productKey: "guntur-chilli" as const,
+      productId: "guntur-dry-red-chilli" as const,
       buyerTypes: ["Importer" as const],
     };
     expect(JSON.stringify(buildHunterDiscoverPlan(q).body)).toBe(
@@ -148,13 +148,13 @@ describe("collectHunterKeywords / buildHunterDiscoverPlan", () => {
     expect(() =>
       buildHunterDiscoverPlan({
         country: "Thailand",
-        productKey: "not-a-product" as ProductKey,
+        productId: "not-a-product" as string,
       }),
     ).toThrow(HunterDiscoveryError);
     expect(() =>
       buildHunterDiscoverPlan({
         country: "Narnia",
-        productKey: "guntur-chilli",
+        productId: "guntur-dry-red-chilli",
       }),
     ).toThrow(/Unsupported or empty country/);
   });

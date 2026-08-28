@@ -1,11 +1,15 @@
 /**
  * Hunter Discover query construction.
  *
+ * BF2.1 — keyed by BUSINESS product ids (src/lib/catalogue/products.ts).
+ * The Buyer Finder provider layer NEVER touches email-theme ProductKey.
+ *
  * keywords.match = "any" on purpose: requiring every product keyword AND
  * every commercial phrase (match: "all") is too restrictive for discovery.
  *
  * Hunter company_type (privately_held, public_company, …) is never used.
- * MDF Importer/Distributor/Wholesaler are NOT mapped to that filter.
+ * MDF Importer/Distributor/Wholesaler search intent is NOT mapped to that
+ * filter and is never carried into candidate.buyerType.
  *
  * Generic tokens such as "import" / "importer" / "export" / "logistics" /
  * "freight" are rejected: they match banks, freight forwarders, and
@@ -15,12 +19,11 @@
  * are appended as keywords instead, to avoid fragile 400s.
  */
 
-import { isProductKey } from "@/lib/email/themes/catalogue";
-import type { ProductKey } from "@/lib/email/themes/types";
+import { isActiveBusinessProductId } from "@/lib/buyerFinder/businessCatalogue";
 import type { BuyerTypeOption } from "@/lib/buyerFinder/types";
 import { blankToUndefined } from "@/lib/buyerFinder/normalize";
 import { codeForCountryName, findCountryByCode } from "@/lib/catalogue/countries";
-import type { CompanyDiscoveryQuery } from "../types";
+import type { BusinessProductId, CompanyDiscoveryQuery } from "../types";
 import { HunterDiscoveryError } from "./errors";
 
 export const HUNTER_DISCOVER_URL = "https://api.hunter.io/v2/discover";
@@ -37,12 +40,22 @@ export const REJECTED_GENERIC_KEYWORDS: readonly string[] = [
   "freight",
 ];
 
-/** Product search keywords only — not a second ProductKey identity. */
-export const PRODUCT_SEARCH_KEYWORDS: Record<ProductKey, readonly string[]> = {
-  "guntur-chilli": ["dry red chilli", "red chilli", "chilli", "chili", "spices", "food spices"],
+/**
+ * Product search keywords, keyed by BUSINESS product id.
+ * Not a second product identity — purely a Hunter query-keyword table.
+ */
+export const PRODUCT_SEARCH_KEYWORDS: Record<BusinessProductId, readonly string[]> = {
+  "guntur-dry-red-chilli": [
+    "dry red chilli",
+    "red chilli",
+    "chilli",
+    "chili",
+    "spices",
+    "food spices",
+  ],
   "banganapalli-mango": ["mango", "fresh mango", "fresh fruit"],
-  pomegranate: ["pomegranate", "fresh fruit"],
-  "indian-apple": ["apple", "fresh apple", "fresh fruit"],
+  "indian-pomegranate": ["pomegranate", "fresh fruit"],
+  "indian-apples": ["apple", "fresh apple", "fresh fruit"],
 };
 
 export const FOOD_TRADE_INTENT_KEYWORDS: readonly string[] = [
@@ -56,9 +69,9 @@ export const FOOD_TRADE_INTENT_KEYWORDS: readonly string[] = [
   "food trading",
 ];
 
-/** 4–6 high-signal phrases for guntur-chilli. Other keys fall back to product-led. */
-export const HYBRID_SEARCH_KEYWORDS: Partial<Record<ProductKey, readonly string[]>> = {
-  "guntur-chilli": [
+/** 4–6 high-signal phrases for chilli. Other business ids fall back to product-led. */
+export const HYBRID_SEARCH_KEYWORDS: Partial<Record<BusinessProductId, readonly string[]>> = {
+  "guntur-dry-red-chilli": [
     "dry red chilli",
     "red chilli",
     "spice importer",
@@ -127,7 +140,7 @@ function withoutRejected(values: string[]): string[] {
 }
 
 export function collectHunterKeywords(query: {
-  productKey: ProductKey;
+  productId: BusinessProductId;
   buyerTypes?: BuyerTypeOption[];
   industry?: string;
   keywordIntent?: HunterKeywordIntent;
@@ -135,14 +148,16 @@ export function collectHunterKeywords(query: {
   const intent: HunterKeywordIntent = query.keywordIntent ?? "product-led";
   const parts: string[] = [];
   if (intent === "hybrid") {
-    const hybrid = HYBRID_SEARCH_KEYWORDS[query.productKey];
-    parts.push(...(hybrid ?? PRODUCT_SEARCH_KEYWORDS[query.productKey]));
+    const hybrid = HYBRID_SEARCH_KEYWORDS[query.productId];
+    parts.push(...(hybrid ?? PRODUCT_SEARCH_KEYWORDS[query.productId] ?? []));
   } else {
-    parts.push(...PRODUCT_SEARCH_KEYWORDS[query.productKey]);
+    parts.push(...(PRODUCT_SEARCH_KEYWORDS[query.productId] ?? []));
     if (intent === "food-trade") {
       parts.push(...FOOD_TRADE_INTENT_KEYWORDS);
     }
   }
+  // Search intent is NOT injected as keywords — Hunter would match
+  // freight/import companies. Kept only on the search-run record.
   void query.buyerTypes;
   const industry = blankToUndefined(query.industry);
   if (industry && !isRejectedGenericKeyword(industry)) parts.push(industry);
@@ -151,10 +166,10 @@ export function collectHunterKeywords(query: {
 
 /** Build the Hunter POST body. Throws before any network concern if country/product are invalid. */
 export function buildHunterDiscoverPlan(query: CompanyDiscoveryQuery): HunterDiscoverPlan {
-  if (!isProductKey(query.productKey)) {
+  if (!isActiveBusinessProductId(query.productId)) {
     throw new HunterDiscoveryError(
       "invalid_input",
-      `Invalid MDF product key: ${String(query.productKey || "(empty)")}`,
+      `Invalid MDF business product id: ${String(query.productId || "(empty)")}`,
     );
   }
   const isoCountry = countryToIsoAlpha2(query.country);
@@ -166,7 +181,7 @@ export function buildHunterDiscoverPlan(query: CompanyDiscoveryQuery): HunterDis
   }
   const intent: HunterKeywordIntent = query.keywordIntent ?? "product-led";
   const keywords = collectHunterKeywords({
-    productKey: query.productKey,
+    productId: query.productId,
     buyerTypes: query.buyerTypes,
     industry: query.industry,
     keywordIntent: intent,

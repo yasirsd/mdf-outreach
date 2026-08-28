@@ -1,7 +1,16 @@
 "use client";
 
+import { useState, useTransition } from "react";
 import Link from "next/link";
-import { ArrowLeft, Building2, Globe, MapPin } from "lucide-react";
+import { useRouter } from "next/navigation";
+import {
+  ArrowLeft,
+  Archive,
+  Building2,
+  Globe,
+  MapPin,
+  UsersRound,
+} from "lucide-react";
 import { toast } from "@/components/ui/Toast";
 import { PageContainer, PageHeader } from "@/components/ui/Page";
 import { ContactBlock } from "@/components/buyerFinder/ContactBlock";
@@ -12,27 +21,66 @@ import {
   REVIEW_STATUS_LABELS,
   type BuyerCandidateRecord,
 } from "@/lib/buyerFinder/types";
-import { PRODUCT_CATALOGUE } from "@/lib/email/themes/catalogue";
-import { otherContacts, primaryContact } from "@/lib/buyerFinder/mock/candidates";
+import { findBusinessProductById } from "@/lib/buyerFinder/businessCatalogue";
+import { productMatchStrengthLabel } from "@/lib/buyerFinder/scorePresentation";
+import {
+  COMPANY_FIT_MAX,
+  COMPLETENESS_MAX,
+  scoreBuyerCandidate,
+} from "@/lib/buyerFinder/scoring";
+import { candidateSourceLabel } from "@/lib/buyerFinder/source";
+import {
+  approveCandidateAction,
+  archiveCandidateAction,
+  rejectCandidateAction,
+} from "@/app/(app)/buyer-finder/actions";
 
-function productName(key: string): string {
-  return PRODUCT_CATALOGUE.find((p) => p.key === key)?.name ?? key;
+function productName(id: string): string {
+  return findBusinessProductById(id)?.displayName ?? id;
 }
 
 export function CandidateView({ record }: { record: BuyerCandidateRecord }) {
-  const { candidate, productMatches } = record;
-  const primary = primaryContact(record);
-  const others = otherContacts(record);
+  const router = useRouter();
+  const { candidate, contacts, productMatches } = record;
+  const primary = contacts.find((c) => c.isPrimary);
+  const others = contacts.filter((c) => !c.isPrimary);
+  const hasContacts = contacts.length > 0;
+  const sourceLabel = candidateSourceLabel(candidate.source);
+  const scored = scoreBuyerCandidate({
+    candidate,
+    contacts,
+    productMatches,
+    targetProductId: productMatches[0]?.productId,
+    targetCountry: candidate.country,
+  });
+  const companySide = scored.companyFit + scored.completeness;
+  const companySideMax = COMPANY_FIT_MAX + COMPLETENESS_MAX;
+  const isFinal =
+    candidate.reviewStatus === "approved" ||
+    candidate.reviewStatus === "rejected" ||
+    candidate.discoveryStatus === "archived";
 
-  function rejectUiOnly() {
-    toast.info("Rejection is UI-only in Phase 1. Nothing is saved.");
+  const [pending, startTransition] = useTransition();
+  const [rejectReason, setRejectReason] = useState("");
+  const [showRejectInput, setShowRejectInput] = useState(false);
+
+  function run(action: () => Promise<void>, successLabel: string) {
+    startTransition(async () => {
+      try {
+        await action();
+        toast.success(successLabel);
+        router.refresh();
+      } catch {
+        toast.error("Could not update candidate.");
+      }
+    });
   }
 
   return (
     <PageContainer>
       <PageHeader
         title={candidate.companyName}
-        subtitle="Mock candidate — review only. Approval into Buyers is not enabled yet."
+        subtitle="Approve to queue this candidate for a later manual Buyer conversion. Approving does NOT create a Buyer."
         actions={
           <Link href="/buyer-finder" className="btn-ghost">
             <ArrowLeft size={13} /> Queue
@@ -40,11 +88,18 @@ export function CandidateView({ record }: { record: BuyerCandidateRecord }) {
         }
       />
 
-      <div className="flex flex-wrap items-center gap-2 mb-6">
-        <ScoreBadge value={candidate.companyScore ?? 0} label="Buyer" />
+      <div className={`flex flex-wrap items-center gap-2 ${hasContacts ? "mb-6" : "mb-2"}`}>
+        <ScoreBadge value={candidate.companyScore ?? scored.total} label="Overall" />
+        {!hasContacts && (
+          <ScoreBadge value={companySide} label="Company" max={companySideMax} />
+        )}
         <span className="chip">{DISCOVERY_STATUS_LABELS[candidate.discoveryStatus]}</span>
         <span className="chip">{REVIEW_STATUS_LABELS[candidate.reviewStatus]}</span>
+        {sourceLabel && <span className="chip">Source · {sourceLabel}</span>}
       </div>
+      {!hasContacts && (
+        <p className="text-[12px] text-text-muted mb-6">Contact quality not evaluated</p>
+      )}
 
       <div className="grid md:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)] gap-4">
         <section
@@ -104,47 +159,59 @@ export function CandidateView({ record }: { record: BuyerCandidateRecord }) {
           <div className="text-[10.5px] tracking-[0.14em] uppercase text-text-muted font-medium mb-3">
             Why this company matched
           </div>
-          <div className="space-y-5">
-            {productMatches.map((m) => (
-              <div key={m.id}>
-                <div className="flex items-baseline justify-between gap-3 mb-2">
-                  <div className="text-[13.5px] font-medium text-text-primary">
-                    {productName(m.productKey)}
+          {productMatches.length === 0 ? (
+            <p className="text-[13px] text-text-muted">No product match recorded.</p>
+          ) : (
+            <div className="space-y-5">
+              {productMatches.map((m) => (
+                <div key={m.id}>
+                  <div className="flex items-baseline justify-between gap-3 mb-2">
+                    <div className="text-[13.5px] font-medium text-text-primary">
+                      {productName(m.productId)}
+                    </div>
+                    <div className="text-[12.5px] tabular-nums text-text-secondary">
+                      {productMatchStrengthLabel(m)}
+                    </div>
                   </div>
-                  <div className="text-[12.5px] tabular-nums text-text-secondary">
-                    {m.relevance ?? 0}% relevance
-                  </div>
+                  <EvidenceList evidence={m.evidence} />
                 </div>
-                <EvidenceList evidence={m.evidence} />
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          )}
         </section>
       </div>
 
       <section className="mt-4">
         <div className="text-[10.5px] tracking-[0.14em] uppercase text-text-muted font-medium mb-3">
-          Recommended contact
+          Contacts
         </div>
-        {primary ? (
-          <ContactBlock contact={primary} recommended />
+        {!hasContacts ? (
+          <div
+            className="rounded-[12px] p-5 flex items-center gap-3 text-[12.5px] text-text-muted"
+            style={{
+              backgroundColor: "var(--app-surface)",
+              border: "1px solid var(--app-border)",
+            }}
+          >
+            <UsersRound size={14} />
+            <span>
+              Contact enrichment has not been run for this candidate yet.
+              MDF Outreach never fabricates contacts for real companies.
+            </span>
+          </div>
         ) : (
-          <p className="text-[13px] text-text-muted">No contact on this mock candidate.</p>
+          <>
+            {primary && <ContactBlock contact={primary} recommended />}
+            {others.length > 0 && (
+              <div className="mt-3 grid sm:grid-cols-2 gap-3">
+                {others.map((c) => (
+                  <ContactBlock key={c.id} contact={c} />
+                ))}
+              </div>
+            )}
+          </>
         )}
       </section>
-
-      {others.length > 0 && (
-        <section className="mt-6">
-          <div className="text-[10.5px] tracking-[0.14em] uppercase text-text-muted font-medium mb-3">
-            Other potential contacts
-          </div>
-          <div className="grid sm:grid-cols-2 gap-3">
-            {others.map((c) => (
-              <ContactBlock key={c.id} contact={c} />
-            ))}
-          </div>
-        </section>
-      )}
 
       <div
         className="mt-8 rounded-[12px] p-5 flex flex-wrap items-center justify-between gap-3"
@@ -154,13 +221,76 @@ export function CandidateView({ record }: { record: BuyerCandidateRecord }) {
         }}
       >
         <p className="text-[12.5px] text-text-muted max-w-xl leading-relaxed">
-          Phase 1 is a visual shell. Approve is disabled so this candidate cannot enter Buyers.
+          Approving does NOT create a Buyer. Buyer conversion will be a separate manual action in a
+          future phase.
         </p>
-        <div className="flex items-center gap-2">
-          <button type="button" className="btn-danger" onClick={rejectUiOnly}>
-            Reject
+        <div className="flex items-center gap-2 flex-wrap">
+          <button
+            type="button"
+            className="btn-ghost"
+            disabled={pending || candidate.discoveryStatus === "archived"}
+            onClick={() =>
+              run(
+                () => archiveCandidateAction(candidate.id),
+                "Candidate archived",
+              )
+            }
+          >
+            <Archive size={13} /> Archive
           </button>
-          <button type="button" className="btn-primary" disabled>
+          {!showRejectInput ? (
+            <button
+              type="button"
+              className="btn-danger"
+              disabled={pending || candidate.reviewStatus === "rejected"}
+              onClick={() => setShowRejectInput(true)}
+            >
+              Reject
+            </button>
+          ) : (
+            <div className="flex items-center gap-2">
+              <input
+                className="input h-9 w-[200px]"
+                placeholder="Reason (optional)"
+                value={rejectReason}
+                onChange={(e) => setRejectReason(e.target.value.slice(0, 500))}
+              />
+              <button
+                type="button"
+                className="btn-danger"
+                disabled={pending}
+                onClick={() =>
+                  run(
+                    () => rejectCandidateAction(candidate.id, rejectReason),
+                    "Candidate rejected",
+                  )
+                }
+              >
+                Confirm reject
+              </button>
+              <button
+                type="button"
+                className="btn-ghost"
+                onClick={() => {
+                  setShowRejectInput(false);
+                  setRejectReason("");
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+          )}
+          <button
+            type="button"
+            className="btn-primary"
+            disabled={pending || isFinal || candidate.reviewStatus === "approved"}
+            onClick={() =>
+              run(
+                () => approveCandidateAction(candidate.id),
+                "Candidate approved",
+              )
+            }
+          >
             Approve
           </button>
         </div>

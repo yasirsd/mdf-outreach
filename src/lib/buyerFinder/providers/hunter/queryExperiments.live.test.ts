@@ -118,7 +118,7 @@ describe.skipIf(!canRunLive)("Hunter 5C experiments (developer only)", () => {
     const intent = parseIntent(process.env.HUNTER_KEYWORD_INTENT ?? "product-led");
     const query = {
       country: "Thailand" as const,
-      productKey: "guntur-chilli" as const,
+      productId: "guntur-dry-red-chilli" as const,
       keywordIntent: intent,
       limit: 10,
     };

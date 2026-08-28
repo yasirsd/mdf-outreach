@@ -4,10 +4,12 @@ export function ScoreBadge({
   value,
   label = "Score",
   compact = false,
+  max = 100,
 }: {
   value: number;
   label?: string;
   compact?: boolean;
+  max?: number;
 }) {
   const tone =
     value >= 80
@@ -25,7 +27,7 @@ export function ScoreBadge({
       style={{ color: tone.fg, backgroundColor: tone.bg, border: `1px solid ${tone.border}` }}
     >
       {label} {value}
-      <span className="text-text-muted font-normal">/ 100</span>
+      <span className="text-text-muted font-normal">/ {max}</span>
     </span>
   );
 }

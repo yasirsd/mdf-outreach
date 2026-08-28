@@ -17,6 +17,7 @@ import type {
   BuyerCandidateContactRepository,
   BuyerCandidateProductMatchRepository,
   BuyerCandidateRepository,
+  BuyerFinderSearchRunRepository,
   BuyerRepository,
   CampaignRepository,
   PaginatedBuyerQuery,
@@ -50,6 +51,7 @@ import {
 import { createBuyerCandidateRepository } from "./buyerCandidateRepository";
 import { createBuyerCandidateContactRepository } from "./buyerCandidateContactRepository";
 import { createBuyerCandidateProductMatchRepository } from "./buyerCandidateProductMatchRepository";
+import { createBuyerFinderSearchRunRepository } from "./buyerFinderSearchRunRepository";
 
 function clamp(n: number, lo: number, hi: number): number {
   if (!Number.isFinite(n)) return lo;
@@ -614,6 +616,7 @@ export interface SupabaseRepositoryBundle {
   buyerCandidates: BuyerCandidateRepository;
   buyerCandidateContacts: BuyerCandidateContactRepository;
   buyerCandidateProductMatches: BuyerCandidateProductMatchRepository;
+  buyerFinderSearchRuns: BuyerFinderSearchRunRepository;
 }
 
 export function createSupabaseRepositories(
@@ -633,6 +636,7 @@ export function createSupabaseRepositories(
     supabase,
     workspaceId,
   );
+  const buyerFinderSearchRuns = createBuyerFinderSearchRunRepository(supabase, workspaceId);
   const workspace = new SupabaseWorkspaceService(
     buyers,
     campaigns,
@@ -656,5 +660,6 @@ export function createSupabaseRepositories(
     buyerCandidates,
     buyerCandidateContacts,
     buyerCandidateProductMatches,
+    buyerFinderSearchRuns,
   };
 }

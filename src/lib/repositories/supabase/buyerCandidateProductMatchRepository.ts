@@ -1,8 +1,11 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { randomUUID } from "node:crypto";
-import type { BuyerCandidateProductMatch } from "@/lib/buyerFinder/types";
-import { requireProductKey } from "@/lib/buyerFinder/productKey";
-import type { ProductKey } from "@/lib/email/themes/types";
+import type {
+  BusinessProductId,
+  BuyerCandidateProductMatch,
+} from "@/lib/buyerFinder/types";
+import { isEntityUuid } from "@/lib/buyerFinder/ids";
+import { requireBusinessProductId } from "@/lib/buyerFinder/productKey";
 import type { BuyerCandidateProductMatchRepository } from "../interfaces";
 import {
   productMatchFromRow,
@@ -28,6 +31,7 @@ export class SupabaseBuyerCandidateProductMatchRepository
   ) {}
 
   async listByCandidate(candidateId: string): Promise<BuyerCandidateProductMatch[]> {
+    if (!isEntityUuid(candidateId)) return [];
     const { data, error } = await this.supabase
       .from("buyer_candidate_product_matches")
       .select("*")
@@ -52,6 +56,7 @@ export class SupabaseBuyerCandidateProductMatchRepository
     id: string,
     patch: Partial<BuyerCandidateProductMatch>,
   ): Promise<BuyerCandidateProductMatch> {
+    if (!isEntityUuid(id)) throw new Error("Invalid product match id");
     const fields = productMatchToPatchRow(patch);
     const { data, error } = await this.supabase
       .from("buyer_candidate_product_matches")
@@ -64,6 +69,7 @@ export class SupabaseBuyerCandidateProductMatchRepository
   }
 
   async delete(id: string): Promise<void> {
+    if (!isEntityUuid(id)) return;
     const { error } = await this.supabase
       .from("buyer_candidate_product_matches")
       .delete()
@@ -73,9 +79,10 @@ export class SupabaseBuyerCandidateProductMatchRepository
 
   async findByCandidateAndProduct(
     candidateId: string,
-    productKey: ProductKey,
+    productId: BusinessProductId,
   ): Promise<BuyerCandidateProductMatch | undefined> {
-    const key = requireProductKey(productKey);
+    if (!isEntityUuid(candidateId)) return undefined;
+    const key = requireBusinessProductId(productId);
     const { data, error } = await this.supabase
       .from("buyer_candidate_product_matches")
       .select("*")

@@ -14,7 +14,7 @@ import {
   normalizeOptionalEmail,
   normalizeOptionalUrl,
 } from "@/lib/buyerFinder/normalize";
-import { requireProductKey } from "@/lib/buyerFinder/productKey";
+import { requireBusinessProductId } from "@/lib/buyerFinder/productKey";
 
 export interface BuyerCandidateRow {
   id: string;
@@ -39,6 +39,8 @@ export interface BuyerCandidateRow {
   discovery_status: DiscoveryStatus;
   review_status: ReviewStatus;
   rejection_reason: string | null;
+  people_searched_at: string | null;
+  people_has_more: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -58,6 +60,16 @@ export interface BuyerCandidateContactRow {
   contact_score: number | null;
   is_primary: boolean;
   source: string | null;
+  provider_ref: string | null;
+  department: string | null;
+  seniority: string | null;
+  is_decision_maker: boolean | null;
+  email_type: string | null;
+  verification_status: string | null;
+  full_name_available: boolean | null;
+  linkedin_available: boolean | null;
+  phone_available: boolean | null;
+  evidence: CandidateEvidence[] | null;
   discovered_at: string | null;
   created_at: string;
   updated_at: string;
@@ -126,6 +138,8 @@ export function candidateFromRow(r: BuyerCandidateRow): BuyerCandidate {
     discoveryStatus: r.discovery_status,
     reviewStatus: r.review_status,
     rejectionReason: r.rejection_reason ?? undefined,
+    peopleSearchedAt: r.people_searched_at ?? undefined,
+    peopleHasMore: r.people_has_more ?? false,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
@@ -158,6 +172,8 @@ export function candidateToRow(
     discovery_status: (c.discoveryStatus ?? "new") as DiscoveryStatus,
     review_status: (c.reviewStatus ?? "pending") as ReviewStatus,
     rejection_reason: blankToUndefined(c.rejectionReason) ?? null,
+    people_searched_at: blankToUndefined(c.peopleSearchedAt) ?? null,
+    people_has_more: c.peopleHasMore ?? false,
   };
 }
 
@@ -187,6 +203,8 @@ export function candidateToPatchRow(
   if (has(patch, "discoveryStatus")) row.discovery_status = patch.discoveryStatus;
   if (has(patch, "reviewStatus")) row.review_status = patch.reviewStatus;
   if (has(patch, "rejectionReason")) row.rejection_reason = blankToUndefined(patch.rejectionReason) ?? null;
+  if (has(patch, "peopleSearchedAt")) row.people_searched_at = blankToUndefined(patch.peopleSearchedAt) ?? null;
+  if (has(patch, "peopleHasMore")) row.people_has_more = patch.peopleHasMore ?? false;
   return row as Partial<Omit<BuyerCandidateRow, "id" | "workspace_id" | "created_at" | "updated_at">>;
 }
 
@@ -205,6 +223,16 @@ export function contactFromRow(r: BuyerCandidateContactRow): BuyerCandidateConta
     contactScore: r.contact_score ?? undefined,
     isPrimary: r.is_primary,
     source: r.source ?? undefined,
+    providerRef: r.provider_ref ?? undefined,
+    department: r.department ?? undefined,
+    seniority: r.seniority ?? undefined,
+    isDecisionMaker: r.is_decision_maker ?? undefined,
+    emailType: r.email_type === "personal" || r.email_type === "generic" ? r.email_type : undefined,
+    verificationStatus: r.verification_status ?? undefined,
+    fullNameAvailable: r.full_name_available ?? undefined,
+    linkedinAvailable: r.linkedin_available ?? undefined,
+    phoneAvailable: r.phone_available ?? undefined,
+    evidence: evidenceFromJson(r.evidence),
     discoveredAt: r.discovered_at ?? undefined,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
@@ -230,6 +258,16 @@ export function contactToRow(
     contact_score: assertScore(c.contactScore, "contact_score") ?? null,
     is_primary: c.isPrimary ?? false,
     source: blankToUndefined(c.source) ?? null,
+    provider_ref: blankToUndefined(c.providerRef) ?? null,
+    department: blankToUndefined(c.department) ?? null,
+    seniority: blankToUndefined(c.seniority) ?? null,
+    is_decision_maker: c.isDecisionMaker ?? null,
+    email_type: c.emailType === "personal" || c.emailType === "generic" ? c.emailType : null,
+    verification_status: blankToUndefined(c.verificationStatus) ?? null,
+    full_name_available: c.fullNameAvailable ?? null,
+    linkedin_available: c.linkedinAvailable ?? null,
+    phone_available: c.phoneAvailable ?? null,
+    evidence: evidenceToJson(c.evidence),
     discovered_at: c.discoveredAt ?? null,
   };
 }
@@ -253,6 +291,20 @@ export function contactToPatchRow(
   if (has(patch, "contactScore")) row.contact_score = assertScore(patch.contactScore, "contact_score") ?? null;
   if (has(patch, "isPrimary")) row.is_primary = patch.isPrimary ?? false;
   if (has(patch, "source")) row.source = blankToUndefined(patch.source) ?? null;
+  if (has(patch, "providerRef")) row.provider_ref = blankToUndefined(patch.providerRef) ?? null;
+  if (has(patch, "department")) row.department = blankToUndefined(patch.department) ?? null;
+  if (has(patch, "seniority")) row.seniority = blankToUndefined(patch.seniority) ?? null;
+  if (has(patch, "isDecisionMaker")) row.is_decision_maker = patch.isDecisionMaker ?? null;
+  if (has(patch, "emailType")) {
+    row.email_type = patch.emailType === "personal" || patch.emailType === "generic" ? patch.emailType : null;
+  }
+  if (has(patch, "verificationStatus")) {
+    row.verification_status = blankToUndefined(patch.verificationStatus) ?? null;
+  }
+  if (has(patch, "fullNameAvailable")) row.full_name_available = patch.fullNameAvailable ?? null;
+  if (has(patch, "linkedinAvailable")) row.linkedin_available = patch.linkedinAvailable ?? null;
+  if (has(patch, "phoneAvailable")) row.phone_available = patch.phoneAvailable ?? null;
+  if (has(patch, "evidence")) row.evidence = evidenceToJson(patch.evidence);
   if (has(patch, "discoveredAt")) row.discovered_at = patch.discoveredAt ?? null;
   return row as Partial<
     Omit<BuyerCandidateContactRow, "id" | "workspace_id" | "candidate_id" | "created_at" | "updated_at">
@@ -263,7 +315,7 @@ export function productMatchFromRow(r: BuyerCandidateProductMatchRow): BuyerCand
   return {
     id: r.id,
     candidateId: r.candidate_id,
-    productKey: requireProductKey(r.product_key),
+    productId: requireBusinessProductId(r.product_key),
     country: r.country ?? undefined,
     query: r.query ?? undefined,
     relevance: r.relevance ?? undefined,
@@ -283,7 +335,7 @@ export function productMatchToRow(
     id: m.id!,
     workspace_id: workspaceId,
     candidate_id: m.candidateId!,
-    product_key: requireProductKey(m.productKey),
+    product_key: requireBusinessProductId(m.productId),
     country: blankToUndefined(m.country) ?? null,
     query: blankToUndefined(m.query) ?? null,
     relevance: assertScore(m.relevance, "relevance") ?? null,
@@ -302,7 +354,7 @@ export function productMatchToPatchRow(
   >
 > {
   const row: Record<string, unknown> = {};
-  if (has(patch, "productKey")) row.product_key = requireProductKey(patch.productKey);
+  if (has(patch, "productId")) row.product_key = requireBusinessProductId(patch.productId);
   if (has(patch, "country")) row.country = blankToUndefined(patch.country) ?? null;
   if (has(patch, "query")) row.query = blankToUndefined(patch.query) ?? null;
   if (has(patch, "relevance")) row.relevance = assertScore(patch.relevance, "relevance") ?? null;

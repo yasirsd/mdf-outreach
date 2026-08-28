@@ -206,7 +206,7 @@ describe.skipIf(!canRunLive)("Hunter live (developer only)", () => {
     try {
       hits = await discoverProvider.discover({
         country: "Thailand",
-        productKey: "guntur-chilli",
+        productId: "guntur-dry-red-chilli",
         buyerTypes: ["Importer"],
         limit: 10,
       });

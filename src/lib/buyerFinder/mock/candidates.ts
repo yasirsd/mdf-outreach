@@ -71,7 +71,7 @@ const RECORDS: BuyerCandidateRecord[] = [
       {
         id: "match-abc-chilli",
         candidateId: "cand-abc-foods",
-        productKey: "guntur-chilli",
+        productId: "guntur-dry-red-chilli",
         relevance: 94,
         source: "mock",
         evidence: [
@@ -90,7 +90,7 @@ const RECORDS: BuyerCandidateRecord[] = [
       {
         id: "match-abc-mango",
         candidateId: "cand-abc-foods",
-        productKey: "banganapalli-mango",
+        productId: "banganapalli-mango",
         relevance: 71,
         source: "mock",
         evidence: [
@@ -154,7 +154,7 @@ const RECORDS: BuyerCandidateRecord[] = [
       {
         id: "match-cps-chilli",
         candidateId: "cand-chao-phraya",
-        productKey: "guntur-chilli",
+        productId: "guntur-dry-red-chilli",
         relevance: 88,
         source: "mock",
         evidence: [
@@ -218,7 +218,7 @@ const RECORDS: BuyerCandidateRecord[] = [
       {
         id: "match-kfi-pome",
         candidateId: "cand-krungthep",
-        productKey: "pomegranate",
+        productId: "indian-pomegranate",
         relevance: 85,
         source: "mock",
         evidence: [
@@ -232,7 +232,7 @@ const RECORDS: BuyerCandidateRecord[] = [
       {
         id: "match-kfi-mango",
         candidateId: "cand-krungthep",
-        productKey: "banganapalli-mango",
+        productId: "banganapalli-mango",
         relevance: 79,
         source: "mock",
         evidence: [
@@ -280,7 +280,7 @@ const RECORDS: BuyerCandidateRecord[] = [
       {
         id: "match-spt-apple",
         candidateId: "cand-siam-produce",
-        productKey: "indian-apple",
+        productId: "indian-apples",
         relevance: 77,
         source: "mock",
         evidence: [
@@ -294,7 +294,7 @@ const RECORDS: BuyerCandidateRecord[] = [
       {
         id: "match-spt-chilli",
         candidateId: "cand-siam-produce",
-        productKey: "guntur-chilli",
+        productId: "guntur-dry-red-chilli",
         relevance: 61,
         source: "mock",
         evidence: [
@@ -342,7 +342,7 @@ const RECORDS: BuyerCandidateRecord[] = [
       {
         id: "match-mih-chilli",
         candidateId: "cand-mekong",
-        productKey: "guntur-chilli",
+        productId: "guntur-dry-red-chilli",
         relevance: 70,
         source: "mock",
         evidence: [
@@ -391,7 +391,7 @@ const RECORDS: BuyerCandidateRecord[] = [
       {
         id: "match-gft-chilli",
         candidateId: "cand-gulf-foods",
-        productKey: "guntur-chilli",
+        productId: "guntur-dry-red-chilli",
         relevance: 83,
         source: "mock",
         evidence: [
@@ -427,7 +427,7 @@ export function searchMockCandidates(query: BuyerFinderSearchQuery): BuyerCandid
   return RECORDS.filter((record) => {
     const { candidate, contacts, productMatches } = record;
     if (query.country && candidate.country !== query.country) return false;
-    if (query.productKey && !productMatches.some((m) => m.productKey === query.productKey)) {
+    if (query.productId && !productMatches.some((m) => m.productId === query.productId)) {
       return false;
     }
     if (query.buyerType && !(candidate.buyerType ?? "").includes(query.buyerType)) return false;

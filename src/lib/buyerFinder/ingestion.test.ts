@@ -9,7 +9,7 @@ import { createMockContactEnrichmentProvider } from "./providers/mock/contactEnr
 import type { CompanyDiscoveryProvider, DiscoveredCompany } from "./providers/types";
 import type { ContactEnrichmentProvider } from "./providers/types";
 
-const TH_CHILLI = { country: "Thailand", productKey: "guntur-chilli" };
+const TH_CHILLI = { country: "Thailand", productId: "guntur-dry-red-chilli" };
 
 function harness(over?: {
   companyProvider?: CompanyDiscoveryProvider;
@@ -49,7 +49,7 @@ describe("discoverAndIngestCandidates", () => {
     expect(people.length).toBeGreaterThan(0);
     expect(people.filter((p) => p.isPrimary)).toHaveLength(1);
     expect(matches).toHaveLength(1);
-    expect(matches[0]?.productKey).toBe("guntur-chilli");
+    expect(matches[0]?.productId).toBe("guntur-dry-red-chilli");
     expect(result.contactsAdded).toBeGreaterThan(0);
     expect(result.productMatchesAdded).toBe(result.created);
   });
@@ -86,7 +86,7 @@ describe("discoverAndIngestCandidates", () => {
       candidate: siam,
       contacts: await h.repositories.contacts.listByCandidate(siam.id),
       productMatches: await h.repositories.productMatches.listByCandidate(siam.id),
-      targetProductKey: "guntur-chilli",
+      targetProductId: "guntur-dry-red-chilli",
       targetCountry: "Thailand",
     });
     expect(siam.companyScore).toBe(expected.total);
@@ -126,11 +126,11 @@ describe("discoverAndIngestCandidates", () => {
   it("adds a new product match on an existing company instead of a second company row", async () => {
     const h = harness();
     await h.run();
-    const mango = await h.run({ country: "Thailand", productKey: "banganapalli-mango" });
+    const mango = await h.run({ country: "Thailand", productId: "banganapalli-mango" });
     const siam = (await h.repositories.candidates.list()).find((c) => c.domain === "siam-spice.example")!;
     const matches = await h.repositories.productMatches.listByCandidate(siam.id);
-    const keys = matches.map((m) => m.productKey).sort();
-    expect(keys).toEqual(["banganapalli-mango", "guntur-chilli"]);
+    const keys = matches.map((m) => m.productId).sort();
+    expect(keys).toEqual(["banganapalli-mango", "guntur-dry-red-chilli"]);
     expect(mango.created).toBeGreaterThan(0);
     expect(
       mango.enrichedExisting >= 1 ||
@@ -344,14 +344,14 @@ describe("discoverAndIngestCandidates", () => {
     };
     const repos = createMemoryBuyerFinderRepos();
     const result = await discoverAndIngestCandidates({
-      query: { country: "Thailand", productKey: "not-a-real-product" },
+      query: { country: "Thailand", productId: "not-a-real-product" },
       companyProvider: spy,
       contactProvider: createMockContactEnrichmentProvider(),
       repositories: repos,
     });
     expect(called).toBe(false);
     expect(result.failures[0]?.stage).toBe("validation");
-    expect(result.failures[0]?.message).toMatch(/Invalid MDF product key/);
+    expect(result.failures[0]?.message).toMatch(/Invalid MDF business product id/);
   });
 
   it("does not persist a provider-supplied workspace id", async () => {

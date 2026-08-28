@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { randomUUID } from "node:crypto";
 import type { BuyerCandidate } from "@/lib/buyerFinder/types";
+import { isEntityUuid } from "@/lib/buyerFinder/ids";
 import { normalizeDomain } from "@/lib/buyerFinder/normalize";
 import type { BuyerCandidateRepository } from "../interfaces";
 import { candidateFromRow, candidateToPatchRow, candidateToRow } from "./candidateMappers";
@@ -30,6 +31,7 @@ export class SupabaseBuyerCandidateRepository implements BuyerCandidateRepositor
   }
 
   async get(id: string): Promise<BuyerCandidate | undefined> {
+    if (!isEntityUuid(id)) return undefined;
     const { data, error } = await this.supabase
       .from("buyer_candidates")
       .select("*")
@@ -51,6 +53,7 @@ export class SupabaseBuyerCandidateRepository implements BuyerCandidateRepositor
   }
 
   async update(id: string, patch: Partial<BuyerCandidate>): Promise<BuyerCandidate> {
+    if (!isEntityUuid(id)) throw new Error("Invalid candidate id");
     const fields = candidateToPatchRow(patch);
     const { data, error } = await this.supabase
       .from("buyer_candidates")
@@ -63,6 +66,7 @@ export class SupabaseBuyerCandidateRepository implements BuyerCandidateRepositor
   }
 
   async delete(id: string): Promise<void> {
+    if (!isEntityUuid(id)) return;
     const { error } = await this.supabase.from("buyer_candidates").delete().eq("id", id);
     if (error) throw error;
   }

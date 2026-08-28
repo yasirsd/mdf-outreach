@@ -3,6 +3,7 @@ import type {
   BuyerCandidateContact,
   BuyerCandidateProductMatch,
 } from "@/lib/buyerFinder/types";
+import { isEntityUuid } from "@/lib/buyerFinder/ids";
 import { normalizeDomain, normalizeOptionalEmail } from "@/lib/buyerFinder/normalize";
 import type { ProductKey } from "@/lib/email/themes/types";
 import type {
@@ -84,6 +85,13 @@ export function createMemoryBuyerFinderRepos() {
       const found = [...contacts.values()].find((c) => normalizeOptionalEmail(c.businessEmail) === n);
       return found ? clone(found) : undefined;
     },
+    async findByProviderRef(source, providerRef) {
+      const src = source.trim();
+      const ref = providerRef.trim();
+      if (!src || !ref) return undefined;
+      const found = [...contacts.values()].find((c) => c.source === src && c.providerRef === ref);
+      return found ? clone(found) : undefined;
+    },
   };
 
   const matchRepo: BuyerCandidateProductMatchRepository = {
@@ -108,9 +116,9 @@ export function createMemoryBuyerFinderRepos() {
     async delete(id) {
       matches.delete(id);
     },
-    async findByCandidateAndProduct(candidateId: string, productKey: ProductKey) {
+    async findByCandidateAndProduct(candidateId: string, productId: ProductKey) {
       const found = [...matches.values()].find(
-        (m) => m.candidateId === candidateId && m.productKey === productKey,
+        (m) => m.candidateId === candidateId && m.productId === productId,
       );
       return found ? clone(found) : undefined;
     },
@@ -121,4 +129,96 @@ export function createMemoryBuyerFinderRepos() {
     contacts: contactRepo,
     productMatches: matchRepo,
   };
+}
+
+export class InvalidEntityIdError extends Error {
+  constructor(label: string, id: string) {
+    super(`${label} id is not a UUID: ${id}`);
+    this.name = "InvalidEntityIdError";
+  }
+}
+
+function assertUuid(id: string, label: string): void {
+  if (!isEntityUuid(id)) throw new InvalidEntityIdError(label, id);
+}
+
+/**
+ * Memory repos that reject non-UUID ids the way Postgres UUID columns would.
+ * Use this in tests that must not regress the slug-id production blocker.
+ */
+export function createUuidStrictBuyerFinderRepos() {
+  const inner = createMemoryBuyerFinderRepos();
+
+  const candidates: BuyerCandidateRepository = {
+    list: () => inner.candidates.list(),
+    findByDomain: (domain) => inner.candidates.findByDomain(domain),
+    async get(id) {
+      assertUuid(id, "candidate");
+      return inner.candidates.get(id);
+    },
+    async create(input) {
+      assertUuid(input.id, "candidate");
+      return inner.candidates.create(input);
+    },
+    async update(id, patch) {
+      assertUuid(id, "candidate");
+      return inner.candidates.update(id, patch);
+    },
+    async delete(id) {
+      assertUuid(id, "candidate");
+      return inner.candidates.delete(id);
+    },
+  };
+
+  const contacts: BuyerCandidateContactRepository = {
+    async listByCandidate(candidateId) {
+      assertUuid(candidateId, "candidate");
+      return inner.contacts.listByCandidate(candidateId);
+    },
+    async get(id) {
+      assertUuid(id, "contact");
+      return inner.contacts.get(id);
+    },
+    async create(input) {
+      assertUuid(input.id, "contact");
+      assertUuid(input.candidateId, "candidate");
+      return inner.contacts.create(input);
+    },
+    async update(id, patch) {
+      assertUuid(id, "contact");
+      return inner.contacts.update(id, patch);
+    },
+    async delete(id) {
+      assertUuid(id, "contact");
+      return inner.contacts.delete(id);
+    },
+    findByEmail: (email) => inner.contacts.findByEmail(email),
+    findByProviderRef: (source, providerRef) => inner.contacts.findByProviderRef(source, providerRef),
+  };
+
+  const productMatches: BuyerCandidateProductMatchRepository = {
+    async listByCandidate(candidateId) {
+      assertUuid(candidateId, "candidate");
+      return inner.productMatches.listByCandidate(candidateId);
+    },
+    async create(input) {
+      assertUuid(input.id, "product match");
+      assertUuid(input.candidateId, "candidate");
+      return inner.productMatches.create(input);
+    },
+    async update(id, patch) {
+      assertUuid(id, "product match");
+      return inner.productMatches.update(id, patch);
+    },
+    async delete(id) {
+      assertUuid(id, "product match");
+      return inner.productMatches.delete(id);
+    },
+    async findByCandidateAndProduct(candidateId, productId) {
+      assertUuid(candidateId, "candidate");
+      return inner.productMatches.findByCandidateAndProduct(candidateId, productId);
+    },
+  };
+
+  return { candidates, contacts, productMatches };
 }

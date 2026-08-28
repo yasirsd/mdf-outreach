@@ -3,67 +3,60 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { ProviderUsageIndicator } from "./ProviderUsageIndicator";
 import {
   MOCK_HUNTER_USAGE,
-  MOCK_HUNTER_USAGE_NO_RESET,
-  MOCK_HUNTER_USAGE_SPLIT,
   MOCK_HUNTER_USAGE_ZERO,
 } from "@/lib/buyerFinder/mock/usage";
 
 afterEach(() => cleanup());
 
-describe("ProviderUsageIndicator", () => {
-  it("renders remaining credits and a progress bar", () => {
-    render(<ProviderUsageIndicator usage={MOCK_HUNTER_USAGE} />);
-    expect(screen.getByRole("button", { name: /50 remaining/i })).toBeTruthy();
-    expect(screen.getAllByRole("progressbar", { hidden: true }).length).toBeGreaterThanOrEqual(1);
+/**
+ * BF2 — Hunter Discover is FREE and must NEVER be represented as
+ * gated on the contact/email credits bucket. Contact/email credits
+ * are a separate concept surfaced in the details modal.
+ */
+describe("ProviderUsageIndicator — BF2 semantics", () => {
+  it("always renders 'Discovery · Free' regardless of credit state", () => {
+    render(<ProviderUsageIndicator usage={MOCK_HUNTER_USAGE} state="ok" />);
+    expect(screen.getByText(/Discovery · Free/)).toBeTruthy();
   });
 
-  it("opens a details popup with reset date, free Discover guidance, and credit warnings", () => {
-    render(<ProviderUsageIndicator usage={MOCK_HUNTER_USAGE} />);
-    fireEvent.click(screen.getByRole("button", { name: /hunter usage/i }));
-    expect(screen.getByText("Hunter usage")).toBeTruthy();
-    expect(screen.getByText("Resets Oct 15, 2026")).toBeTruthy();
-    expect(screen.getByText("Credits")).toBeTruthy();
-    expect(screen.getByText("Search credits")).toBeTruthy();
-    expect(screen.getByText("Verification credits")).toBeTruthy();
-    expect(screen.getAllByText("0 used").length).toBeGreaterThanOrEqual(1);
-    expect(screen.getAllByText("50 available").length).toBeGreaterThanOrEqual(1);
-    expect(screen.getByText("FREE · 0 credits")).toBeTruthy();
-    expect(screen.getByText("Hunter Discover")).toBeTruthy();
-    expect(screen.getAllByText("USES CREDITS").length).toBeGreaterThanOrEqual(2);
-    expect(screen.getByText(/Domain Search/)).toBeTruthy();
-    expect(screen.getByText("Email Verifier")).toBeTruthy();
+  it("shows contact credits alongside the free-discovery label when ok", () => {
+    render(<ProviderUsageIndicator usage={MOCK_HUNTER_USAGE} state="ok" />);
+    expect(screen.getByText(/50 credits/)).toBeTruthy();
   });
 
-  it("renders split search and verification quotas without a fake unified credits block", () => {
-    render(<ProviderUsageIndicator usage={MOCK_HUNTER_USAGE_SPLIT} />);
-    fireEvent.click(screen.getByRole("button", { name: /hunter usage/i }));
-    expect(screen.getByText("Search credits")).toBeTruthy();
-    expect(screen.getByText("Verification credits")).toBeTruthy();
-    expect(screen.queryByText(/^Credits$/)).toBeNull();
-    expect(screen.getByText("10 used")).toBeTruthy();
-    expect(screen.getByText("5 used")).toBeTruthy();
+  it("shows Discovery · Disabled and no credit count when the runtime gate is off", () => {
+    render(<ProviderUsageIndicator usage={null} state="disabled" />);
+    expect(screen.getByText(/Discovery · Disabled/)).toBeTruthy();
+    expect(screen.queryByText(/Discovery · Free/)).toBeNull();
+    expect(screen.queryByText(/credits/i)).toBeNull();
   });
 
-  it("handles a missing reset date", () => {
-    render(<ProviderUsageIndicator usage={MOCK_HUNTER_USAGE_NO_RESET} />);
-    fireEvent.click(screen.getByRole("button", { name: /hunter usage/i }));
-    expect(screen.getByText("Reset date unavailable")).toBeTruthy();
-    expect(screen.queryByText(/Resets /)).toBeNull();
+  it("shows 'Discovery · Free' + 'Not configured' when the server has no key", () => {
+    render(<ProviderUsageIndicator usage={null} state="not_configured" />);
+    expect(screen.getByText(/Discovery · Free/)).toBeTruthy();
+    expect(screen.getByText(/Not configured/)).toBeTruthy();
   });
 
-  it("handles a zero-credit state", () => {
-    render(<ProviderUsageIndicator usage={MOCK_HUNTER_USAGE_ZERO} />);
-    expect(screen.getByRole("button", { name: /0 remaining/i })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: /hunter usage/i }));
-    expect(screen.getByText("0 used")).toBeTruthy();
-    expect(screen.getByText("0 available")).toBeTruthy();
+  it("shows 'Discovery · Free' + 'Usage unavailable' when the usage endpoint fails", () => {
+    render(<ProviderUsageIndicator usage={null} state="unavailable" />);
+    expect(screen.getByText(/Discovery · Free/)).toBeTruthy();
+    expect(screen.getByText(/Usage unavailable/)).toBeTruthy();
   });
 
-  it("disables refresh instead of faking a Hunter call", () => {
-    render(<ProviderUsageIndicator usage={MOCK_HUNTER_USAGE} />);
-    fireEvent.click(screen.getByRole("button", { name: /hunter usage/i }));
-    const refresh = screen.getByRole("button", { name: /refresh usage/i });
-    expect(refresh.hasAttribute("disabled")).toBe(true);
-    expect(screen.getByText(/Live usage will be enabled with provider connection/i)).toBeTruthy();
+  it("modal separates free discovery from contact/email credits", () => {
+    render(<ProviderUsageIndicator usage={MOCK_HUNTER_USAGE} state="ok" />);
+    fireEvent.click(screen.getByRole("button", { name: /Hunter · Discovery · Free/i }));
+    // Company discovery mentioned at least once, plus the explicit
+    // "no credits consumed" body and the "Contact / email credits"
+    // section header.
+    expect(screen.getAllByText(/Company discovery/).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText(/no credits consumed/i)).toBeTruthy();
+    expect(screen.getAllByText(/Contact \/ email credits/i).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("zero contact credits does NOT change the 'Free' discovery label", () => {
+    render(<ProviderUsageIndicator usage={MOCK_HUNTER_USAGE_ZERO} state="ok" />);
+    expect(screen.getByText(/Discovery · Free/)).toBeTruthy();
+    // Contact bucket may render as 0 credits, but that's fine — Discovery is unaffected.
   });
 });
