@@ -1,5 +1,6 @@
 import { Badge } from "@/components/ui/Badge";
 import { cn } from "@/lib/utils";
+import type { HunterRevealAvailability } from "@/lib/buyerFinder/hunterRevealAvailability";
 import {
   formatUsageResetDate,
   usageLevel,
@@ -49,7 +50,13 @@ function BucketBlock({ title, bucket }: { title: string; bucket: UsageBucket }) 
   );
 }
 
-export function ProviderUsageDetails({ usage }: { usage: ProviderUsage }) {
+export function ProviderUsageDetails({
+  usage,
+  hunterReveal = "disabled",
+}: {
+  usage: ProviderUsage;
+  hunterReveal?: HunterRevealAvailability;
+}) {
   const resetLabel = formatUsageResetDate(usage.resetDate);
   const hasUnified = Boolean(usage.unifiedCredits);
   const hasSplit = Boolean(usage.searches || usage.verifications);
@@ -97,10 +104,27 @@ export function ProviderUsageDetails({ usage }: { usage: ProviderUsage }) {
           </li>
           <li className="flex items-start justify-between gap-3">
             <div>
-              <div className="text-[13px] text-text-primary">Contact discovery / email finding</div>
-              <div className="text-[12px] text-text-muted">Domain Search, Email Finder, Enrichment</div>
+              <div className="text-[13px] text-text-primary">Decision-maker discovery</div>
+              <div className="text-[12px] text-text-muted">Hunter Multi-Domain Search (masked)</div>
             </div>
-            <Badge tone="warning">USES CREDITS</Badge>
+            <Badge tone="success">FREE · 0 credits</Badge>
+          </li>
+          <li className="flex items-start justify-between gap-3">
+            <div>
+              <div className="text-[13px] text-text-primary">
+                {hunterReveal === "ready" ? "Personal contact reveal" : "Email/contact reveal"}
+              </div>
+              <div className="text-[12px] text-text-muted">
+                {hunterReveal === "ready"
+                  ? "Up to 1 Hunter Search credit per person"
+                  : "Reveal, Domain Search, Email Finder"}
+              </div>
+            </div>
+            {hunterReveal === "ready" ? (
+              <Badge tone="warning">UP TO 1 CREDIT</Badge>
+            ) : (
+              <Badge tone="neutral">LOCKED</Badge>
+            )}
           </li>
           <li className="flex items-start justify-between gap-3">
             <div>

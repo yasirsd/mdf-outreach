@@ -13,7 +13,7 @@ export function PageContainer({
     size === "narrow"
       ? "max-w-[860px]"
       : size === "wide"
-        ? "max-w-[1400px]"
+        ? "max-w-[1480px]"
         : size === "full"
           ? "max-w-none"
           : "max-w-[1180px]";
@@ -34,7 +34,7 @@ export function PageHeader({
   actions?: React.ReactNode;
 }) {
   return (
-    <div className="flex items-start justify-between gap-6 mb-8">
+    <div className="flex items-start justify-between gap-6 mb-5">
       <div className="min-w-0">
         {eyebrow && (
           <div className="text-[10.5px] tracking-[0.16em] uppercase text-brand-orange mb-2.5 font-medium">

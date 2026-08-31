@@ -2,9 +2,12 @@ import type {
   BuyerCandidate,
   BuyerCandidateContact,
   BuyerCandidateProductMatch,
+  BuyerCandidatePublicEmail,
   CandidateEvidence,
   DiscoveryStatus,
   EmailStatus,
+  PublicMailboxKind,
+  PublicMailboxType,
   ReviewStatus,
 } from "@/lib/buyerFinder/types";
 import {
@@ -15,6 +18,7 @@ import {
   normalizeOptionalUrl,
 } from "@/lib/buyerFinder/normalize";
 import { requireBusinessProductId } from "@/lib/buyerFinder/productKey";
+import { sanitizePhoneNumber } from "@/lib/buyerFinder/phoneNumber";
 
 export interface BuyerCandidateRow {
   id: string;
@@ -41,6 +45,7 @@ export interface BuyerCandidateRow {
   rejection_reason: string | null;
   people_searched_at: string | null;
   people_has_more: boolean;
+  public_contacts_searched_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -69,8 +74,10 @@ export interface BuyerCandidateContactRow {
   full_name_available: boolean | null;
   linkedin_available: boolean | null;
   phone_available: boolean | null;
+  phone_number: string | null;
   evidence: CandidateEvidence[] | null;
   discovered_at: string | null;
+  revealed_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -140,6 +147,7 @@ export function candidateFromRow(r: BuyerCandidateRow): BuyerCandidate {
     rejectionReason: r.rejection_reason ?? undefined,
     peopleSearchedAt: r.people_searched_at ?? undefined,
     peopleHasMore: r.people_has_more ?? false,
+    publicContactsSearchedAt: r.public_contacts_searched_at ?? undefined,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
@@ -174,6 +182,7 @@ export function candidateToRow(
     rejection_reason: blankToUndefined(c.rejectionReason) ?? null,
     people_searched_at: blankToUndefined(c.peopleSearchedAt) ?? null,
     people_has_more: c.peopleHasMore ?? false,
+    public_contacts_searched_at: blankToUndefined(c.publicContactsSearchedAt) ?? null,
   };
 }
 
@@ -205,6 +214,9 @@ export function candidateToPatchRow(
   if (has(patch, "rejectionReason")) row.rejection_reason = blankToUndefined(patch.rejectionReason) ?? null;
   if (has(patch, "peopleSearchedAt")) row.people_searched_at = blankToUndefined(patch.peopleSearchedAt) ?? null;
   if (has(patch, "peopleHasMore")) row.people_has_more = patch.peopleHasMore ?? false;
+  if (has(patch, "publicContactsSearchedAt")) {
+    row.public_contacts_searched_at = blankToUndefined(patch.publicContactsSearchedAt) ?? null;
+  }
   return row as Partial<Omit<BuyerCandidateRow, "id" | "workspace_id" | "created_at" | "updated_at">>;
 }
 
@@ -232,8 +244,10 @@ export function contactFromRow(r: BuyerCandidateContactRow): BuyerCandidateConta
     fullNameAvailable: r.full_name_available ?? undefined,
     linkedinAvailable: r.linkedin_available ?? undefined,
     phoneAvailable: r.phone_available ?? undefined,
+    phoneNumber: r.phone_number ?? undefined,
     evidence: evidenceFromJson(r.evidence),
     discoveredAt: r.discovered_at ?? undefined,
+    revealedAt: r.revealed_at ?? undefined,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
@@ -267,8 +281,10 @@ export function contactToRow(
     full_name_available: c.fullNameAvailable ?? null,
     linkedin_available: c.linkedinAvailable ?? null,
     phone_available: c.phoneAvailable ?? null,
+    phone_number: sanitizePhoneNumber(c.phoneNumber) ?? null,
     evidence: evidenceToJson(c.evidence),
     discovered_at: c.discoveredAt ?? null,
+    revealed_at: blankToUndefined(c.revealedAt) ?? null,
   };
 }
 
@@ -304,8 +320,10 @@ export function contactToPatchRow(
   if (has(patch, "fullNameAvailable")) row.full_name_available = patch.fullNameAvailable ?? null;
   if (has(patch, "linkedinAvailable")) row.linkedin_available = patch.linkedinAvailable ?? null;
   if (has(patch, "phoneAvailable")) row.phone_available = patch.phoneAvailable ?? null;
+  if (has(patch, "phoneNumber")) row.phone_number = sanitizePhoneNumber(patch.phoneNumber) ?? null;
   if (has(patch, "evidence")) row.evidence = evidenceToJson(patch.evidence);
   if (has(patch, "discoveredAt")) row.discovered_at = patch.discoveredAt ?? null;
+  if (has(patch, "revealedAt")) row.revealed_at = blankToUndefined(patch.revealedAt) ?? null;
   return row as Partial<
     Omit<BuyerCandidateContactRow, "id" | "workspace_id" | "candidate_id" | "created_at" | "updated_at">
   >;
@@ -364,6 +382,100 @@ export function productMatchToPatchRow(
   return row as Partial<
     Omit<
       BuyerCandidateProductMatchRow,
+      "id" | "workspace_id" | "candidate_id" | "created_at" | "updated_at"
+    >
+  >;
+}
+
+export interface BuyerCandidatePublicEmailRow {
+  id: string;
+  workspace_id: string;
+  candidate_id: string;
+  email: string;
+  mailbox_type: string;
+  mailbox_kind: string;
+  source: string;
+  source_url: string;
+  is_primary: boolean;
+  discovered_at: string;
+  created_at: string;
+  updated_at: string;
+}
+
+const MAILBOX_TYPES = new Set<PublicMailboxType>([
+  "procurement",
+  "purchasing",
+  "imports",
+  "sourcing",
+  "sales",
+  "commercial",
+  "general",
+  "support",
+  "named",
+  "other",
+]);
+
+function mailboxTypeFromRow(raw: string | null | undefined): PublicMailboxType {
+  if (raw && MAILBOX_TYPES.has(raw as PublicMailboxType)) return raw as PublicMailboxType;
+  return "other";
+}
+
+function mailboxKindFromRow(raw: string | null | undefined): PublicMailboxKind {
+  return raw === "corporate" ? "corporate" : "external";
+}
+
+export function publicEmailFromRow(r: BuyerCandidatePublicEmailRow): BuyerCandidatePublicEmail {
+  return {
+    id: r.id,
+    candidateId: r.candidate_id,
+    email: r.email,
+    mailboxType: mailboxTypeFromRow(r.mailbox_type),
+    mailboxKind: mailboxKindFromRow(r.mailbox_kind),
+    source: "company_website",
+    sourceUrl: r.source_url,
+    isPrimary: r.is_primary,
+    discoveredAt: r.discovered_at,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+  };
+}
+
+export function publicEmailToRow(
+  e: Partial<BuyerCandidatePublicEmail>,
+  workspaceId: string,
+): Omit<BuyerCandidatePublicEmailRow, "created_at" | "updated_at"> {
+  return {
+    id: e.id!,
+    workspace_id: workspaceId,
+    candidate_id: e.candidateId!,
+    email: normalizeOptionalEmail(e.email) ?? "",
+    mailbox_type: e.mailboxType ?? "other",
+    mailbox_kind: e.mailboxKind ?? "external",
+    source: "company_website",
+    source_url: e.sourceUrl ?? "",
+    is_primary: e.isPrimary ?? false,
+    discovered_at: e.discoveredAt ?? new Date().toISOString(),
+  };
+}
+
+export function publicEmailToPatchRow(
+  patch: Partial<BuyerCandidatePublicEmail>,
+): Partial<
+  Omit<
+    BuyerCandidatePublicEmailRow,
+    "id" | "workspace_id" | "candidate_id" | "created_at" | "updated_at"
+  >
+> {
+  const row: Record<string, unknown> = {};
+  if (has(patch, "email")) row.email = normalizeOptionalEmail(patch.email) ?? "";
+  if (has(patch, "mailboxType")) row.mailbox_type = patch.mailboxType ?? "other";
+  if (has(patch, "mailboxKind")) row.mailbox_kind = patch.mailboxKind ?? "external";
+  if (has(patch, "sourceUrl")) row.source_url = patch.sourceUrl ?? "";
+  if (has(patch, "isPrimary")) row.is_primary = patch.isPrimary ?? false;
+  if (has(patch, "discoveredAt")) row.discovered_at = patch.discoveredAt ?? null;
+  return row as Partial<
+    Omit<
+      BuyerCandidatePublicEmailRow,
       "id" | "workspace_id" | "candidate_id" | "created_at" | "updated_at"
     >
   >;

@@ -1,4 +1,5 @@
 import type { CandidateEvidence } from "@/lib/buyerFinder/types";
+import { shouldShowEvidenceConfidence } from "@/lib/buyerFinder/scorePresentation";
 
 export function EvidenceList({ evidence }: { evidence: CandidateEvidence[] }) {
   if (evidence.length === 0) {
@@ -11,7 +12,9 @@ export function EvidenceList({ evidence }: { evidence: CandidateEvidence[] }) {
         <li key={`${item.note}-${i}`} className="text-[13px] leading-relaxed">
           <p className="text-text-primary">{item.note}</p>
           <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11.5px] text-text-muted">
-            <span className="tabular-nums">Confidence {item.confidence}%</span>
+            {shouldShowEvidenceConfidence(item.note, item.confidence) && (
+              <span className="tabular-nums">Confidence {item.confidence}%</span>
+            )}
             {item.url && (
               <a
                 href={item.url}

@@ -8,7 +8,9 @@ import { toast } from "@/components/ui/Toast";
 import { SearchView, type SearchFormValue } from "./SearchView";
 import { QueueView, type QueueRowInput } from "./QueueView";
 import { ProviderUsageIndicator } from "@/components/buyerFinder/ProviderUsageIndicator";
+import { PublicWebsiteCapabilityChip } from "@/components/buyerFinder/PublicWebsiteCapabilityChip";
 import { SearchRunProgressSurface } from "@/components/buyerFinder/SearchRunProgress";
+import { ResearchServicesCluster, ResearchServicesSep } from "@/components/buyerFinder/workspaceChrome";
 import {
   getHunterUsageAction,
   type HunterUsageResult,
@@ -27,11 +29,14 @@ import {
 } from "@/lib/buyerFinder/searchRun";
 import { ALREADY_RUNNING_MESSAGE } from "@/lib/buyerFinder/searchRunCopy";
 import {
-  HUNTER_DISCOVERY_DISABLED_FOOTER,
   HUNTER_NOT_CONFIGURED_FOOTER,
   type HunterDiscoveryAvailability,
 } from "@/lib/buyerFinder/hunterAvailability";
+import type { HunterRevealAvailability } from "@/lib/buyerFinder/hunterRevealAvailability";
+import type { PublicWebsiteAvailability } from "@/lib/buyerFinder/publicWebsiteAvailability";
 import { useSearchRunPolling } from "@/lib/buyerFinder/useSearchRunPolling";
+import { FreeEnrichmentSummaryPanel } from "@/components/buyerFinder/FreeEnrichmentSummaryPanel";
+import type { FreeEnrichmentSummary } from "@/lib/buyerFinder/freeEnrichmentSummary";
 
 type Tab = "search" | "queue";
 
@@ -47,13 +52,19 @@ export function BuyerFinderView({
   initialSummary,
   queueLimit,
   hunterDiscovery,
+  hunterReveal = "disabled",
+  publicWebsite = "ready",
   initialActiveRun,
+  enrichmentSummary,
 }: {
   initialQueue: QueueRow[];
   initialSummary: QueueSummary;
   queueLimit: number;
   hunterDiscovery: HunterDiscoveryAvailability;
+  hunterReveal?: HunterRevealAvailability;
+  publicWebsite?: PublicWebsiteAvailability;
   initialActiveRun: SafeSearchRunSnapshot | null;
+  enrichmentSummary?: FreeEnrichmentSummary;
 }) {
   const router = useRouter();
   const [tab, setTab] = useState<Tab>("search");
@@ -69,20 +80,14 @@ export function BuyerFinderView({
     !!activeRun && !isTerminal(activeRun.status) && !isRunStale(activeRun);
 
   const disabledReason =
-    hunterDiscovery === "disabled"
-      ? HUNTER_DISCOVERY_DISABLED_FOOTER
-      : hunterDiscovery === "not_configured"
-        ? HUNTER_NOT_CONFIGURED_FOOTER
-        : healthyActive
-          ? ALREADY_RUNNING_MESSAGE
-          : null;
+    hunterDiscovery === "not_configured"
+      ? HUNTER_NOT_CONFIGURED_FOOTER
+      : healthyActive
+        ? ALREADY_RUNNING_MESSAGE
+        : null;
 
   useEffect(() => {
     let cancelled = false;
-    if (hunterDiscovery === "disabled") {
-      setUsage({ outcome: "disabled", usage: null });
-      return;
-    }
     if (hunterDiscovery !== "ready") {
       setUsage({ outcome: "not_configured", usage: null });
       return;
@@ -181,17 +186,24 @@ export function BuyerFinderView({
   }
 
   return (
-    <PageContainer size="wide">
+    <PageContainer size="wide" className="!py-6 md:!py-7">
       <PageHeader
         title="Buyer Finder"
-        subtitle="Search real companies, review candidates, and approve for later Buyer conversion. Nothing becomes a Buyer automatically."
+        subtitle="Find, research, and prioritize potential buyers."
         actions={
-          usage ? (
-            <ProviderUsageIndicator
-              usage={usage.outcome === "ok" ? usage.usage : null}
-              state={usage.outcome}
-            />
-          ) : null
+          <ResearchServicesCluster>
+            <PublicWebsiteCapabilityChip state={publicWebsite} />
+            <ResearchServicesSep />
+            {usage ? (
+              <ProviderUsageIndicator
+                usage={usage.outcome === "ok" ? usage.usage : null}
+                state={usage.outcome}
+                hunterReveal={hunterReveal}
+              />
+            ) : (
+              <span className="text-[11.5px] text-text-muted">Hunter</span>
+            )}
+          </ResearchServicesCluster>
         }
       />
 
@@ -252,6 +264,12 @@ export function BuyerFinderView({
       {tab === "queue" && (
         <div>
           <QueueHeader summary={initialSummary} limit={queueLimit} />
+          {enrichmentSummary && (
+            <FreeEnrichmentSummaryPanel
+              summary={enrichmentSummary}
+              paused={false}
+            />
+          )}
           <QueueView rows={toQueueInputs(initialQueue)} />
         </div>
       )}
@@ -264,13 +282,25 @@ function toQueueInputs(rows: QueueRow[]): QueueRowInput[] {
     candidate: r.candidate,
     productMatches: r.productMatches,
     contactCount: r.contactCount,
+    bestContactTitle: r.bestContactTitle,
+    bestContactName: r.bestContactName,
+    bestHasLinkedin: r.bestHasLinkedin,
+    bestIsDecisionMaker: r.bestIsDecisionMaker,
+    priorityReason: r.priorityReason,
+    publicCompanyEmail: r.publicCompanyEmail,
+    revealPriority: r.revealPriority,
+    publicJobStatus: r.publicJobStatus,
+    peopleJobStatus: r.peopleJobStatus,
+    roleRelevance: r.roleRelevance,
+    contactQuality: r.contactQuality,
+    convertedBuyerId: r.convertedBuyerId,
   }));
 }
 
 function QueueHeader({ summary, limit }: { summary: QueueSummary; limit: number }) {
   const capped = summary.total > limit;
   return (
-    <div className="mb-4 text-[12.5px] text-text-muted flex flex-wrap gap-x-4 gap-y-1">
+    <div className="mb-2 text-[11.5px] text-text-muted/80 flex flex-wrap gap-x-3 gap-y-0.5">
       <span>
         {summary.total} total{capped ? ` (showing latest ${limit})` : ""}
       </span>

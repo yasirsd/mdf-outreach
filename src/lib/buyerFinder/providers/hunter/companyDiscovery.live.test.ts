@@ -5,7 +5,6 @@
  * Does NOT run during ordinary `npm test`.
  * Enable with ALL of:
  *   HUNTER_LIVE_TEST=1
- *   BUYER_FINDER_HUNTER_ENABLED=true
  *   HUNTER_API_KEY present
  *   BUYER_FINDER_HUNTER_ENRICHMENT_ENABLED !== true
  *
@@ -26,10 +25,9 @@ import { HunterDiscoveryError, redactSecret } from "./errors";
 import { HUNTER_DISCOVER_URL } from "./query";
 
 const liveEnabled = process.env.HUNTER_LIVE_TEST === "1";
-const hunterEnabled = process.env.BUYER_FINDER_HUNTER_ENABLED === "true";
 const enrichmentEnabled = process.env.BUYER_FINDER_HUNTER_ENRICHMENT_ENABLED === "true";
 const liveApiKey = (process.env.HUNTER_API_KEY ?? "").trim();
-const canRunLive = liveEnabled && hunterEnabled && liveApiKey.length > 0 && !enrichmentEnabled;
+const canRunLive = liveEnabled && liveApiKey.length > 0 && !enrichmentEnabled;
 
 const budget = {
   discover: 0,
@@ -149,9 +147,6 @@ describe.skipIf(!canRunLive)("Hunter live (developer only)", () => {
   it("runs Usage once, then Discover once for Thailand + guntur-chilli", async () => {
     if (process.env.HUNTER_LIVE_TEST !== "1") {
       throw new Error("Live-test safety: HUNTER_LIVE_TEST is not 1. Aborting without network.");
-    }
-    if (process.env.BUYER_FINDER_HUNTER_ENABLED !== "true") {
-      throw new Error("Live-test safety: BUYER_FINDER_HUNTER_ENABLED is not true. Aborting without network.");
     }
     if (process.env.BUYER_FINDER_HUNTER_ENRICHMENT_ENABLED === "true") {
       throw new Error("Live-test safety: BUYER_FINDER_HUNTER_ENRICHMENT_ENABLED is true. Aborting.");

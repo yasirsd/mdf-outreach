@@ -20,6 +20,7 @@ describe("route classification", () => {
     expect(isPublicRoute("/settings")).toBe(false);
     expect(isPublicRoute("/api/app-session/touch")).toBe(false);
     expect(isPublicRoute("/activity")).toBe(false);
+    expect(isPublicRoute("/bf4r-visual")).toBe(false);
   });
 
   it("does not mistake similar-looking prefixes for public routes", () => {

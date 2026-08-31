@@ -5,14 +5,17 @@ export function ScoreBadge({
   label = "Score",
   compact = false,
   max = 100,
+  quiet = false,
 }: {
   value: number;
   label?: string;
   compact?: boolean;
   max?: number;
+  quiet?: boolean;
 }) {
-  const tone =
-    value >= 80
+  const tone = quiet
+    ? { fg: "#A1A1AA", bg: "rgba(255,255,255,0.04)", border: "rgba(255,255,255,0.08)" }
+    : value >= 80
       ? { fg: "#86EFAC", bg: "rgba(34,197,94,0.10)", border: "rgba(34,197,94,0.28)" }
       : value >= 60
         ? { fg: "#F8894C", bg: "rgba(243,107,33,0.10)", border: "rgba(243,107,33,0.28)" }

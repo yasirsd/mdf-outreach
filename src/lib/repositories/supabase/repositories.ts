@@ -16,8 +16,12 @@ import type {
   AssetRepository,
   BuyerCandidateContactRepository,
   BuyerCandidateProductMatchRepository,
+  BuyerCandidatePublicEmailRepository,
   BuyerCandidateRepository,
   BuyerFinderSearchRunRepository,
+  BuyerFinderContactRevealEventRepository,
+  BuyerFinderFreeEnrichmentJobRepository,
+  BuyerFinderCandidateConversionRepository,
   BuyerRepository,
   CampaignRepository,
   PaginatedBuyerQuery,
@@ -51,7 +55,11 @@ import {
 import { createBuyerCandidateRepository } from "./buyerCandidateRepository";
 import { createBuyerCandidateContactRepository } from "./buyerCandidateContactRepository";
 import { createBuyerCandidateProductMatchRepository } from "./buyerCandidateProductMatchRepository";
+import { createBuyerCandidatePublicEmailRepository } from "./buyerCandidatePublicEmailRepository";
 import { createBuyerFinderSearchRunRepository } from "./buyerFinderSearchRunRepository";
+import { createBuyerFinderContactRevealEventRepository } from "./buyerFinderContactRevealEventRepository";
+import { createBuyerFinderFreeEnrichmentJobRepository } from "./buyerFinderFreeEnrichmentJobRepository";
+import { createBuyerFinderCandidateConversionRepository } from "./buyerFinderConversionRepository";
 
 function clamp(n: number, lo: number, hi: number): number {
   if (!Number.isFinite(n)) return lo;
@@ -616,7 +624,11 @@ export interface SupabaseRepositoryBundle {
   buyerCandidates: BuyerCandidateRepository;
   buyerCandidateContacts: BuyerCandidateContactRepository;
   buyerCandidateProductMatches: BuyerCandidateProductMatchRepository;
+  buyerCandidatePublicEmails: BuyerCandidatePublicEmailRepository;
   buyerFinderSearchRuns: BuyerFinderSearchRunRepository;
+  buyerFinderContactRevealEvents: BuyerFinderContactRevealEventRepository;
+  buyerFinderFreeEnrichmentJobs: BuyerFinderFreeEnrichmentJobRepository;
+  buyerFinderCandidateConversions: BuyerFinderCandidateConversionRepository;
 }
 
 export function createSupabaseRepositories(
@@ -636,7 +648,23 @@ export function createSupabaseRepositories(
     supabase,
     workspaceId,
   );
+  const buyerCandidatePublicEmails = createBuyerCandidatePublicEmailRepository(
+    supabase,
+    workspaceId,
+  );
   const buyerFinderSearchRuns = createBuyerFinderSearchRunRepository(supabase, workspaceId);
+  const buyerFinderContactRevealEvents = createBuyerFinderContactRevealEventRepository(
+    supabase,
+    workspaceId,
+  );
+  const buyerFinderFreeEnrichmentJobs = createBuyerFinderFreeEnrichmentJobRepository(
+    supabase,
+    workspaceId,
+  );
+  const buyerFinderCandidateConversions = createBuyerFinderCandidateConversionRepository(
+    supabase,
+    workspaceId,
+  );
   const workspace = new SupabaseWorkspaceService(
     buyers,
     campaigns,
@@ -660,6 +688,10 @@ export function createSupabaseRepositories(
     buyerCandidates,
     buyerCandidateContacts,
     buyerCandidateProductMatches,
+    buyerCandidatePublicEmails,
     buyerFinderSearchRuns,
+    buyerFinderContactRevealEvents,
+    buyerFinderFreeEnrichmentJobs,
+    buyerFinderCandidateConversions,
   };
 }

@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { isDirectoryKeywordMatch, productMatchStrengthLabel } from "./scorePresentation";
+import {
+  isDirectoryKeywordMatch,
+  productMatchStrengthLabel,
+  shouldShowEvidenceConfidence,
+} from "./scorePresentation";
 import type { BuyerCandidateProductMatch } from "./types";
 
 function match(over: Partial<BuyerCandidateProductMatch> = {}): BuyerCandidateProductMatch {
@@ -49,5 +53,20 @@ describe("productMatchStrengthLabel", () => {
         }),
       ),
     ).toBe("83% relevance");
+  });
+});
+
+describe("shouldShowEvidenceConfidence", () => {
+  it("hides Hunter directory-match confidence so 40 is not shown as a buyer percentage", () => {
+    expect(
+      shouldShowEvidenceConfidence(
+        "Hunter Discover company match. Directory match only — not proof of import or distribution.",
+        40,
+      ),
+    ).toBe(false);
+  });
+
+  it("still shows confidence for other meaningful evidence", () => {
+    expect(shouldShowEvidenceConfidence("Listed in the mock chilli catalogue.", 80)).toBe(true);
   });
 });

@@ -3,10 +3,9 @@ import { revalidatePath } from "next/cache";
 import { requireMdfSession } from "@/lib/auth/require";
 import { serverRepositories } from "@/lib/repositories/server";
 import {
-  isBuyerFinderHunterEnabled,
   isBuyerFinderHunterReady,
   requireBuyerFinderHunterApiKey,
-  HUNTER_DISCOVERY_DISABLED_MESSAGE,
+  HUNTER_NOT_CONFIGURED_MESSAGE,
 } from "@/lib/buyerFinder/config";
 import { createHunterCompanyDiscoveryProvider } from "@/lib/buyerFinder/providers/hunter/companyDiscovery";
 import { executeSearchRun } from "@/lib/buyerFinder/executeSearchRun";
@@ -52,10 +51,9 @@ export async function POST(
       contacts: repos.buyerCandidateContacts,
       productMatches: repos.buyerCandidateProductMatches,
     },
+    freeEnrichmentJobs: repos.buyerFinderFreeEnrichmentJobs,
     isProviderConfigured: isBuyerFinderHunterReady,
-    providerUnavailableMessage: isBuyerFinderHunterEnabled()
-      ? undefined
-      : HUNTER_DISCOVERY_DISABLED_MESSAGE,
+    providerUnavailableMessage: HUNTER_NOT_CONFIGURED_MESSAGE,
     createCompanyProvider: () =>
       createHunterCompanyDiscoveryProvider({
         apiKey: requireBuyerFinderHunterApiKey(),

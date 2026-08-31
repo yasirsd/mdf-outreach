@@ -110,11 +110,13 @@ describe("BF2.2 search-run security guardrails", () => {
     expect(EXECUTE).not.toMatch(/offset/);
   });
 
-  it("execute and create honor the runtime enabled gate before Hunter", () => {
-    expect(ACTIONS).toContain("isBuyerFinderHunterEnabled");
+  it("execute and create require Hunter credentials, not an enable switch", () => {
+    expect(ACTIONS).not.toContain("isBuyerFinderHunterEnabled");
     expect(ACTIONS).toContain("isBuyerFinderHunterReady");
+    expect(ACTIONS).toContain("isBuyerFinderHunterConfigured");
     expect(ROUTE).toContain("isBuyerFinderHunterReady");
-    expect(ROUTE).toContain("HUNTER_DISCOVERY_DISABLED_MESSAGE");
+    expect(ROUTE).toContain("HUNTER_NOT_CONFIGURED_MESSAGE");
+    expect(ROUTE).not.toContain("HUNTER_DISCOVERY_DISABLED_MESSAGE");
     expect(VIEW).not.toMatch(/NEXT_PUBLIC/);
     expect(VIEW).not.toMatch(/BUYER_FINDER_HUNTER_API_KEY/);
     expect(VIEW).toContain("hunterDiscovery");

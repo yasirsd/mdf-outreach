@@ -5,59 +5,45 @@ import { Modal } from "@/components/ui/Modal";
 import {
   formatUsageResetDate,
   primaryUsageBucket,
-  usageLevel,
   type ProviderUsage,
-  type UsageLevel,
 } from "@/lib/buyerFinder/usage";
 import { ProviderUsageDetails } from "./ProviderUsageDetails";
-
-const LEVEL_BAR: Record<UsageLevel, string> = {
-  normal: "#86EFAC",
-  attention: "#EBC275",
-  low: "var(--brand-orange)",
-  critical: "#F08B7E",
-};
+import type { HunterRevealAvailability } from "@/lib/buyerFinder/hunterRevealAvailability";
 
 export type UsageIndicatorState = "ok" | "not_configured" | "unavailable" | "disabled" | null;
 
 /**
- * BF2 — Hunter usage indicator.
+ * Hunter usage indicator.
  *
- * Semantics (from BF2 brief):
- *   • Hunter Discover is FREE and NOT gated by the 50-credit contact/email
- *     bucket. The trigger row always displays "Discovery · Free" and the
- *     modal shows credits as a SEPARATE contact/email concern.
- *   • When Hunter is not configured, or when the usage endpoint fails,
- *     the row still renders — with a quiet informational state — because
- *     Discover itself is still usable when the operator has the key
- *     configured.
+ * Company discovery and masked people discovery are free whenever
+ * Hunter is configured. There is no operator enable switch.
+ * Contact/email credits are a separate personal-reveal concern.
  */
 export function ProviderUsageIndicator({
   usage,
   state,
+  hunterReveal = "disabled",
 }: {
   usage: ProviderUsage | null;
   state: UsageIndicatorState;
+  hunterReveal?: HunterRevealAvailability;
 }) {
   const [open, setOpen] = useState(false);
   const primary = usage ? primaryUsageBucket(usage) : undefined;
   const remaining = primary?.bucket.remaining ?? 0;
-  const percent = primary?.bucket.percentUsed ?? 0;
-  const level = usageLevel(percent);
   const resetLabel = usage ? formatUsageResetDate(usage.resetDate) : null;
+  const configured = state !== "not_configured" && state !== "disabled";
 
-  const discoveryLabel = state === "disabled" ? "Discovery · Disabled" : "Discovery · Free";
+  const discoveryLabel = configured ? "People · Free" : "Not configured";
 
   const trailing =
-    state === "disabled"
+    !configured
       ? null
-      : state === "not_configured"
-        ? "Not configured"
-        : state === "unavailable"
-          ? "Usage unavailable"
-          : primary
-            ? `${remaining} contact credits`
-            : "No contact credits reported";
+      : state === "unavailable"
+        ? "Usage unavailable"
+        : primary
+          ? `Personal reveal · ${remaining} credits`
+          : "No personal reveal credits reported";
 
   const aria = `Hunter · ${discoveryLabel}${trailing ? ` · ${trailing}` : ""}${resetLabel ? `, resets ${resetLabel}` : ""}. Open details.`;
 
@@ -67,30 +53,21 @@ export function ProviderUsageIndicator({
         type="button"
         onClick={() => setOpen(true)}
         aria-label={aria}
-        className="flex items-center gap-2.5 rounded-[10px] px-2.5 py-1.5 text-left hover:bg-app-hover focus-ring-quiet"
-        style={{ border: "1px solid var(--app-border)" }}
+        className="inline-flex items-center gap-2 text-left focus-ring-quiet rounded-sm"
       >
-        <span className="text-[10.5px] tracking-[0.16em] uppercase text-brand-orange font-medium">
+        <span className="text-[11.5px] font-medium text-text-secondary whitespace-nowrap">
           Hunter
         </span>
-        <span className="text-[11.5px] text-text-secondary whitespace-nowrap">
+        <span className="text-[11.5px] text-text-muted whitespace-nowrap">
           {discoveryLabel}
         </span>
         {state === "ok" && primary && (
           <>
-            <span
-              role="presentation"
-              aria-hidden
-              className="hidden sm:block w-[52px] h-1.5 rounded-full overflow-hidden shrink-0"
-              style={{ backgroundColor: "var(--app-hover)" }}
-            >
-              <span
-                className="block h-full rounded-full"
-                style={{ width: `${percent}%`, backgroundColor: LEVEL_BAR[level] }}
-              />
+            <span aria-hidden className="text-text-muted/35">
+              |
             </span>
-            <span className="text-[12px] tabular-nums text-text-secondary whitespace-nowrap">
-              {remaining} credits
+            <span className="text-[11.5px] tabular-nums text-text-muted whitespace-nowrap">
+              Personal reveal · {remaining} credits
             </span>
           </>
         )}
@@ -106,9 +83,9 @@ export function ProviderUsageIndicator({
         onClose={() => setOpen(false)}
         title="Hunter"
         subtitle={
-          state === "disabled"
-            ? "Hunter company discovery is disabled on this server."
-            : "Company discovery is free. Contact / email credits are a separate Hunter plan concern."
+          configured
+            ? "Company discovery and decision-maker discovery are free. Contact / email credits are a separate Hunter plan concern."
+            : "Hunter is not configured on this server."
         }
         size="sm"
       >
@@ -123,21 +100,46 @@ export function ProviderUsageIndicator({
             >
               <div className="font-medium text-text-primary mb-1">Company discovery</div>
               <div className="text-text-secondary">
-                {state === "disabled"
-                  ? "Disabled on this server. No Discover request is sent."
-                  : "Free — no credits consumed for the Hunter Discover endpoint."}
+                {configured
+                  ? "Free — no credits consumed for the Hunter Discover endpoint."
+                  : "Not configured. Add a Hunter API key to enable company discovery."}
+              </div>
+            </div>
+            <div
+              className="rounded-[10px] p-3.5 text-[12.5px]"
+              style={{
+                backgroundColor: "var(--app-surface)",
+                border: "1px solid var(--app-border)",
+              }}
+            >
+              <div className="font-medium text-text-primary mb-1">Decision-maker discovery</div>
+              <div className="text-text-secondary">
+                {configured
+                  ? "Free — masked professional records. No contact credits are used."
+                  : "Not configured. Add a Hunter API key to enable people discovery."}
+              </div>
+            </div>
+            <div
+              className="rounded-[10px] p-3.5 text-[12.5px]"
+              style={{
+                backgroundColor: "var(--app-surface)",
+                border: "1px solid var(--app-border)",
+              }}
+            >
+              <div className="font-medium text-text-primary mb-1">
+                {hunterReveal === "ready" ? "Personal contact reveal" : "Email/contact reveal"}
+              </div>
+              <div className="text-text-secondary">
+                {hunterReveal === "ready"
+                  ? "Up to 1 Hunter Search credit per person. Already-revealed rows in the current billing period may cost 0."
+                  : "Locked. Reveal is not available on this server."}
               </div>
             </div>
             <div>
               <div className="text-[10.5px] tracking-[0.16em] uppercase text-text-muted font-medium mb-2">
                 Contact / email credits
               </div>
-              {state === "disabled" && (
-                <p className="text-[12.5px] text-text-muted">
-                  Hunter company discovery is disabled. Contact / email credits are not fetched.
-                </p>
-              )}
-              {state === "not_configured" && (
+              {!configured && (
                 <p className="text-[12.5px] text-text-muted">
                   Hunter is not configured on this server. Contact MDF admin.
                 </p>
@@ -147,7 +149,9 @@ export function ProviderUsageIndicator({
                   Usage information is currently unavailable. Discovery is not affected.
                 </p>
               )}
-              {state === "ok" && usage && <ProviderUsageDetails usage={usage} />}
+              {state === "ok" && usage && (
+                <ProviderUsageDetails usage={usage} hunterReveal={hunterReveal} />
+              )}
               {state === "ok" && usage && !primary && (
                 <p className="mt-2 text-[12.5px] text-text-muted">
                   Contact credits are not reported by Hunter for this key.

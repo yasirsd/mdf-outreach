@@ -149,6 +149,11 @@ export interface DiscoverAndIngestInput {
   progress?: IngestionProgressReporter;
   /** Provider id reported on `discoveryStarted` (e.g. "hunter"). */
   progressProvider?: string;
+  /**
+   * BF3C — enqueue durable free-enrichment jobs after persist.
+   * Must be DB-only (no website/Hunter calls). Failures are swallowed.
+   */
+  enqueueFreeEnrichment?: (candidate: BuyerCandidate) => Promise<void>;
 }
 
 function emptyResult(): IngestionBatchResult {
@@ -172,6 +177,18 @@ async function emitProgress(fn: undefined | (() => void | Promise<void>)): Promi
     await fn();
   } catch {
     // Reporter failure must never break ingestion.
+  }
+}
+
+async function enqueueAfterPersist(
+  enqueue: DiscoverAndIngestInput["enqueueFreeEnrichment"],
+  candidate: BuyerCandidate | undefined,
+): Promise<void> {
+  if (!enqueue || !candidate) return;
+  try {
+    await enqueue(candidate);
+  } catch {
+    // Queue insert must never fail the Search Run persist path.
   }
 }
 
@@ -599,6 +616,8 @@ export async function discoverAndIngestCandidates(
           } else {
             result.skippedExactDuplicates += 1;
           }
+          const latest = await repos.candidates.get(existing.id);
+          await enqueueAfterPersist(input.enqueueFreeEnrichment, latest ?? existing);
         }
         processed += 1;
         await emitProgress(() =>
@@ -656,6 +675,7 @@ export async function discoverAndIngestCandidates(
       }
       await rescore(repos, id, productId, query.country);
       result.created += 1;
+      await enqueueAfterPersist(input.enqueueFreeEnrichment, candidate);
     } catch (err) {
       result.failures.push({
         providerRecordId: normalized.providerRecordId,

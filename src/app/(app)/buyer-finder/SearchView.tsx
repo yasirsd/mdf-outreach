@@ -59,13 +59,16 @@ export function SearchView({
         e.preventDefault();
         if (canSubmit) onSearch();
       }}
-      className="rounded-[12px] p-6 space-y-5"
-      style={{
-        backgroundColor: "var(--app-surface)",
-        border: "1px solid var(--app-border)",
-      }}
+      className="rounded-[12px] p-5 lg:p-7 space-y-6"
+      style={{ backgroundColor: "var(--app-surface)" }}
     >
-      <div className="grid sm:grid-cols-2 gap-4">
+      <div>
+        <h2 className="text-[15px] font-semibold tracking-tight text-text-primary">New search</h2>
+        <p className="mt-1 text-[13px] text-text-secondary">
+          Discover companies by market and product. Search does not reveal personal contacts.
+        </p>
+      </div>
+      <div className="grid sm:grid-cols-2 xl:grid-cols-3 gap-5">
         <label className="block">
           <span className="label">Country</span>
           <select
@@ -139,9 +142,9 @@ export function SearchView({
                 style={
                   active
                     ? {
-                        backgroundColor: "rgba(243,107,33,0.12)",
-                        color: "var(--brand-orange)",
-                        borderColor: "rgba(243,107,33,0.28)",
+                        backgroundColor: "var(--app-surface-2, #1f1f1f)",
+                        color: "var(--text-primary)",
+                        borderColor: "var(--app-border-strong)",
                       }
                     : undefined
                 }

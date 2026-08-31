@@ -9,7 +9,6 @@ const store = createMemorySearchRunStore();
 const harness = {
   requireMdfSession: vi.fn(async () => SESSION),
   isConfigured: vi.fn(() => true),
-  isEnabled: vi.fn(() => true),
   requireKey: vi.fn(() => "server-only-key"),
   revalidatePath: vi.fn(),
   discover: vi.fn(async (_query?: unknown) => [] as unknown[]),
@@ -29,10 +28,8 @@ vi.mock("next/headers", () => ({ cookies: () => ({}) }));
 
 vi.mock("@/lib/buyerFinder/config", () => ({
   isBuyerFinderHunterConfigured: () => harness.isConfigured(),
-  isBuyerFinderHunterEnabled: () => harness.isEnabled(),
-  isBuyerFinderHunterReady: () => harness.isEnabled() && harness.isConfigured(),
+  isBuyerFinderHunterReady: () => harness.isConfigured(),
   requireBuyerFinderHunterApiKey: () => harness.requireKey(),
-  HUNTER_DISCOVERY_DISABLED_MESSAGE: "Hunter company discovery is disabled on this server.",
   HUNTER_NOT_CONFIGURED_MESSAGE: "Hunter is not configured on this server. Contact MDF admin.",
 }));
 
@@ -51,6 +48,7 @@ vi.mock("@/lib/repositories/server", () => ({
       buyerCandidates: harness.ingestion.candidates,
       buyerCandidateContacts: harness.ingestion.contacts,
       buyerCandidateProductMatches: harness.ingestion.productMatches,
+      buyerFinderFreeEnrichmentJobs: harness.ingestion.freeEnrichmentJobs,
     },
   }),
 }));
@@ -67,7 +65,6 @@ describe("searchRunActions", () => {
   beforeEach(() => {
     harness.requireMdfSession.mockImplementation(async () => SESSION);
     harness.isConfigured.mockReturnValue(true);
-    harness.isEnabled.mockReturnValue(true);
     harness.requireKey.mockReturnValue("server-only-key");
     harness.discover.mockReset();
     harness.discover.mockResolvedValue([]);
@@ -150,35 +147,28 @@ describe("searchRunActions", () => {
     expect(store.rows.size).toBe(0);
   });
 
-  it("gate false + API key present rejects create and never calls Hunter", async () => {
-    harness.isEnabled.mockReturnValue(false);
-    harness.isConfigured.mockReturnValue(true);
+  it("API key present allows create without a Hunter enable switch", async () => {
     const r = await createBuyerFinderSearchRunAction({
       country: "Thailand",
       productId: "guntur-dry-red-chilli",
     });
-    expect(r.outcome).toBe("disabled");
-    if (r.outcome !== "disabled") return;
-    expect(r.message).toMatch(/disabled/i);
-    expect(r.message).not.toMatch(/BUYER_FINDER|api[_-]?key/i);
-    expect(store.rows.size).toBe(0);
-    expect(harness.discover).not.toHaveBeenCalled();
+    expect(r.outcome).toBe("created");
     expect(harness.requireKey).not.toHaveBeenCalled();
   });
 
-  it("gate false + direct execute never calls the Hunter provider", async () => {
+  it("key absent during execute never calls the Hunter provider", async () => {
     const created = await createBuyerFinderSearchRunAction({
       country: "Thailand",
       productId: "guntur-dry-red-chilli",
     });
     expect(created.outcome).toBe("created");
     if (created.outcome !== "created") return;
-    harness.isEnabled.mockReturnValue(false);
+    harness.isConfigured.mockReturnValue(false);
     const exec = await executeBuyerFinderSearchRunAction(created.run.id);
     expect(harness.discover).not.toHaveBeenCalled();
     expect(exec.outcome).toBe("failed");
     expect(exec.run?.providerStatus).toBe("not_configured");
-    expect(exec.message).toMatch(/disabled/i);
+    expect(exec.message).toMatch(/not configured/i);
     expect(JSON.stringify(exec)).not.toMatch(/server-only-key|BUYER_FINDER_HUNTER/i);
   });
 

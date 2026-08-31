@@ -64,7 +64,7 @@ function snap(over: Partial<SafeSearchRunSnapshot> = {}): SafeSearchRunSnapshot 
 
 function renderView(over?: {
   initialActiveRun?: SafeSearchRunSnapshot | null;
-  hunterDiscovery?: "disabled" | "not_configured" | "ready";
+  hunterDiscovery?: "not_configured" | "ready";
 }) {
   return render(
     <BuyerFinderView
@@ -120,21 +120,14 @@ describe("BuyerFinderView search-run UX", () => {
     });
   });
 
-  it("disables Find buyers and does not fetch usage when discovery is gated off", () => {
-    renderView({ hunterDiscovery: "disabled" });
+  it("disables Find buyers and does not fetch usage when Hunter is not configured", () => {
+    renderView({ hunterDiscovery: "not_configured" });
     expect(screen.getByRole("button", { name: /Find buyers/i }).hasAttribute("disabled")).toBe(true);
-    expect(screen.getByText("Hunter company discovery is disabled.")).toBeTruthy();
-    expect(screen.getByText(/Discovery · Disabled/)).toBeTruthy();
+    expect(screen.getAllByText("Hunter is not configured on this server.").length).toBeGreaterThanOrEqual(1);
+    expect(screen.queryByText(/Discovery · Disabled/)).toBeNull();
     expect(screen.queryByText(/50 credits/)).toBeNull();
     expect(getUsage).not.toHaveBeenCalled();
     expect(createRun).not.toHaveBeenCalled();
-  });
-
-  it("disables Find buyers when the gate is on but the key is missing", () => {
-    renderView({ hunterDiscovery: "not_configured" });
-    expect(screen.getByRole("button", { name: /Find buyers/i }).hasAttribute("disabled")).toBe(true);
-    expect(screen.getByText("Hunter is not configured on this server.")).toBeTruthy();
-    expect(getUsage).not.toHaveBeenCalled();
   });
 
   it("describes buyer type as search intent and contact priorities as search-run state", () => {

@@ -6,8 +6,12 @@
 --    different candidate companies) to (workspace, candidate, email).
 -- 2. Add provider_ref + professional metadata for Hunter Multi-Domain
 --    Search masked rows. Actual email / LinkedIn URL / phone stay NULL.
--- 3. Unique provider_ref per workspace+source for BF3A person identity.
--- 4. Candidate-level "people searched" markers so a zero-result search
+--    provider_ref is an opaque provider reference / current reveal handle.
+--    It is NOT permanent MDF person identity (handles may rotate).
+-- 3. Unique provider_ref per workspace+source as SECONDARY collision
+--    protection for the current handle — not primary person identity.
+-- 4. At most one primary contact per candidate.
+-- 5. Candidate-level "people searched" markers so a zero-result search
 --    is distinguishable from "not searched yet".
 
 -- ---------------------------------------------------------------------------
@@ -37,6 +41,12 @@ do $$ begin
     check (email_type is null or email_type in ('personal', 'generic'));
 exception when duplicate_object then null; end $$;
 
+do $$ begin
+  alter table public.buyer_candidate_contacts
+    add constraint buyer_candidate_contacts_evidence_is_array
+    check (jsonb_typeof(evidence) = 'array');
+exception when duplicate_object then null; end $$;
+
 -- Email uniqueness: was workspace-wide; now per candidate.
 drop index if exists public.buyer_candidate_contacts_workspace_email_unique_idx;
 
@@ -44,9 +54,16 @@ create unique index if not exists buyer_candidate_contacts_candidate_email_uniqu
   on public.buyer_candidate_contacts (workspace_id, candidate_id, lower(business_email))
   where business_email is not null;
 
+-- Secondary collision protection for the current opaque provider reference
+-- (Hunter reveal_handle). Permanent person identity is a candidate-scoped
+-- fingerprint computed in application code, not this column.
 create unique index if not exists buyer_candidate_contacts_provider_ref_unique_idx
   on public.buyer_candidate_contacts (workspace_id, source, provider_ref)
   where provider_ref is not null;
+
+create unique index if not exists buyer_candidate_contacts_one_primary_per_candidate_idx
+  on public.buyer_candidate_contacts (workspace_id, candidate_id)
+  where is_primary = true;
 
 create index if not exists buyer_candidate_contacts_candidate_primary_idx
   on public.buyer_candidate_contacts (candidate_id, is_primary desc);

@@ -162,7 +162,7 @@ describe("executeSearchRun", () => {
     expect(ctx.createCompanyProvider).not.toHaveBeenCalled();
   });
 
-  it("uses the disabled message when the provider is blocked by the runtime gate", async () => {
+  it("uses the not-configured message when Hunter credentials are missing", async () => {
     const ctx = setup({ async discover() { return [hit()]; } }, false);
     const run = await ctx.seed();
     const result = await executeSearchRun({
@@ -171,10 +171,10 @@ describe("executeSearchRun", () => {
       ingestionRepos: ctx.ingestionRepos,
       createCompanyProvider: ctx.createCompanyProvider,
       isProviderConfigured: ctx.isProviderConfigured,
-      providerUnavailableMessage: "Hunter company discovery is disabled on this server.",
+      providerUnavailableMessage: "Hunter is not configured on this server.",
     });
     expect(result.outcome).toBe("failed");
-    expect(result.message).toMatch(/disabled/i);
+    expect(result.message).toMatch(/not configured/i);
     expect(ctx.createCompanyProvider).not.toHaveBeenCalled();
   });
 

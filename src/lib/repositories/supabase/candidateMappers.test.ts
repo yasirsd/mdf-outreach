@@ -3,6 +3,7 @@ import type {
   BuyerCandidate,
   BuyerCandidateContact,
   BuyerCandidateProductMatch,
+  BuyerCandidatePublicEmail,
 } from "@/lib/buyerFinder/types";
 import {
   candidateFromRow,
@@ -15,8 +16,12 @@ import {
   productMatchFromRow,
   productMatchToPatchRow,
   productMatchToRow,
+  publicEmailFromRow,
+  publicEmailToPatchRow,
+  publicEmailToRow,
   type BuyerCandidateContactRow,
   type BuyerCandidateProductMatchRow,
+  type BuyerCandidatePublicEmailRow,
   type BuyerCandidateRow,
 } from "./candidateMappers";
 
@@ -76,6 +81,9 @@ describe("candidate mapper", () => {
     } as BuyerCandidateRow;
     expect(row.source).toBe("hunter");
     expect(candidateFromRow(row).source).toBe("hunter");
+    expect(row.people_searched_at).toBeNull();
+    expect(row.people_has_more).toBe(false);
+    expect(row.public_contacts_searched_at).toBeNull();
   });
 
 
@@ -174,6 +182,67 @@ describe("contact mapper", () => {
     expect(empty.business_email).toBeNull();
   });
 
+  it("round-trips masked person metadata with null email and provider_ref", () => {
+    const contact: BuyerCandidateContact = {
+      id: CONTACT_ID,
+      candidateId: CANDIDATE_ID,
+      firstName: "",
+      lastName: "",
+      fullName: "Amina K.",
+      jobTitle: "Head of Procurement",
+      businessEmail: "",
+      isPrimary: true,
+      contactScore: 16,
+      source: "hunter",
+      providerRef: "handle-procurement",
+      department: "finance",
+      seniority: "senior",
+      isDecisionMaker: true,
+      emailType: "personal",
+      fullNameAvailable: true,
+      linkedinAvailable: true,
+      phoneAvailable: false,
+    };
+    const row = {
+      ...contactToRow(contact, WORKSPACE),
+      created_at: "2026-08-28T00:00:00.000Z",
+      updated_at: "2026-08-28T00:00:00.000Z",
+    } as BuyerCandidateContactRow;
+    expect(row.business_email).toBeNull();
+    expect(row.linkedin_url).toBeNull();
+    expect(row.provider_ref).toBe("handle-procurement");
+    expect(row.is_decision_maker).toBe(true);
+    const back = contactFromRow(row);
+    expect(back.businessEmail).toBe("");
+    expect(back.providerRef).toBe("handle-procurement");
+    expect(back.linkedinAvailable).toBe(true);
+  });
+
+  it("round-trips revealed phone_number and revealed_at", () => {
+    const contact: BuyerCandidateContact = {
+      id: CONTACT_ID,
+      candidateId: CANDIDATE_ID,
+      firstName: "Aditee",
+      lastName: "Ganatra",
+      fullName: "Aditee Ganatra",
+      jobTitle: "COO",
+      businessEmail: "aditee@company.com",
+      isPrimary: true,
+      source: "hunter",
+      phoneNumber: "+97150000000",
+      revealedAt: "2026-08-29T00:00:00.000Z",
+    };
+    const row = {
+      ...contactToRow(contact, WORKSPACE),
+      created_at: "2026-08-29T00:00:00.000Z",
+      updated_at: "2026-08-29T00:00:00.000Z",
+    } as BuyerCandidateContactRow;
+    expect(row.phone_number).toBe("+97150000000");
+    expect(row.revealed_at).toBe("2026-08-29T00:00:00.000Z");
+    expect(contactFromRow(row).phoneNumber).toBe("+97150000000");
+    expect(contactFromRow(row).revealedAt).toBe("2026-08-29T00:00:00.000Z");
+  });
+
   it("rejects out-of-range contact_score", () => {
     expect(() =>
       contactToRow(
@@ -252,6 +321,34 @@ describe("productMatchToPatchRow (partial-update safety)", () => {
     expect(patch).toEqual({ country: "Thailand" });
     expect(patch).not.toHaveProperty("product_key");
     expect(patch).not.toHaveProperty("relevance");
+  });
+});
+
+describe("public email mapper", () => {
+  it("round-trips company_website provenance and lowercases email", () => {
+    const email: BuyerCandidatePublicEmail = {
+      id: "00000000-0000-0000-0000-0000000000ee",
+      candidateId: CANDIDATE_ID,
+      email: "Imports@Company.com",
+      mailboxType: "imports",
+      mailboxKind: "corporate",
+      source: "company_website",
+      sourceUrl: "https://company.com/contact",
+      isPrimary: true,
+      discoveredAt: "2026-08-28T00:00:00.000Z",
+    };
+    const row = {
+      ...publicEmailToRow(email, WORKSPACE),
+      created_at: "2026-08-28T00:00:00.000Z",
+      updated_at: "2026-08-28T00:00:00.000Z",
+    } as BuyerCandidatePublicEmailRow;
+    expect(row.workspace_id).toBe(WORKSPACE);
+    expect(row.email).toBe("imports@company.com");
+    expect(row.source).toBe("company_website");
+    const back = publicEmailFromRow(row);
+    expect(back.email).toBe("imports@company.com");
+    expect(back.sourceUrl).toBe("https://company.com/contact");
+    expect(publicEmailToPatchRow({ isPrimary: false })).toEqual({ is_primary: false });
   });
 });
 

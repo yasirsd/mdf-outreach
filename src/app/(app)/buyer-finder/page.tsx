@@ -1,14 +1,20 @@
 import { BuyerFinderView } from "./BuyerFinderView";
 import { loadBuyerCandidateQueueAction } from "./actions";
 import { getLatestActiveBuyerFinderSearchRunAction } from "./searchRunActions";
-import { hunterDiscoveryAvailability } from "@/lib/buyerFinder/config";
+import { getFreeEnrichmentSummaryAction } from "./freeEnrichmentActions";
+import {
+  hunterDiscoveryAvailability,
+  hunterRevealAvailability,
+  publicWebsiteAvailability,
+} from "@/lib/buyerFinder/config";
 
 export const dynamic = "force-dynamic";
 
 export default async function BuyerFinderPage() {
-  const [initial, activeRun] = await Promise.all([
+  const [initial, activeRun, enrichmentSummary] = await Promise.all([
     loadBuyerCandidateQueueAction(),
     getLatestActiveBuyerFinderSearchRunAction(),
+    getFreeEnrichmentSummaryAction(),
   ]);
   return (
     <BuyerFinderView
@@ -16,7 +22,10 @@ export default async function BuyerFinderPage() {
       initialSummary={initial.summary}
       queueLimit={initial.limit}
       hunterDiscovery={hunterDiscoveryAvailability()}
+      hunterReveal={hunterRevealAvailability()}
+      publicWebsite={publicWebsiteAvailability()}
       initialActiveRun={activeRun}
+      enrichmentSummary={enrichmentSummary}
     />
   );
 }

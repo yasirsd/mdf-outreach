@@ -58,7 +58,7 @@ function evidenceFor(person: {
   const dept = person.department ? person.department : "unknown";
   return [
     {
-      note: `Hunter masked professional record. Position: ${person.position || "unknown"}. Seniority: ${seniority}. Department: ${dept}. Decision maker: ${dm}. Not proof of import or chilli buying.`,
+      note: `Hunter masked professional record. Position: ${person.position || "unknown"}. Seniority: ${seniority}. Department: ${dept}. Decision maker: ${dm}. Role metadata only — not proof of import activity.`,
       confidence: 0,
     },
   ];

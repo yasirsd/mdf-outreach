@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { PageContainer, PageHeader } from "@/components/ui/Page";
 import { loadBuyerCandidateAction } from "@/app/(app)/buyer-finder/actions";
+import { hunterDiscoveryAvailability, hunterRevealAvailability, publicWebsiteAvailability } from "@/lib/buyerFinder/config";
 import { CandidateView } from "./CandidateView";
 
 export const dynamic = "force-dynamic";
@@ -20,5 +21,14 @@ export default async function CandidatePage({ params }: { params: { id: string }
       </PageContainer>
     );
   }
-  return <CandidateView record={record} />;
+  return (
+    <CandidateView
+      record={record}
+      hunterDiscovery={hunterDiscoveryAvailability()}
+      hunterReveal={hunterRevealAvailability()}
+      publicWebsite={publicWebsiteAvailability()}
+      publicJobStatus={record.publicJobStatus}
+      peopleJobStatus={record.peopleJobStatus}
+    />
+  );
 }

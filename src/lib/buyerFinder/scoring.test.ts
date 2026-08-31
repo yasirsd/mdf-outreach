@@ -73,10 +73,83 @@ describe("scoreContactRole", () => {
     expect(role.points).toBe(12);
   });
 
+  it("ranks procurement, purchasing, sourcing, import, buyer, and category roles as tier 1", () => {
+    for (const title of [
+      "Procurement Manager",
+      "Purchasing Manager",
+      "Purchase Manager",
+      "Sourcing Manager",
+      "Import Manager",
+      "Buyer",
+      "Category Manager",
+      "Head of Procurement",
+    ]) {
+      expect(scoreContactRole(title).tier).toBe(1);
+      expect(scoreContactRole(title).points).toBe(12);
+    }
+  });
+
+  it("ranks supply chain appropriately below procurement", () => {
+    const supply = scoreContactRole("VP of Supply Chain");
+    expect(supply.tier).toBe(2);
+    expect(supply.points).toBe(8);
+    expect(scoreContactRole("Procurement Manager").points).toBeGreaterThan(supply.points);
+  });
+
+  it("ranks Managing Director as a useful commercial fallback", () => {
+    expect(scoreContactRole("Managing Director").tier).toBe(2);
+    expect(scoreContactRole("General Manager").tier).toBe(2);
+  });
+
+  it("ranks Owner, Founder, CEO, and Director as leadership fallback", () => {
+    expect(scoreContactRole("Owner").tier).toBe(3);
+    expect(scoreContactRole("Founder").tier).toBe(3);
+    expect(scoreContactRole("Chief Executive Officer").tier).toBe(3);
+    expect(scoreContactRole("Director").tier).toBe(3);
+  });
+
   it("scores Procurement Manager higher than a generic role", () => {
     expect(scoreContactRole("Procurement Manager").points).toBeGreaterThan(
       scoreContactRole("Sales Associate").points,
     );
+  });
+
+  it("does not award procurement or Director-fallback points to Sales, IT, Engineering, Marketing, or HR", () => {
+    for (const title of [
+      "Sales Manager",
+      "IT Manager",
+      "Software Engineer",
+      "Marketing Lead",
+      "HR Director",
+      "Human Resources Director",
+      "Sales Director",
+      "Marketing Director",
+      "IT Director",
+      "Engineering Director",
+    ]) {
+      const role = scoreContactRole(title);
+      expect(role.tier).not.toBe(1);
+      expect(role.matched).not.toBe("director");
+      expect(role.points).toBe(2);
+      expect(role.matched).toBe("generic-title");
+    }
+  });
+
+  it("keeps relevant Director titles in procurement / commercial / leadership tracks", () => {
+    expect(scoreContactRole("Procurement Director").tier).toBe(1);
+    expect(scoreContactRole("Purchasing Director").tier).toBe(1);
+    expect(scoreContactRole("Import Director").tier).toBe(1);
+    expect(scoreContactRole("Supply Chain Director").tier).toBe(2);
+    expect(scoreContactRole("Commercial Director").tier).toBe(2);
+    expect(scoreContactRole("Managing Director").tier).toBe(2);
+    expect(scoreContactRole("Director").tier).toBe(3);
+    expect(scoreContactRole("Director").matched).toBe("director");
+  });
+
+  it("does not match import inside unrelated words like important", () => {
+    expect(scoreContactRole("Important Projects Manager").tier).toBe(0);
+    expect(scoreContactRole("Important Projects Manager").matched).toBe("generic-title");
+    expect(scoreContactRole("Head of Important Operations").tier).not.toBe(1);
   });
 
   it("keeps Owner and Managing Director useful", () => {
@@ -333,5 +406,148 @@ describe("scoreBuyerCandidate", () => {
     expect(reasonCodes(result)).not.toContain("distributor");
     expect(reasonCodes(result)).not.toContain("buyer-type");
     expect(reasonCodes(result)).not.toContain("industry");
+  });
+
+  it("awards existing general-email completeness without treating it as personal contact quality", () => {
+    const hunterEvidence = [
+      {
+        note: "Hunter Discover company match. Country United Arab Emirates (AE). Product guntur-dry-red-chilli. Directory match only — not proof of import or distribution.",
+        confidence: 40,
+      },
+    ];
+    const base = {
+      candidate: {
+        id: "cand-hunter",
+        companyName: "Mahmood & Sons",
+        website: "https://mahmoodsons.com",
+        domain: "mahmoodsons.com",
+        country: "United Arab Emirates",
+        source: "hunter" as const,
+        evidence: hunterEvidence,
+        discoveryStatus: "ready" as const,
+        reviewStatus: "pending" as const,
+      },
+      contacts: [],
+      productMatches: [
+        {
+          id: "match-hunter",
+          candidateId: "cand-hunter",
+          productId: "guntur-dry-red-chilli" as const,
+          relevance: 50,
+          evidence: hunterEvidence,
+          source: "hunter" as const,
+        },
+      ],
+      targetProductId: "guntur-dry-red-chilli" as const,
+      targetCountry: "United Arab Emirates",
+    };
+    const without = scoreBuyerCandidate(base);
+    const withMail = scoreBuyerCandidate({
+      ...base,
+      candidate: { ...base.candidate, generalEmail: "imports@mahmoodsons.com" },
+    });
+    expect(without.total).toBe(23);
+    expect(withMail.contactQuality).toBe(0);
+    expect(withMail.completeness).toBe(without.completeness + 1);
+    expect(withMail.total).toBe(24);
+    expect(reasonCodes(withMail)).toContain("general-email");
+  });
+
+  it("evaluates contact quality from masked role evidence without awarding email or LinkedIn URL points", () => {
+    const hunterEvidence = [
+      {
+        note: "Hunter Discover company match. Country United Arab Emirates (AE). Product guntur-dry-red-chilli. Directory match only — not proof of import or distribution.",
+        confidence: 40,
+      },
+    ];
+    const hunterCandidate = {
+      id: "cand-hunter",
+      companyName: "Mahmood & Sons",
+      website: "https://mahmoodsons.com",
+      domain: "mahmoodsons.com",
+      country: "United Arab Emirates",
+      source: "hunter" as const,
+      evidence: hunterEvidence,
+      discoveryStatus: "ready" as const,
+      reviewStatus: "pending" as const,
+    };
+    const matchRow = {
+      id: "match-hunter",
+      candidateId: "cand-hunter",
+      productId: "guntur-dry-red-chilli" as const,
+      relevance: 50,
+      evidence: hunterEvidence,
+      source: "hunter" as const,
+    };
+    const masked = contact({
+      businessEmail: "",
+      emailStatus: undefined,
+      emailConfidence: undefined,
+      linkedinUrl: undefined,
+      contactScore: 16,
+      isDecisionMaker: true,
+      seniority: "senior",
+      jobTitle: "Head of Procurement",
+      fullName: "Amina K.",
+    });
+    const before = scoreBuyerCandidate({
+      candidate: hunterCandidate,
+      contacts: [],
+      productMatches: [matchRow],
+      targetProductId: "guntur-dry-red-chilli",
+      targetCountry: "United Arab Emirates",
+    });
+    const after = scoreBuyerCandidate({
+      candidate: hunterCandidate,
+      contacts: [masked],
+      productMatches: [matchRow],
+      targetProductId: "guntur-dry-red-chilli",
+      targetCountry: "United Arab Emirates",
+    });
+    expect(before.total).toBe(23);
+    expect(before.contactQuality).toBe(0);
+    expect(after.companyFit).toBe(before.companyFit);
+    expect(after.completeness).toBe(before.completeness);
+    expect(after.contactQuality).toBe(19);
+    expect(after.total).toBe(42);
+    expect(after.contactQuality).toBeLessThanOrEqual(40);
+    expect(reasonCodes(after)).toContain("contact-role");
+    expect(reasonCodes(after)).toContain("decision-maker");
+    expect(reasonCodes(after)).toContain("seniority");
+    expect(reasonCodes(after)).not.toContain("business-email");
+    expect(reasonCodes(after)).not.toContain("email-status");
+    expect(reasonCodes(after)).not.toContain("contact-linkedin");
+  });
+
+  it("raises contact quality conservatively for decision_maker and seniority", () => {
+    const base = scoreBuyerCandidate({
+      candidate: candidate(),
+      contacts: [
+        contact({
+          businessEmail: "",
+          emailStatus: undefined,
+          linkedinUrl: undefined,
+          contactScore: undefined,
+          isDecisionMaker: false,
+          seniority: undefined,
+        }),
+      ],
+      productMatches: [match()],
+    });
+    const withSignals = scoreBuyerCandidate({
+      candidate: candidate(),
+      contacts: [
+        contact({
+          businessEmail: "",
+          emailStatus: undefined,
+          linkedinUrl: undefined,
+          contactScore: undefined,
+          isDecisionMaker: true,
+          seniority: "executive",
+        }),
+      ],
+      productMatches: [match()],
+    });
+    expect(withSignals.contactQuality).toBe(base.contactQuality + 3 + 2);
   });
 });

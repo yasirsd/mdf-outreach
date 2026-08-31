@@ -12,6 +12,7 @@ import type {
   BuyerCandidate,
   BuyerCandidateContact,
   BuyerCandidateProductMatch,
+  BuyerCandidatePublicEmail,
   BuyerTypeOption,
   ContactPriorityId,
 } from "@/lib/buyerFinder/types";
@@ -20,6 +21,21 @@ import type {
   BuyerFinderSearchRun,
   SearchRunPatch,
 } from "@/lib/buyerFinder/searchRun";
+import type {
+  BuyerFinderContactRevealEvent,
+  ContactRevealEventStatus,
+  ContactRevealProviderOutcome,
+} from "@/lib/buyerFinder/contactRevealEvent";
+import type {
+  FreeEnrichmentCapability,
+  FreeEnrichmentJob,
+  FreeEnrichmentJobStatus,
+} from "@/lib/buyerFinder/freeEnrichmentJob";
+import type {
+  CandidateConversion,
+  ConversionSourceKind,
+  ConvertResult,
+} from "@/lib/buyerFinder/conversion";
 
 export interface BuyerListFilter {
   search?: string;
@@ -161,6 +177,14 @@ export interface BuyerCandidateContactRepository {
   findByProviderRef(source: string, providerRef: string): Promise<BuyerCandidateContact | undefined>;
 }
 
+export interface BuyerCandidatePublicEmailRepository {
+  listByCandidate(candidateId: string): Promise<BuyerCandidatePublicEmail[]>;
+  get(id: string): Promise<BuyerCandidatePublicEmail | undefined>;
+  create(input: BuyerCandidatePublicEmail): Promise<BuyerCandidatePublicEmail>;
+  update(id: string, patch: Partial<BuyerCandidatePublicEmail>): Promise<BuyerCandidatePublicEmail>;
+  delete(id: string): Promise<void>;
+}
+
 export interface BuyerCandidateProductMatchRepository {
   listByCandidate(candidateId: string): Promise<BuyerCandidateProductMatch[]>;
   create(input: BuyerCandidateProductMatch): Promise<BuyerCandidateProductMatch>;
@@ -206,4 +230,120 @@ export interface BuyerFinderSearchRunRepository {
    * Exactly one concurrent caller can succeed.
    */
   claimQueued(id: string): Promise<BuyerFinderSearchRun | undefined>;
+}
+
+export class RevealEventActiveExistsError extends Error {
+  readonly code = "ACTIVE_REVEAL_EXISTS" as const;
+  constructor() {
+    super("A personal contact reveal is already in progress.");
+    this.name = "RevealEventActiveExistsError";
+  }
+}
+
+export interface RevealEventInsertInput {
+  candidateId: string;
+  contactId: string;
+  provider?: "hunter";
+}
+
+export interface RevealEventFinalizeInput {
+  status: Extract<
+    ContactRevealEventStatus,
+    "succeeded" | "failed" | "reconciliation_required"
+  >;
+  providerOutcome?: ContactRevealProviderOutcome | null;
+  creditsCharged?: number | null;
+  errorCode?: string | null;
+}
+
+export interface BuyerFinderContactRevealEventRepository {
+  insertPending(input: RevealEventInsertInput): Promise<BuyerFinderContactRevealEvent>;
+  get(id: string): Promise<BuyerFinderContactRevealEvent | undefined>;
+  getActiveForContact(contactId: string): Promise<BuyerFinderContactRevealEvent | undefined>;
+  getLatestForContact(contactId: string): Promise<BuyerFinderContactRevealEvent | undefined>;
+  /**
+   * Atomic pending → processing claim. Returns the claimed row, or
+   * undefined when the row is missing or no longer pending.
+   */
+  claimProcessing(id: string): Promise<BuyerFinderContactRevealEvent | undefined>;
+  /**
+   * Atomic reconciliation_required → processing claim for an explicit
+   * operator retry of the SAME event.
+   */
+  claimReconciliation(id: string): Promise<BuyerFinderContactRevealEvent | undefined>;
+  markReconciliationRequired(id: string): Promise<BuyerFinderContactRevealEvent>;
+  finalize(id: string, patch: RevealEventFinalizeInput): Promise<BuyerFinderContactRevealEvent>;
+}
+
+export interface FreeEnrichmentJobEnsureInput {
+  candidateId: string;
+  capability: FreeEnrichmentCapability;
+  /**
+   * When the candidate already completed this capability, insert a
+   * succeeded current-state row instead of queuing a refetch.
+   */
+  alreadyComplete?: boolean;
+}
+
+export interface FreeEnrichmentJobFinalizeInput {
+  status: Extract<FreeEnrichmentJobStatus, "succeeded" | "no_result" | "failed" | "retry_wait" | "cancelled">;
+  providerOutcome?: string | null;
+  errorCode?: string | null;
+  nextAttemptAt?: string | null;
+  completedAt?: string | null;
+}
+
+export interface BuyerFinderFreeEnrichmentJobRepository {
+  ensure(input: FreeEnrichmentJobEnsureInput): Promise<FreeEnrichmentJob>;
+  get(id: string): Promise<FreeEnrichmentJob | undefined>;
+  getByCandidateCapability(
+    candidateId: string,
+    capability: FreeEnrichmentCapability,
+  ): Promise<FreeEnrichmentJob | undefined>;
+  listByCandidate(candidateId: string): Promise<FreeEnrichmentJob[]>;
+  listAll(): Promise<FreeEnrichmentJob[]>;
+  /**
+   * Atomic queued/retry_wait → processing claim for the next due job of
+   * this capability, honouring one-processing-per-capability concurrency.
+   */
+  claimNextDue(capability: FreeEnrichmentCapability, now?: Date): Promise<FreeEnrichmentJob | undefined>;
+  /**
+   * Make this row immediately due for an explicit operator run.
+   * queued / retry_wait → next_attempt_at now (attempt_count kept).
+   * terminal → queued, attempt_count 0 (new cycle).
+   * processing → unchanged.
+   */
+  prepareForManualExecution(id: string, now?: Date): Promise<FreeEnrichmentJob | undefined>;
+  /**
+   * Atomic claim of a specific queued/retry_wait row. Honours one
+   * processing job per capability. Does not scan other candidates.
+   */
+  claimById(id: string, now?: Date): Promise<FreeEnrichmentJob | undefined>;
+  reclaimStaleProcessing(now?: Date, staleMs?: number): Promise<number>;
+  finalize(id: string, patch: FreeEnrichmentJobFinalizeInput): Promise<FreeEnrichmentJob>;
+  requeue(id: string): Promise<FreeEnrichmentJob | undefined>;
+  cancelOpenForCandidate(candidateId: string): Promise<number>;
+}
+
+/**
+ * BF5A — Candidate → Buyer conversion. Production convert is a
+ * transactional Postgres RPC; this interface never exposes raw Buyer
+ * field payloads from the browser.
+ */
+export interface ConversionRpcInput {
+  candidateId: string;
+  sourceKind: ConversionSourceKind;
+  contactId?: string;
+  publicEmailId?: string;
+  productInterest?: string;
+}
+
+export interface BuyerFinderCandidateConversionRepository {
+  getByCandidate(candidateId: string): Promise<CandidateConversion | undefined>;
+  listByCandidateIds(ids: string[]): Promise<CandidateConversion[]>;
+  /**
+   * Atomic Buyer insert + conversion linkage. Duplicate and eligibility
+   * checks run inside the transaction.
+   */
+  convert(input: ConversionRpcInput): Promise<ConvertResult>;
 }

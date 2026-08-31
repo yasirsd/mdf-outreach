@@ -20,10 +20,12 @@ import {
 import type { ProviderNeutralOutcome } from "./providers/descriptors";
 import type { CompanyDiscoveryProvider } from "./providers/types";
 import type { BuyerFinderSearchRunRepository } from "@/lib/repositories/interfaces";
+import type { BuyerFinderFreeEnrichmentJobRepository } from "@/lib/repositories/interfaces";
+import { ensureFreeEnrichmentJobsForCandidate } from "./enqueueFreeEnrichment";
 import {
   hunterCodeToSafeMessage,
-  INTERRUPTED_MESSAGE,
   mapUnknownCodeToOutcome,
+  INTERRUPTED_MESSAGE,
 } from "./searchRunCopy";
 
 export type ExecuteSearchRunOutcomeCode =
@@ -45,6 +47,7 @@ export interface ExecuteSearchRunDeps {
   runId: string;
   searchRuns: BuyerFinderSearchRunRepository;
   ingestionRepos: BuyerFinderIngestionRepos;
+  freeEnrichmentJobs?: BuyerFinderFreeEnrichmentJobRepository;
   createCompanyProvider: () => CompanyDiscoveryProvider;
   isProviderConfigured: () => boolean;
   /**
@@ -186,10 +189,18 @@ export async function executeSearchRun(deps: ExecuteSearchRunDeps): Promise<Exec
         limit: BUYER_FINDER_PROCESS_CAP,
       },
       companyProvider,
-      // Production path: no contactProvider.
+      // Production path: no contactProvider. Free enrichment is queued,
+      // never executed inside this Search Run request.
       repositories: deps.ingestionRepos,
       progress: reporter,
       progressProvider: claimed.provider,
+      enqueueFreeEnrichment: deps.freeEnrichmentJobs
+        ? (candidate) =>
+            ensureFreeEnrichmentJobsForCandidate({
+              candidate,
+              jobs: deps.freeEnrichmentJobs!,
+            })
+        : undefined,
     });
   } catch (err) {
     const code = err && typeof err === "object" && "code" in err

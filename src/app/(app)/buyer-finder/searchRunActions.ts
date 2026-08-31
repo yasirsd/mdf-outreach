@@ -7,10 +7,8 @@ import { SearchRunActiveExistsError } from "@/lib/repositories/interfaces";
 import { isActiveBusinessProductId } from "@/lib/buyerFinder/businessCatalogue";
 import {
   isBuyerFinderHunterConfigured,
-  isBuyerFinderHunterEnabled,
   isBuyerFinderHunterReady,
   requireBuyerFinderHunterApiKey,
-  HUNTER_DISCOVERY_DISABLED_MESSAGE,
   HUNTER_NOT_CONFIGURED_MESSAGE,
 } from "@/lib/buyerFinder/config";
 import { createHunterCompanyDiscoveryProvider } from "@/lib/buyerFinder/providers/hunter/companyDiscovery";
@@ -97,12 +95,6 @@ export async function createBuyerFinderSearchRunAction(
   if (!productId || !isActiveBusinessProductId(productId)) {
     return { outcome: "invalid_input", message: "Select an active MDF product." };
   }
-  if (!isBuyerFinderHunterEnabled()) {
-    return {
-      outcome: "disabled",
-      message: HUNTER_DISCOVERY_DISABLED_MESSAGE,
-    };
-  }
   if (!isBuyerFinderHunterConfigured()) {
     return {
       outcome: "not_configured",
@@ -177,10 +169,9 @@ export async function executeBuyerFinderSearchRunAction(
       contacts: repos.buyerCandidateContacts,
       productMatches: repos.buyerCandidateProductMatches,
     },
+    freeEnrichmentJobs: repos.buyerFinderFreeEnrichmentJobs,
     isProviderConfigured: isBuyerFinderHunterReady,
-    providerUnavailableMessage: isBuyerFinderHunterEnabled()
-      ? undefined
-      : HUNTER_DISCOVERY_DISABLED_MESSAGE,
+    providerUnavailableMessage: HUNTER_NOT_CONFIGURED_MESSAGE,
     createCompanyProvider: () =>
       createHunterCompanyDiscoveryProvider({
         apiKey: requireBuyerFinderHunterApiKey(),

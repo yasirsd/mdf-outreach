@@ -18,6 +18,7 @@ export function isPublicRoute(pathname: string): boolean {
   if (pathname.startsWith("/_next")) return true;
   if (pathname.startsWith("/api/auth/")) return true;
   if (pathname === "/favicon.ico") return true;
+  if (process.env.NODE_ENV === "development" && pathname === "/bf4r-visual") return true;
   return PUBLIC_ROUTES.some(
     (r) => pathname === r || pathname.startsWith(r + "/"),
   );

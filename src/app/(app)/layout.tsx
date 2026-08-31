@@ -1,6 +1,7 @@
 import { AppShell } from "@/components/AppShell";
 import { WorkspaceProvider } from "@/components/WorkspaceProvider";
 import { AppSessionMonitor } from "@/components/auth/AppSessionMonitor";
+import { FreeEnrichmentAutopump } from "@/components/buyerFinder/FreeEnrichmentAutopump";
 import { serverRepositories } from "@/lib/repositories/server";
 import { ensureWorkspaceReady } from "@/lib/workspace/ensure";
 
@@ -11,6 +12,7 @@ export default async function ProtectedLayout({ children }: { children: React.Re
   return (
     <WorkspaceProvider initialSettings={settings}>
       <AppSessionMonitor />
+      <FreeEnrichmentAutopump />
       <AppShell userEmail={session.email}>{children}</AppShell>
     </WorkspaceProvider>
   );

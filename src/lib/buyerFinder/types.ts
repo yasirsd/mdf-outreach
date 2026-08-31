@@ -69,6 +69,10 @@ export interface BuyerCandidateContact {
   fullNameAvailable?: boolean;
   linkedinAvailable?: boolean;
   phoneAvailable?: boolean;
+  /** Actual phone from a paid personal reveal. Distinct from phoneAvailable. */
+  phoneNumber?: string;
+  /** When personal contact details were persisted from a reveal. */
+  revealedAt?: string;
   evidence?: CandidateEvidence[];
   discoveredAt?: string;
   createdAt?: string;
@@ -114,9 +118,43 @@ export interface BuyerCandidate {
   companyScore?: number;
   peopleSearchedAt?: string;
   peopleHasMore?: boolean;
+  /** Set after a completed public company-website contact lookup. */
+  publicContactsSearchedAt?: string;
   discoveryStatus: DiscoveryStatus;
   reviewStatus: ReviewStatus;
   rejectionReason?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export type PublicMailboxType =
+  | "procurement"
+  | "purchasing"
+  | "imports"
+  | "sourcing"
+  | "sales"
+  | "commercial"
+  | "general"
+  | "support"
+  | "named"
+  | "other";
+
+export type PublicMailboxKind = "corporate" | "external";
+
+/**
+ * A company mailbox published on the company's own website.
+ * Distinct from buyer_candidate_contacts (people). Never a guessed address.
+ */
+export interface BuyerCandidatePublicEmail {
+  id: string;
+  candidateId: string;
+  email: string;
+  mailboxType: PublicMailboxType;
+  mailboxKind: PublicMailboxKind;
+  source: "company_website";
+  sourceUrl: string;
+  isPrimary: boolean;
+  discoveredAt?: string;
   createdAt?: string;
   updatedAt?: string;
 }
@@ -125,6 +163,7 @@ export interface BuyerCandidateRecord {
   candidate: BuyerCandidate;
   contacts: BuyerCandidateContact[];
   productMatches: BuyerCandidateProductMatch[];
+  publicEmails?: BuyerCandidatePublicEmail[];
 }
 
 export const BUYER_TYPE_OPTIONS = ["Importer", "Distributor", "Wholesaler"] as const;

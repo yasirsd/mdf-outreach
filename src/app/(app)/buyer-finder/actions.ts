@@ -14,22 +14,26 @@ import { HunterDiscoveryError } from "@/lib/buyerFinder/providers/hunter/errors"
 import type { ProviderUsage } from "@/lib/buyerFinder/usage";
 import {
   isBuyerFinderHunterConfigured,
-  isBuyerFinderHunterEnabled,
   isBuyerFinderHunterReady,
   requireBuyerFinderHunterApiKey,
-  HUNTER_DISCOVERY_DISABLED_MESSAGE,
   HUNTER_NOT_CONFIGURED_MESSAGE,
 } from "@/lib/buyerFinder/config";
 import { isActiveBusinessProductId } from "@/lib/buyerFinder/businessCatalogue";
+import { toSafeContacts } from "@/lib/buyerFinder/safeContact";
 import type {
   BuyerCandidate,
-  BuyerCandidateContact,
   BuyerCandidateProductMatch,
   BuyerCandidateRecord,
   BuyerTypeOption,
   ContactPriorityId,
 } from "@/lib/buyerFinder/types";
 import { findCountryByName } from "@/lib/catalogue/countries";
+import type { FreeEnrichmentJobStatus } from "@/lib/buyerFinder/freeEnrichmentJob";
+import type { RevealPriorityTier } from "@/lib/buyerFinder/revealPriority";
+import { assessRevealPriority } from "@/lib/buyerFinder/revealPriority";
+import { repairMissingFreeEnrichmentJobs } from "@/lib/buyerFinder/enqueueFreeEnrichment";
+import { revealPriorityReason } from "@/lib/buyerFinder/revealPriorityPresentation";
+import type { CandidateConversion } from "@/lib/buyerFinder/conversion";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /**
@@ -138,9 +142,6 @@ export async function searchAndIngestBuyerCandidatesAction(
   if (!productId || !isActiveBusinessProductId(productId)) {
     return zeroSummary("invalid_input", "Select an active MDF product.");
   }
-  if (!isBuyerFinderHunterEnabled()) {
-    return zeroSummary("disabled", HUNTER_DISCOVERY_DISABLED_MESSAGE);
-  }
   if (!isBuyerFinderHunterReady()) {
     return zeroSummary("not_configured", HUNTER_NOT_CONFIGURED_MESSAGE);
   }
@@ -198,7 +199,22 @@ export async function searchAndIngestBuyerCandidatesAction(
 export interface QueueRow {
   candidate: BuyerCandidate;
   contactCount: number;
+  bestContactTitle?: string;
+  bestContactName?: string;
+  bestHasLinkedin?: boolean;
+  bestIsDecisionMaker?: boolean;
+  priorityReason?: string;
   productMatches: BuyerCandidateProductMatch[];
+  publicCompanyEmail?: string;
+  revealPriority?: RevealPriorityTier;
+  publicJobStatus?: FreeEnrichmentJobStatus;
+  peopleJobStatus?: FreeEnrichmentJobStatus;
+  /** Title-family points from scoreContactRole. Not contact quality. */
+  roleRelevance?: number;
+  /** Persisted contactQuality / contactScore of the best person. */
+  contactQuality?: number;
+  /** Present when this candidate already created a Buyer. */
+  convertedBuyerId?: string;
 }
 
 export interface QueueSummary {
@@ -222,13 +238,48 @@ export async function loadBuyerCandidateQueueAction(): Promise<{
   const { repos } = await serverRepositories();
   const all = await repos.buyerCandidates.list();
   const bounded = all.slice(0, QUEUE_LIMIT);
+  await repairMissingFreeEnrichmentJobs({
+    candidates: bounded,
+    jobs: repos.buyerFinderFreeEnrichmentJobs,
+  });
+  const conversionsByCandidate = new Map(
+    (
+      await repos.buyerFinderCandidateConversions.listByCandidateIds(bounded.map((c) => c.id))
+    ).map((row) => [row.candidateId, row]),
+  );
   const rows: QueueRow[] = [];
   for (const candidate of bounded) {
-    const [contacts, matches] = await Promise.all([
+    const [contacts, matches, emails, jobs] = await Promise.all([
       repos.buyerCandidateContacts.listByCandidate(candidate.id),
       repos.buyerCandidateProductMatches.listByCandidate(candidate.id),
+      repos.buyerCandidatePublicEmails.listByCandidate(candidate.id),
+      repos.buyerFinderFreeEnrichmentJobs.listByCandidate(candidate.id),
     ]);
-    rows.push({ candidate, contactCount: contacts.length, productMatches: matches });
+    const priority = assessRevealPriority({ candidate, contacts, publicEmails: emails });
+    const best =
+      contacts.find((c) => c.id === priority.bestPerson?.contactId) ??
+      contacts.find((c) => c.isPrimary) ??
+      contacts[0];
+    rows.push({
+      candidate,
+      contactCount: contacts.length,
+      bestContactTitle: priority.bestPerson?.jobTitle || best?.jobTitle,
+      bestContactName: best?.fullName,
+      bestHasLinkedin: Boolean(best?.linkedinUrl || best?.linkedinAvailable),
+      bestIsDecisionMaker: best?.isDecisionMaker,
+      priorityReason:
+        priority.tier !== "none"
+          ? revealPriorityReason(priority.bestPerson?.jobTitle, priority.tier)
+          : undefined,
+      productMatches: matches,
+      publicCompanyEmail: priority.publicCompanyEmail,
+      revealPriority: priority.tier,
+      publicJobStatus: jobs.find((j) => j.capability === "public_company_contacts")?.status,
+      peopleJobStatus: jobs.find((j) => j.capability === "decision_makers")?.status,
+      roleRelevance: priority.bestPerson?.rolePoints,
+      contactQuality: best?.contactScore,
+      convertedBuyerId: conversionsByCandidate.get(candidate.id)?.buyerId,
+    });
   }
   const summary: QueueSummary = {
     total: all.length,
@@ -240,22 +291,50 @@ export async function loadBuyerCandidateQueueAction(): Promise<{
   return { rows, summary, limit: QUEUE_LIMIT };
 }
 
+export type CandidateDetailRecord = BuyerCandidateRecord & {
+  publicJobStatus?: FreeEnrichmentJobStatus;
+  peopleJobStatus?: FreeEnrichmentJobStatus;
+  conversion?: CandidateConversion;
+  convertedBuyer?: { id: string; email: string; company: string };
+};
+
 /**
  * Loads one candidate + its contacts + product matches. RLS scopes.
  */
 export async function loadBuyerCandidateAction(
   id: string,
-): Promise<BuyerCandidateRecord | null> {
+): Promise<CandidateDetailRecord | null> {
   await requireMdfSession();
   if (!CANDIDATE_ID_RE.test(id)) return null;
   const { repos } = await serverRepositories();
   const candidate = await repos.buyerCandidates.get(id);
   if (!candidate) return null;
-  const [contacts, productMatches] = await Promise.all([
+  await repairMissingFreeEnrichmentJobs({
+    candidates: [candidate],
+    jobs: repos.buyerFinderFreeEnrichmentJobs,
+  });
+  const [contacts, productMatches, publicEmails, jobs, conversion] = await Promise.all([
     repos.buyerCandidateContacts.listByCandidate(id),
     repos.buyerCandidateProductMatches.listByCandidate(id),
+    repos.buyerCandidatePublicEmails.listByCandidate(id),
+    repos.buyerFinderFreeEnrichmentJobs.listByCandidate(id),
+    repos.buyerFinderCandidateConversions.getByCandidate(id),
   ]);
-  return { candidate, contacts, productMatches };
+  const convertedBuyer = conversion
+    ? await repos.buyers.get(conversion.buyerId)
+    : undefined;
+  return {
+    candidate,
+    contacts: toSafeContacts(contacts),
+    productMatches,
+    publicEmails,
+    publicJobStatus: jobs.find((j) => j.capability === "public_company_contacts")?.status,
+    peopleJobStatus: jobs.find((j) => j.capability === "decision_makers")?.status,
+    conversion,
+    convertedBuyer: convertedBuyer
+      ? { id: convertedBuyer.id, email: convertedBuyer.email, company: convertedBuyer.company }
+      : undefined,
+  };
 }
 
 /* ---------------------------------------------------------------------- */
@@ -297,6 +376,7 @@ export async function rejectCandidateAction(
     reviewStatus: "rejected",
     rejectionReason: bounded,
   });
+  await repos.buyerFinderFreeEnrichmentJobs.cancelOpenForCandidate(candidate.id);
   revalidatePath("/buyer-finder");
   revalidatePath(`/buyer-finder/candidate/${candidate.id}`);
 }
@@ -307,6 +387,7 @@ export async function rejectCandidateAction(
 export async function archiveCandidateAction(candidateId: string): Promise<void> {
   const { repos, candidate } = await assertCandidate(candidateId);
   await repos.buyerCandidates.update(candidate.id, { discoveryStatus: "archived" });
+  await repos.buyerFinderFreeEnrichmentJobs.cancelOpenForCandidate(candidate.id);
   revalidatePath("/buyer-finder");
   revalidatePath(`/buyer-finder/candidate/${candidate.id}`);
 }
@@ -335,13 +416,6 @@ export interface HunterUsageResult {
  */
 export async function getHunterUsageAction(): Promise<HunterUsageResult> {
   await requireMdfSession();
-  if (!isBuyerFinderHunterEnabled()) {
-    return {
-      outcome: "disabled",
-      usage: null,
-      message: HUNTER_DISCOVERY_DISABLED_MESSAGE,
-    };
-  }
   if (!isBuyerFinderHunterConfigured()) {
     return { outcome: "not_configured", usage: null, message: "Hunter is not configured." };
   }

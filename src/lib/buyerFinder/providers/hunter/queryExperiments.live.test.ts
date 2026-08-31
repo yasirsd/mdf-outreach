@@ -5,9 +5,8 @@
  * Ordinary `npm test` skips this file.
  *
  * HUNTER_LIVE_TEST=1
- * BUYER_FINDER_HUNTER_ENABLED=true
- * BUYER_FINDER_HUNTER_ENRICHMENT_ENABLED !== true
  * HUNTER_API_KEY present
+ * BUYER_FINDER_HUNTER_ENRICHMENT_ENABLED !== true
  *
  * HUNTER_LIVE_ACTION=usage | discover
  * HUNTER_KEYWORD_INTENT=product-led | food-trade | hybrid  (discover only)
@@ -26,12 +25,11 @@ import {
 } from "./query";
 
 const liveEnabled = process.env.HUNTER_LIVE_TEST === "1";
-const hunterEnabled = process.env.BUYER_FINDER_HUNTER_ENABLED === "true";
 const enrichmentEnabled = process.env.BUYER_FINDER_HUNTER_ENRICHMENT_ENABLED === "true";
 const liveApiKey = (process.env.HUNTER_API_KEY ?? "").trim();
 const action = (process.env.HUNTER_LIVE_ACTION ?? "").trim();
 const canRunLive =
-  liveEnabled && hunterEnabled && liveApiKey.length > 0 && !enrichmentEnabled && Boolean(action);
+  liveEnabled && liveApiKey.length > 0 && !enrichmentEnabled && Boolean(action);
 
 const budget = { discover: 0, usage: 0 };
 

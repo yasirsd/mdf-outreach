@@ -5,15 +5,20 @@
 
 import type { BuyerCandidateProductMatch } from "./types";
 
-/**
- * Hunter Discover does not return a measured product-relevance score in
- * our mapping. Persisted `relevance: 50` is a directory-match placeholder
- * used only so scoring has a numeric input — it is not a precise 50%.
- */
 export function isDirectoryKeywordMatch(match: BuyerCandidateProductMatch): boolean {
   if (match.source === "hunter") return true;
   const notes = (match.evidence ?? []).map((e) => e.note).join("\n");
   return /Hunter Discover company match|Directory match only/i.test(notes);
+}
+
+export function isDirectoryMatchEvidenceNote(note: string): boolean {
+  return /Hunter Discover company match|Directory match only/i.test(note);
+}
+
+export function shouldShowEvidenceConfidence(note: string, confidence: number): boolean {
+  if (isDirectoryMatchEvidenceNote(note)) return false;
+  if (!Number.isFinite(confidence) || confidence <= 0) return false;
+  return true;
 }
 
 export function productMatchStrengthLabel(match: BuyerCandidateProductMatch): string {

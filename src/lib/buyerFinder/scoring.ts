@@ -131,7 +131,17 @@ function normalizeTitle(jobTitle: string | null | undefined): string {
 }
 
 function firstMatchingPhrase(haystack: string, phrases: readonly string[]): string | undefined {
-  return phrases.find((p) => haystack.includes(p));
+  return phrases.find((p) => {
+    const escaped = p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/ /g, "\\s+");
+    return new RegExp(`\\b${escaped}\\b`).test(haystack);
+  });
+}
+
+function hasUnrelatedDirectorDepartment(title: string): boolean {
+  return (
+    /\b(hr|human resources|sales|marketing|engineering)\b/.test(title) ||
+    /\b(it|information technology)\b/.test(title)
+  );
 }
 
 /** Deterministic role rank for MDF export outreach. No fuzzy-search library. */
@@ -156,6 +166,10 @@ export function scoreContactRole(jobTitle: string | null | undefined): RoleScore
   const t2 = firstMatchingPhrase(title, TIER2_PHRASES);
   if (t2) return { tier: 2, points: ROLE_TIER2_POINTS, matched: t2 };
 
+  if (/\bsupply chain\b/.test(title)) {
+    return { tier: 2, points: ROLE_TIER2_POINTS, matched: "supply chain" };
+  }
+
   if (/\b(owner|founder|co founder)\b/.test(title)) {
     const matched = title.includes("founder") ? "founder" : "owner";
     return { tier: 3, points: ROLE_TIER3_POINTS, matched };
@@ -163,7 +177,9 @@ export function scoreContactRole(jobTitle: string | null | undefined): RoleScore
   if (/\b(chief executive|ceo)\b/.test(title)) {
     return { tier: 3, points: ROLE_TIER3_POINTS, matched: "ceo" };
   }
-  if (/\bdirector\b/.test(title)) {
+  // Plain "Director" is a conservative leadership fallback only when the
+  // title is not an unrelated department (HR, sales, marketing, IT, …).
+  if (/\bdirector\b/.test(title) && !hasUnrelatedDirectorDepartment(title)) {
     return { tier: 3, points: ROLE_TIER3_POINTS, matched: "director" };
   }
 

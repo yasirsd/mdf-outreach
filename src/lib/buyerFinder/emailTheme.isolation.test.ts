@@ -22,7 +22,13 @@ const CORE_FILES = [
   "src/lib/buyerFinder/providers/types.ts",
   "src/lib/buyerFinder/providers/hunter/query.ts",
   "src/lib/buyerFinder/providers/hunter/companyDiscovery.ts",
+  "src/lib/buyerFinder/providers/hunter/personDiscovery.ts",
   "src/lib/buyerFinder/providers/hunter/usage.ts",
+  "src/lib/buyerFinder/personDiscovery.ts",
+  "src/lib/buyerFinder/personIdentity.ts",
+  "src/lib/buyerFinder/personRank.ts",
+  "src/lib/buyerFinder/safeContact.ts",
+  "src/app/(app)/buyer-finder/personActions.ts",
   "src/lib/buyerFinder/providers/hunter/errors.ts",
   "src/lib/buyerFinder/providers/mock/companyDiscovery.ts",
   "src/lib/buyerFinder/providers/mock/contactEnrichment.ts",
@@ -32,6 +38,10 @@ const CORE_FILES = [
   "src/app/(app)/buyer-finder/QueueView.tsx",
   "src/app/(app)/buyer-finder/candidate/[id]/CandidateView.tsx",
   "src/components/buyerFinder/CandidateCard.tsx",
+  "src/components/buyerFinder/CompanyIntelligenceCard.tsx",
+  "src/components/buyerFinder/PriorityContactRow.tsx",
+  "src/components/buyerFinder/AttentionResearchCard.tsx",
+  "src/components/buyerFinder/SecondaryPersonRow.tsx",
 ];
 
 function read(rel: string): string {

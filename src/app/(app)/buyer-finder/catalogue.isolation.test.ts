@@ -54,7 +54,7 @@ describe("BF2 business catalogue authority", () => {
   });
 
   it("CandidateCard resolves display via the business catalogue by id", () => {
-    const src = read("src/components/buyerFinder/CandidateCard.tsx");
+    const src = read("src/components/buyerFinder/CompanyIntelligenceCard.tsx");
     expect(src).toContain("findBusinessProductById");
     expect(src).not.toContain("findBusinessProductByEmailThemeKey");
   });

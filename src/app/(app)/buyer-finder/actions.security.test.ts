@@ -75,8 +75,11 @@ describe("BF2 server-action safety guardrails", () => {
     // through a single audited surface.
     expect(CONFIG).toContain('import "server-only"');
     expect(CONFIG).toContain("BUYER_FINDER_HUNTER_API_KEY");
-    expect(CONFIG).toContain("BUYER_FINDER_HUNTER_ENABLED");
-    expect(CONFIG).toContain("isBuyerFinderHunterEnabled");
+    expect(CONFIG).toContain("BUYER_FINDER_HUNTER_REVEAL_ENABLED");
+    expect(CONFIG).toContain("BUYER_FINDER_HUNTER_ENRICHMENT_ENABLED");
+    expect(CONFIG).not.toContain("isBuyerFinderHunterEnabled");
+    expect(CONFIG).not.toContain("isBuyerFinderPublicWebsiteEnabled");
+    expect(CONFIG).not.toContain("isBuyerFinderAutoFreeEnrichmentEnabled");
     expect(CONFIG).toContain('=== "true"');
     expect(CONFIG).not.toMatch(/NEXT_PUBLIC/);
   });
@@ -116,6 +119,14 @@ describe("BF2 server-action safety guardrails", () => {
     expect(ACTIONS).not.toMatch(/repos\.recipients\./);
   });
 
+  it("approveCandidateAction only updates review status and never converts", () => {
+    const approve = ACTIONS.match(/export async function approveCandidateAction[\s\S]+?^}/m)?.[0] ?? "";
+    expect(approve).toContain('reviewStatus: "approved"');
+    expect(approve).not.toMatch(/buyers/);
+    expect(approve).not.toMatch(/conversion/i);
+    expect(approve).not.toMatch(/convertCandidate/);
+  });
+
   it("safe summary never carries API keys, raw provider payloads, or Supabase errors", () => {
     // The result interface must have no `rawResponse` / `providerJson`
     // / `apiKey` field.
@@ -138,6 +149,14 @@ describe("BF2 server-action safety guardrails", () => {
     const providerIndex = body.indexOf("createHunterCompanyDiscoveryProvider(");
     expect(validationIndex).toBeGreaterThan(-1);
     expect(providerIndex).toBeGreaterThan(validationIndex);
+  });
+
+  it("candidate detail load strips providerRef before returning contacts", () => {
+    expect(ACTIONS).toContain("toSafeContacts");
+    const loadFn = ACTIONS.match(
+      /export async function loadBuyerCandidateAction[\s\S]+?^}/m,
+    )?.[0] ?? "";
+    expect(loadFn).toContain("toSafeContacts(contacts)");
   });
 
   it("candidate ids are validated against a strict UUID pattern (BF2.1)", () => {

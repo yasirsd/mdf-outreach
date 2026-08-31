@@ -12,6 +12,8 @@
 export type ProviderCapability =
   | "company_discovery"
   | "person_discovery"
+  | "company_contact_discovery"
+  | "personal_contact_reveal"
   | "email_enrichment"
   | "email_verification";
 
@@ -22,13 +24,15 @@ export type ProviderCapability =
  */
 export type CapabilityCostClass = "free" | "paid" | "unavailable";
 
+export type ProviderId = "hunter" | "public_website";
+
 export interface ProviderDescriptor {
-  id: "hunter";
+  id: ProviderId;
   displayName: string;
   capabilities: Record<ProviderCapability, CapabilityCostClass>;
 }
 
-export const PROVIDER_DESCRIPTORS: Record<ProviderDescriptor["id"], ProviderDescriptor> = {
+export const PROVIDER_DESCRIPTORS: Record<ProviderId, ProviderDescriptor> = {
   hunter: {
     id: "hunter",
     displayName: "Hunter",
@@ -38,6 +42,21 @@ export const PROVIDER_DESCRIPTORS: Record<ProviderDescriptor["id"], ProviderDesc
       company_discovery: "free",
       // BF3A — Hunter Multi-Domain Search (masked) is free. Reveal is not.
       person_discovery: "free",
+      company_contact_discovery: "unavailable",
+      // BF3B — Multi-Domain Search reveal. Up to 1 Search credit per person.
+      personal_contact_reveal: "paid",
+      email_enrichment: "unavailable",
+      email_verification: "unavailable",
+    },
+  },
+  public_website: {
+    id: "public_website",
+    displayName: "Company website",
+    capabilities: {
+      company_discovery: "unavailable",
+      person_discovery: "unavailable",
+      company_contact_discovery: "free",
+      personal_contact_reveal: "unavailable",
       email_enrichment: "unavailable",
       email_verification: "unavailable",
     },
@@ -48,13 +67,13 @@ export function getProviderDescriptor(
   id: string,
 ): ProviderDescriptor | undefined {
   if (Object.hasOwn(PROVIDER_DESCRIPTORS, id)) {
-    return PROVIDER_DESCRIPTORS[id as ProviderDescriptor["id"]];
+    return PROVIDER_DESCRIPTORS[id as ProviderId];
   }
   return undefined;
 }
 
 export function providerHasCapability(
-  id: ProviderDescriptor["id"],
+  id: ProviderId,
   capability: ProviderCapability,
 ): boolean {
   const cls = PROVIDER_DESCRIPTORS[id]?.capabilities[capability];
