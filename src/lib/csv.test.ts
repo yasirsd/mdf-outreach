@@ -45,6 +45,24 @@ describe("csv mapping", () => {
     expect(drafts[0].errors).toContain("Invalid email");
   });
 
+  it("treats whitespace-only email as missing", () => {
+    const drafts = mapCsvToBuyers(
+      [{ company: "Foo", email: "   " }],
+      { company: "company", email: "email" },
+    );
+    expect(drafts[0].valid).toBe(false);
+    expect(drafts[0].errors).toContain("Missing email");
+  });
+
+  it("rejects an address without a dotted domain", () => {
+    const drafts = mapCsvToBuyers(
+      [{ company: "Foo", email: "buyer@localhost" }],
+      { company: "company", email: "email" },
+    );
+    expect(drafts[0].valid).toBe(false);
+    expect(drafts[0].errors).toContain("Invalid email");
+  });
+
   it("round-trips buyers to CSV", () => {
     const now = new Date().toISOString();
     const csv = buyersToCsv([

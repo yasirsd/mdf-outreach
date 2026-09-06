@@ -71,3 +71,34 @@ describe("F9 Buyers page", () => {
     expect(VIEW).toMatch(/clearFilters[\s\S]{0,120}page:\s*1/);
   });
 });
+
+describe("BF5B Buyers page — exact ?buyerId navigation", () => {
+  it("validates buyerId as a UUID and only calls repos.buyers.get when it matches", () => {
+    // Malformed or missing buyerId must not hit the repo — silently
+    // ignored, the page still loads its normal list.
+    expect(PAGE).toMatch(/buyerIdValid[\s\S]{0,80}\?[\s\S]{0,80}repos\.buyers\.get\(buyerIdParam\)/);
+    expect(PAGE).toMatch(
+      /\/\^\[0-9a-f\]\{8\}-\[0-9a-f\]\{4\}-\[0-9a-f\]\{4\}-\[0-9a-f\]\{4\}-\[0-9a-f\]\{12\}\$\/i\.test\(\s*buyerIdParam/,
+    );
+  });
+
+  it("passes the resolved Buyer to BuyersView as initialSelectedBuyer", () => {
+    expect(PAGE).toContain("initialSelectedBuyer");
+    // Repo returns undefined for an unknown / cross-workspace id (via
+    // the workspace-scoped repo bound in serverRepositories) — that
+    // stays undefined here, no crash.
+    expect(PAGE).toMatch(/initialSelectedBuyer=\{initialSelectedBuyer \?\? undefined\}/);
+  });
+
+  it("BuyersView opens the drawer on initialSelectedBuyer and clears the URL param on close", () => {
+    // Drawer starts open when the server hand-off provided the Buyer.
+    expect(VIEW).toMatch(/useState<Buyer \| null>\(initialSelectedBuyer \?\? null\)/);
+    // A dedicated helper removes only `buyerId` from the URL, leaving
+    // filter state (q/status/country/product/page/pageSize) intact.
+    expect(VIEW).toContain("clearBuyerIdParam");
+    expect(VIEW).toMatch(/sp\.delete\("buyerId"\)/);
+    expect(VIEW).toMatch(/function closeDrawer\(\)/);
+    // Both Drawer onClose paths go through closeDrawer.
+    expect(VIEW).toMatch(/Drawer[\s\S]{0,200}onClose=\{closeDrawer\}/);
+  });
+});

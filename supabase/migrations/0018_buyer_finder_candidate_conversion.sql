@@ -77,7 +77,12 @@ create index if not exists buyer_finder_candidate_conversions_workspace_idx
 select mdf.__apply_workspace_rls('public.buyer_finder_candidate_conversions'::regclass);
 
 revoke all on public.buyer_finder_candidate_conversions from anon, authenticated, public;
-grant select, insert, update, delete on public.buyer_finder_candidate_conversions to authenticated;
+-- BF5A.1 — conversion linkage is durable and immutable from the app plane.
+-- `authenticated` may only SELECT; the controlled conversion RPC (below,
+-- SECURITY DEFINER) is the sole insertion path. There is no supported
+-- normal UPDATE/DELETE from the app plane. RLS on the table still isolates
+-- rows by workspace on SELECT.
+grant select on public.buyer_finder_candidate_conversions to authenticated;
 
 -- ---------------------------------------------------------------------------
 -- Host / company compare helpers for transactional duplicate recheck.
@@ -148,26 +153,45 @@ grant execute on function mdf.normalize_company_name(text) to authenticated;
 
 -- ---------------------------------------------------------------------------
 -- Atomic conversion. Loads authoritative Candidate/contact rows.
--- Browser may pass only candidate id + source identity + catalogue product label.
+-- Browser may pass only candidate id + source identity + a product-match
+-- identity for the candidate. `buyers.product_interest` is derived here
+-- from the persisted product match's `product_key` via a fixed business-id
+-- whitelist — never from arbitrary browser text.
 -- Never copies search-intent buyer_type. Never writes notes. Never sends mail.
+--
+-- SECURITY DEFINER: the app plane has no INSERT permission on
+-- `buyer_finder_candidate_conversions` (BF5A.1 — Issue 2). All state
+-- changes flow through this narrow function, which owns:
+--   • strict source_kind whitelist,
+--   • an explicit workspace lookup via mdf.current_workspace_id() (which
+--     itself reads request-scoped auth.uid(), so DEFINER does not
+--     escalate the caller's workspace),
+--   • every candidate/contact/public-email/product-match query filtered
+--     by that resolved workspace_id (never a caller-supplied one),
+--   • Buyer INSERT + conversion INSERT inside a single advisory-locked
+--     transaction, so a concurrent duplicate call resolves as
+--     `already_converted` rather than a second Buyer.
+-- `search_path` is fixed and cannot be re-pointed by a client.
 -- ---------------------------------------------------------------------------
 create or replace function public.convert_buyer_finder_candidate(
   p_candidate_id uuid,
   p_source_kind text,
   p_contact_id uuid default null,
   p_public_email_id uuid default null,
-  p_product_interest text default null
+  p_product_match_id uuid default null
 )
 returns jsonb
 language plpgsql
-security invoker
-set search_path = public, mdf
+security definer
+set search_path = public, mdf, pg_temp
 as $$
 declare
   v_ws uuid;
   v_candidate public.buyer_candidates%rowtype;
   v_contact public.buyer_candidate_contacts%rowtype;
   v_public public.buyer_candidate_public_emails%rowtype;
+  v_product public.buyer_candidate_product_matches%rowtype;
+  v_product_interest text := null;
   v_existing public.buyer_finder_candidate_conversions%rowtype;
   v_buyer_id uuid;
   v_email text := '';
@@ -238,6 +262,19 @@ begin
     if not found then
       return jsonb_build_object('outcome', 'invalid_selection');
     end if;
+    -- BF5A.1 — Issue 3: a "revealed personal contact" must actually be
+    -- revealed (a paid reveal or a directly persisted personal-email
+    -- discovery stamps revealed_at) and must be a personal mailbox, not
+    -- a shared/company one. Ahmed at Natureland (is_decision_maker=false
+    -- but a genuinely revealed personal email) is a valid selection;
+    -- decision-maker status is not required and must not gate this path.
+    -- Phone is never required.
+    if v_contact.revealed_at is null then
+      return jsonb_build_object('outcome', 'invalid_selection');
+    end if;
+    if coalesce(v_contact.email_type, '') <> 'personal' then
+      return jsonb_build_object('outcome', 'invalid_selection');
+    end if;
     v_email := lower(btrim(coalesce(v_contact.business_email, '')));
     if v_email = '' or position('@' in v_email) = 0 then
       return jsonb_build_object('outcome', 'invalid_selection');
@@ -275,6 +312,50 @@ begin
     mdf.normalize_host(v_candidate.website)
   );
   v_company_norm := mdf.normalize_company_name(v_candidate.company_name);
+
+  -- BF5A.1 — Issue 1: derive Buyer product_interest from an authoritative
+  -- persisted product match (buyer_candidate_product_matches.product_key
+  -- is a MDF business product id, enforced by app code). The RPC never
+  -- trusts arbitrary browser text and never reads search-intent
+  -- (desired_buyer_types) here. If no product-match identity is supplied,
+  -- product_interest stays null — matches the pre-BF5A convention that a
+  -- Buyer may exist without a product interest.
+  --
+  -- The whitelist below mirrors src/lib/catalogue/products.ts. Adding a
+  -- new business product means adding it there AND to this WHEN list;
+  -- the isolation test in emailTheme.isolation.test.ts covers the id set.
+  -- An unknown product_key falls through to null rather than being
+  -- fabricated — the display label is authoritative, not the key.
+  if p_product_match_id is not null then
+    select * into v_product
+    from public.buyer_candidate_product_matches
+    where id = p_product_match_id
+      and candidate_id = p_candidate_id
+      and workspace_id = v_ws;
+    if not found then
+      return jsonb_build_object('outcome', 'invalid_selection');
+    end if;
+    v_product_interest := case v_product.product_key
+      when 'guntur-dry-red-chilli' then 'Guntur Dry Red Chilli'
+      when 'banganapalli-mango'    then 'Banganapalli Mango'
+      when 'indian-pomegranate'    then 'Indian Pomegranate'
+      when 'indian-apples'         then 'Indian Apples'
+      else null
+    end;
+    -- BF5A.1 final: an unknown product_key means the product exists in
+    -- persisted candidate data but is not in the canonical whitelist above
+    -- (and by extension not in src/lib/catalogue/products.ts). We must
+    -- refuse rather than quietly create a Buyer with product_interest=null
+    -- — the caller supplied an authoritative product identity, and we do
+    -- not have a canonical label for it. Adding a new product means adding
+    -- it BOTH to the canonical catalogue and to this whitelist.
+    if v_product_interest is null then
+      return jsonb_build_object(
+        'outcome', 'invalid_selection',
+        'reason', 'unsupported_product'
+      );
+    end if;
+  end if;
 
   if v_email <> '' then
     select * into v_dup
@@ -378,7 +459,7 @@ begin
     btrim(v_candidate.country),
     v_city,
     null,
-    nullif(btrim(coalesce(p_product_interest, '')), ''),
+    v_product_interest,
     'Buyer Finder',
     null,
     'new',
@@ -425,9 +506,13 @@ exception
 end;
 $$;
 
-revoke all on function public.convert_buyer_finder_candidate(uuid, text, uuid, uuid, text)
+-- BF5A.1 — Issue 2: only `authenticated` may execute the narrow
+-- conversion RPC. `public` and `anon` are explicitly revoked so an
+-- unauthenticated caller (or a mistaken future GRANT) cannot invoke a
+-- SECURITY DEFINER function.
+revoke all on function public.convert_buyer_finder_candidate(uuid, text, uuid, uuid, uuid)
   from public, anon;
-grant execute on function public.convert_buyer_finder_candidate(uuid, text, uuid, uuid, text)
+grant execute on function public.convert_buyer_finder_candidate(uuid, text, uuid, uuid, uuid)
   to authenticated;
 
 notify pgrst, 'reload schema';

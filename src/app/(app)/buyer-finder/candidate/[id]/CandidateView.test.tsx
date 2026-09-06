@@ -253,7 +253,9 @@ describe("CandidateView provenance and score copy", () => {
     expect(screen.getByText("Aditee G.")).toBeTruthy();
     expect(screen.getByText(/Person contact quality 7/)).toBeTruthy();
     expect(screen.queryByText(/Candidate contact quality 7/)).toBeNull();
-    expect(screen.queryByText(/Verified/i)).toBeNull();
+    // The public mailbox itself must not be labelled verified. BI1 may
+    // independently say that no verified *trade* intelligence exists.
+    expect(screen.queryByText(/^Verified$/i)).toBeNull();
     expect(screen.queryByText(/^Contacts$/)).toBeNull();
   });
 
@@ -363,7 +365,8 @@ describe("BF5A conversion UX", () => {
     expect(screen.getByRole("button", { name: "Approve for Buyer review" })).toBeTruthy();
   });
 
-  it("opens a preview on Convert to Buyer and does not create a Buyer", async () => {
+  it("opens a preview on Convert to Buyer for a public-company-email flow and does not create a Buyer", async () => {
+    const PUB_ID = "00000000-0000-4000-8000-0000000000e1";
     vi.mocked(previewCandidateConversionAction).mockResolvedValue({
       eligibility: "ok",
       candidateId: "00000000-0000-4000-8000-0000000000aa",
@@ -373,37 +376,84 @@ describe("BF5A conversion UX", () => {
         firstName: "",
         lastName: "",
         company: "Mahmood & Sons",
-        email: "",
+        email: "info@mahmoodsons.com",
         country: "United Arab Emirates",
         source: "Buyer Finder",
       },
-      sourceKind: "company_only",
-      options: [{ kind: "company_only", selectable: true }],
-      selected: { kind: "company_only" },
+      sourceKind: "public_company_email",
+      options: [
+        {
+          kind: "public_company_email",
+          publicEmailId: PUB_ID,
+          email: "info@mahmoodsons.com",
+          selectable: true,
+        },
+      ],
+      selected: { kind: "public_company_email", publicEmailId: PUB_ID },
       duplicate: "none",
-      missingEmail: true,
+      missingEmail: false,
       createBlocked: false,
     });
     render(
       <CandidateView
         record={hunterRecord({
           candidate: { ...hunterRecord().candidate, reviewStatus: "approved" },
+          publicEmails: [
+            {
+              id: PUB_ID,
+              candidateId: "00000000-0000-4000-8000-0000000000aa",
+              email: "info@mahmoodsons.com",
+              mailboxType: "general",
+              mailboxKind: "corporate",
+              source: "company_website",
+              sourceUrl: "https://mahmoodsons.com",
+              isPrimary: true,
+            },
+          ],
         })}
       />,
     );
     expect(screen.getByText("READY FOR BUYER CONVERSION")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Approve for Buyer review" })).toBeNull();
+    expect(screen.queryByText(/Approving does NOT create a Buyer/)).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Convert to Buyer" }));
     await waitFor(() => {
       expect(previewCandidateConversionAction).toHaveBeenCalledWith({
         candidateId: "00000000-0000-4000-8000-0000000000aa",
         contactId: undefined,
         publicEmailId: undefined,
-        companyOnly: undefined,
       });
     });
     expect(convertCandidateToBuyerAction).not.toHaveBeenCalled();
     expect(approveCandidateAction).not.toHaveBeenCalled();
     expect(screen.getByText("Creates one Buyer in MDF Outreach. No email will be sent.")).toBeTruthy();
+  });
+
+  // BF5B-final — an approved Candidate with no revealed personal email and
+  // no public company email must show the "Needs contact" state, not a
+  // Convert button. Buyer creation is impossible without an email.
+  it("shows NEEDS CONTACT and hides Convert when an approved Candidate has no usable email", () => {
+    vi.mocked(previewCandidateConversionAction).mockClear();
+    vi.mocked(convertCandidateToBuyerAction).mockClear();
+    render(
+      <CandidateView
+        record={hunterRecord({
+          candidate: { ...hunterRecord().candidate, reviewStatus: "approved" },
+          contacts: [],
+          publicEmails: [],
+        })}
+      />,
+    );
+    expect(screen.getByText("NEEDS CONTACT")).toBeTruthy();
+    expect(
+      screen.getByText(/A valid email is required before Mahmood & Sons can become an Outreach Buyer/),
+    ).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Approve for Buyer review" })).toBeNull();
+    expect(screen.queryByText(/Approving does NOT create a Buyer/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Convert to Buyer" })).toBeNull();
+    expect(screen.queryByText("READY FOR BUYER CONVERSION")).toBeNull();
+    expect(convertCandidateToBuyerAction).not.toHaveBeenCalled();
+    expect(previewCandidateConversionAction).not.toHaveBeenCalled();
   });
 
   it("shows converted state with Open Buyer and without Convert", () => {
@@ -432,5 +482,39 @@ describe("BF5A conversion UX", () => {
     expect(screen.getByText("Directory signal")).toBeTruthy();
     expect(approveCandidateAction).not.toHaveBeenCalled();
   });
-});
 
+  // BF5B — after conversion, the redundant Approve/Reject actions and the
+  // approval helper copy must be hidden. Archive remains available because
+  // it only archives the research record; it does not touch the linked
+  // Buyer. The Open Buyer link uses the exact ?buyerId=<uuid> route.
+  it("hides Approve/Reject and the approval hint on a converted candidate; Archive stays", () => {
+    const BUYER_ID = "00000000-0000-4000-8000-0000000000b1";
+    render(
+      <CandidateView
+        record={hunterRecord({
+          candidate: { ...hunterRecord().candidate, reviewStatus: "approved" },
+          conversion: {
+            id: "00000000-0000-4000-8000-0000000000ff",
+            candidateId: "00000000-0000-4000-8000-0000000000aa",
+            buyerId: BUYER_ID,
+            sourceKind: "company_only",
+            createdAt: "2026-08-31T00:00:00.000Z",
+          },
+          convertedBuyer: {
+            id: BUYER_ID,
+            email: "",
+            company: "Mahmood & Sons",
+          },
+        })}
+      />,
+    );
+    expect(screen.queryByRole("button", { name: "Approve for Buyer review" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Reject" })).toBeNull();
+    expect(screen.queryByText(/Approving does NOT create a Buyer/)).toBeNull();
+    expect(screen.getByRole("button", { name: /Archive/ })).toBeTruthy();
+    const openBuyer = screen.getByRole("link", { name: "Open Buyer" });
+    expect(openBuyer.getAttribute("href")).toBe(`/buyers?buyerId=${BUYER_ID}`);
+    expect(screen.getByText(/Buyer created/)).toBeTruthy();
+    expect(approveCandidateAction).not.toHaveBeenCalled();
+  });
+});

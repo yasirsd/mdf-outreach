@@ -30,6 +30,15 @@ export default async function BuyersPage({
   const status = asStr("status");
   const country = asStr("country");
   const product = asStr("product");
+  const buyerIdParam = asStr("buyerId").trim();
+  // BF5B — exact-buyer navigation. Buyer Finder's conversion linkage links
+  // out via `/buyers?buyerId=<uuid>`; we fetch that Buyer through the same
+  // workspace-scoped repo the list uses. An invalid UUID, an unknown id, or
+  // an id belonging to another workspace all resolve to `undefined` and are
+  // silently ignored — the page still loads its normal list.
+  const buyerIdValid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+    buyerIdParam,
+  );
 
   const requestedPageSize = parseInt1(asStr("pageSize"), DEFAULT_PAGE_SIZE);
   const pageSize = ALLOWED_PAGE_SIZES.has(requestedPageSize)
@@ -64,6 +73,8 @@ export default async function BuyersPage({
     });
   }
 
+  const initialSelectedBuyer = buyerIdValid ? await repos.buyers.get(buyerIdParam) : undefined;
+
   return (
     <BuyersView
       initialRows={effective.rows}
@@ -72,6 +83,7 @@ export default async function BuyersPage({
       pageSize={effective.pageSize}
       pageCount={effective.pageCount}
       initialFilters={{ search, status, country, product }}
+      initialSelectedBuyer={initialSelectedBuyer ?? undefined}
     />
   );
 }

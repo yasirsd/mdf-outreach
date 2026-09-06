@@ -24,10 +24,15 @@ describe("gmail token encryption (AES-256-GCM)", () => {
 
   it("rejects tampered ciphertext", () => {
     const enc = encryptString("secret");
+    const tampered = Buffer.from(enc.ciphertext, "base64");
+    // Flip an authenticated ciphertext bit. Replacing a Base64 character
+    // was probabilistic because the replacement could equal the original
+    // character (or affect only discarded padding bits).
+    tampered[0] ^= 0x01;
     expect(() =>
       decryptString({
         ...enc,
-        ciphertext: Buffer.from(enc.ciphertext, "base64").toString("base64").replace(/^./, "A"),
+        ciphertext: tampered.toString("base64"),
       }),
     ).toThrow();
   });

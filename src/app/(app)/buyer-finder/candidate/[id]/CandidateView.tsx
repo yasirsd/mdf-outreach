@@ -56,6 +56,10 @@ import type { CandidateDetailRecord } from "@/app/(app)/buyer-finder/actions";
 import { findCandidateDecisionMakersAction } from "@/app/(app)/buyer-finder/personActions";
 import { Modal } from "@/components/ui/Modal";
 import { CandidateConversionPanel } from "@/components/buyerFinder/CandidateConversionPanel";
+import { BuyerIntelligencePanel } from "@/components/buyerFinder/BuyerIntelligencePanel";
+import { BuyerIntelligenceWebsiteResearch } from "@/components/buyerFinder/BuyerIntelligenceWebsiteResearch";
+import { hasUsableEmailForConversion } from "@/lib/buyerFinder/conversion";
+import { emptyBuyerIntelligenceViewModel } from "@/lib/buyerIntelligence/viewModel";
 
 function productName(id: string): string {
   return findBusinessProductById(id)?.displayName ?? id;
@@ -111,6 +115,13 @@ export function CandidateView({
     publicEmails.find((e) => e.isPrimary)?.email ||
     publicEmails[0]?.email ||
     candidate.generalEmail;
+  const intelligence =
+    record.intelligence ??
+    emptyBuyerIntelligenceViewModel({
+      contacts,
+      publicEmails,
+      candidateGeneralEmail: candidate.generalEmail,
+    });
 
   const [pending, startTransition] = useTransition();
   const [rejectReason, setRejectReason] = useState("");
@@ -206,6 +217,16 @@ export function CandidateView({
               </div>
             )}
           </section>
+
+          <BuyerIntelligencePanel
+            model={intelligence}
+            researchSlot={
+              <BuyerIntelligenceWebsiteResearch
+                candidateId={candidate.id}
+                canResearch={Boolean(candidate.website) || Boolean(candidate.domain)}
+              />
+            }
+          />
 
           {others.length > 0 && (
             <section className="max-w-3xl">
@@ -315,28 +336,50 @@ export function CandidateView({
             companyName={candidate.companyName}
             approved={candidate.reviewStatus === "approved"}
             convertedBuyer={convertedBuyer ?? (conversion ? { id: conversion.buyerId, email: "", company: candidate.companyName } : undefined)}
+            convertedAt={conversion?.createdAt}
+            contactUsedName={
+              conversion?.contactId
+                ? (() => {
+                    const c = contacts.find((x) => x.id === conversion.contactId);
+                    const name = [c?.firstName, c?.lastName].filter(Boolean).join(" ").trim();
+                    return name || c?.fullName || undefined;
+                  })()
+                : undefined
+            }
+            hasUsableEmail={hasUsableEmailForConversion({ contacts, publicEmails })}
           />
 
+          {/* BF5B — after conversion, Approve/Reject are hidden. The
+              linkage row (buyer_finder_candidate_conversions) is the
+              source of truth for "converted"; rejecting or re-approving
+              a Candidate that already produced a Buyer would create
+              contradictory lifecycle semantics. Archive stays visible
+              because it archives the research record only and leaves
+              the linked Buyer untouched. */}
           <div className="px-4 py-3" style={{ borderTop: "1px solid var(--app-border)" }}>
-            <p className="text-[12px] text-text-muted mb-2.5 leading-relaxed">
-              Approving does NOT create a Buyer. Approve only marks this candidate for a later manual
-              Buyer conversion.
-            </p>
+            {!conversion && candidate.reviewStatus !== "approved" && (
+              <p className="text-[12px] text-text-muted mb-2.5 leading-relaxed">
+                Approving does NOT create a Buyer. Approve only marks this candidate for a later manual
+                Buyer conversion.
+              </p>
+            )}
             <div className="flex flex-col items-start gap-1.5">
-              <button
-                type="button"
-                className="btn-primary w-auto"
-                disabled={pending || isFinal || candidate.reviewStatus === "approved"}
-                onClick={() =>
-                  run(
-                    () => approveCandidateAction(candidate.id),
-                    "Candidate approved",
-                  )
-                }
-              >
-                Approve for Buyer review
-              </button>
-              {!showRejectInput ? (
+              {!conversion && candidate.reviewStatus !== "approved" && (
+                <button
+                  type="button"
+                  className="btn-primary w-auto"
+                  disabled={pending || isFinal}
+                  onClick={() =>
+                    run(
+                      () => approveCandidateAction(candidate.id),
+                      "Candidate approved",
+                    )
+                  }
+                >
+                  Approve for Buyer review
+                </button>
+              )}
+              {conversion ? null : !showRejectInput ? (
                 <button
                   type="button"
                   className="btn-ghost"

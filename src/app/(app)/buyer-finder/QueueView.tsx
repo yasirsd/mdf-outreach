@@ -6,10 +6,14 @@ import { revealPriorityTierRank } from "@/lib/buyerFinder/revealPriority";
 
 export type QueueRowInput = CandidateCardInput;
 
-export type QueueFilter = "all" | "priority" | "attention";
+export type QueueFilter = "all" | "priority" | "attention" | "converted";
 
 function isAttention(row: QueueRowInput): boolean {
   return row.publicJobStatus === "failed" || row.peopleJobStatus === "failed";
+}
+
+function isConverted(row: QueueRowInput): boolean {
+  return Boolean(row.convertedBuyerId);
 }
 
 function comparePriority(a: QueueRowInput, b: QueueRowInput): number {
@@ -37,6 +41,7 @@ export function QueueView({
 
   const visible = useMemo(() => {
     if (active === "attention") return rows.filter(isAttention);
+    if (active === "converted") return rows.filter(isConverted);
     if (active === "priority") {
       return rows
         .filter((r) => r.revealPriority === "high" || r.revealPriority === "medium")
@@ -62,6 +67,11 @@ export function QueueView({
           label="Needs attention"
           active={active === "attention"}
           onClick={() => setFilter("attention")}
+        />
+        <FilterChip
+          label="Converted"
+          active={active === "converted"}
+          onClick={() => setFilter("converted")}
         />
       </div>
       {visible.length === 0 ? (
@@ -153,6 +163,21 @@ function EmptyState({
       <div className="rounded-[12px] px-8 py-12 text-center" style={{ backgroundColor: "var(--app-surface)" }}>
         <h2 className="text-[20px] font-semibold tracking-tight text-text-primary">Everything looks good</h2>
         <p className="mt-2 text-[13.5px] text-text-secondary">No research jobs need attention.</p>
+      </div>
+    );
+  }
+  if (filter === "converted") {
+    return (
+      <div className="rounded-[12px] px-8 py-12 text-center" style={{ backgroundColor: "var(--app-surface)" }}>
+        <h2 className="text-[20px] font-semibold tracking-tight text-text-primary">
+          No converted companies yet
+        </h2>
+        <p className="mt-2 text-[13.5px] text-text-secondary leading-relaxed max-w-md mx-auto">
+          Approved candidates converted to Buyers will appear here. Converting does not send email.
+        </p>
+        <button type="button" className="btn-secondary mt-5" onClick={onViewAll}>
+          View all companies
+        </button>
       </div>
     );
   }

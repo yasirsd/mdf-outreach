@@ -97,7 +97,7 @@ vi.mock("@/lib/repositories/server", () => ({
           sourceKind: "revealed_personal_contact" | "public_company_email" | "company_only";
           contactId?: string;
           publicEmailId?: string;
-          productInterest?: string;
+          productMatchId?: string;
         }) =>
           convertCandidateToBuyer({
             workspaceKey: SESSION.membership.workspaceId,
@@ -161,7 +161,8 @@ describe("BF5A conversion actions", () => {
     expect(conversions.size).toBe(1);
     expect(buyers[0]?.email).toBe("ahmed@natureland.net");
     expect(buyers[0]?.buyerType).toBeUndefined();
-    expect(result.buyerHref).toContain("/buyers?q=");
+    // BF5B — with a real Buyer id in hand, the link is the exact route.
+    expect(result.buyerHref).toMatch(/^\/buyers\?buyerId=[0-9a-f-]{36}$/);
     expect(harness.revalidatePath).toHaveBeenCalledWith("/buyers");
   });
 

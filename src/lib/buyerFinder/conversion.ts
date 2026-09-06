@@ -7,6 +7,7 @@
  */
 
 import type { Buyer } from "@/lib/types";
+import { normalizeValidBuyerEmail } from "@/lib/buyerEmail";
 import { findBusinessProductById } from "./businessCatalogue";
 import {
   normalizeCompanyNameForCompare,
@@ -78,16 +79,10 @@ export interface ConversionPublicEmailOption {
   selectable: true;
 }
 
-export interface ConversionCompanyOnlyOption {
-  kind: "company_only";
-  selectable: true;
-}
-
 export type ConversionOption =
   | ConversionContactOption
   | ConversionMaskedOption
-  | ConversionPublicEmailOption
-  | ConversionCompanyOnlyOption;
+  | ConversionPublicEmailOption;
 
 export type ConversionDuplicateClass = "none" | "definite" | "possible";
 
@@ -184,7 +179,7 @@ export function conversionEligibility(input: {
 }
 
 export function contactHasUsablePersonalEmail(contact: BuyerCandidateContact): boolean {
-  return Boolean(normalizeOptionalEmail(contact.businessEmail));
+  return Boolean(normalizeValidBuyerEmail(contact.businessEmail));
 }
 
 export function isSelectableRevealedContact(contact: BuyerCandidateContact): boolean {
@@ -221,13 +216,13 @@ export function listConversionOptions(input: {
       contactId: c.id,
       label: contactLabel(c),
       title: blankToUndefined(c.jobTitle),
-      email: normalizeOptionalEmail(c.businessEmail)!,
+      email: normalizeValidBuyerEmail(c.businessEmail)!,
       selectable: true,
     });
   }
   const publics = input.publicEmails.slice().sort(sortPublic);
   for (const e of publics) {
-    const email = normalizeOptionalEmail(e.email);
+    const email = normalizeValidBuyerEmail(e.email);
     if (!email) continue;
     options.push({
       kind: "public_company_email",
@@ -246,8 +241,26 @@ export function listConversionOptions(input: {
       reason: "Personal email not revealed",
     });
   }
-  options.push({ kind: "company_only", selectable: true });
+  // BF5B-final: company_only is no longer offered. Email is mandatory to
+  // create a Buyer. A Candidate with no revealed personal contact and no
+  // public company email stays in Buyer Finder as a research record and
+  // shows the "Needs contact" state — it does not enter public.buyers.
   return options;
+}
+
+/**
+ * BF5B-final — true when at least one selectable email-bearing option
+ * exists for this Candidate. Drives the "Needs contact" UX: with no
+ * usable email, the CandidateConversionPanel presents a research-only
+ * state instead of a Convert button.
+ */
+export function hasUsableEmailForConversion(input: {
+  contacts: BuyerCandidateContact[];
+  publicEmails: BuyerCandidatePublicEmail[];
+}): boolean {
+  return listConversionOptions(input).some(
+    (o) => o.kind === "revealed_personal_contact" || o.kind === "public_company_email",
+  );
 }
 
 export function defaultConversionSelection(options: ConversionOption[]): ConversionSelectionInput {
@@ -259,7 +272,9 @@ export function defaultConversionSelection(options: ConversionOption[]): Convers
     (o): o is ConversionPublicEmailOption => o.kind === "public_company_email",
   );
   if (pub) return { kind: "public_company_email", publicEmailId: pub.publicEmailId };
-  return { kind: "company_only" };
+  // No selectable email-bearing option — an empty selection signals that
+  // the caller cannot convert. Preview will surface "Needs contact".
+  return {};
 }
 
 export function resolveConversionSelection(input: {
@@ -274,8 +289,11 @@ export function resolveConversionSelection(input: {
   const requested = input.requested?.kind
     ? input.requested
     : defaultConversionSelection(options);
+  // BF5B-final: company_only is no longer a valid caller-supplied
+  // selection. A stale request for company_only resolves as unresolvable
+  // — createBlocked=true, "Needs contact" surfaced by the panel.
   if (requested.kind === "company_only") {
-    return { ok: true, selection: { kind: "company_only" } };
+    return { ok: false };
   }
   if (requested.kind === "revealed_personal_contact" || requested.contactId) {
     const contact = input.contacts.find((c) => c.id === requested.contactId);
@@ -287,7 +305,7 @@ export function resolveConversionSelection(input: {
   }
   if (requested.kind === "public_company_email" || requested.publicEmailId) {
     const row = input.publicEmails.find((e) => e.id === requested.publicEmailId);
-    if (!row || !normalizeOptionalEmail(row.email)) return { ok: false };
+    if (!row || !normalizeValidBuyerEmail(row.email)) return { ok: false };
     return {
       ok: true,
       selection: { kind: "public_company_email", publicEmailId: row.id },
@@ -314,6 +332,24 @@ export function mapProductInterest(matches: BuyerCandidateProductMatch[]): strin
   for (const m of ranked) {
     const label = findBusinessProductById(m.productId)?.displayName;
     if (label) return label;
+  }
+  return undefined;
+}
+
+/**
+ * BF5A.1 — pick the row id of the top-relevance product match whose
+ * productId maps to a known business product. The convert RPC then
+ * derives the canonical display label from the persisted product_key
+ * itself, so the browser cannot smuggle in a label. Preview UI still
+ * uses `mapProductInterest` for display; the RPC path uses this.
+ */
+export function pickAuthoritativeProductMatchId(
+  matches: BuyerCandidateProductMatch[],
+): string | undefined {
+  if (!matches.length) return undefined;
+  const ranked = [...matches].sort((a, b) => (b.relevance ?? 0) - (a.relevance ?? 0));
+  for (const m of ranked) {
+    if (findBusinessProductById(m.productId)) return m.id;
   }
   return undefined;
 }
@@ -354,7 +390,7 @@ export function mapConversionBuyer(input: {
     return {
       ...base,
       ...names,
-      email: normalizeOptionalEmail(contact.businessEmail) ?? "",
+      email: normalizeValidBuyerEmail(contact.businessEmail) ?? "",
       phone: blankToUndefined(contact.phoneNumber),
     };
   }
@@ -362,7 +398,7 @@ export function mapConversionBuyer(input: {
     const row = input.publicEmails.find((e) => e.id === selection.publicEmailId)!;
     return {
       ...base,
-      email: normalizeOptionalEmail(row.email) ?? "",
+      email: normalizeValidBuyerEmail(row.email) ?? "",
     };
   }
   return base;
@@ -404,9 +440,12 @@ export function findConversionDuplicate(input: {
       };
     }
   }
-  // Buyers.email is NOT NULL unique on lower(email), so a workspace may
-  // hold only one empty-email Buyer. Company-only conversion must not
-  // collide with that row.
+  // BF5B-final: email is now mandatory to create a Buyer, so the preview
+  // never legitimately reaches this function with an empty email. If it
+  // ever does (a stale caller, a mis-selection), an existing empty-email
+  // Buyer still counts as a duplicate under the historical
+  // `buyers_workspace_email_unique_idx` (unchanged in BF5B-final; no
+  // migration touches it).
   if (!email) {
     for (const buyer of input.existingBuyers) {
       if (!normalizeOptionalEmail(buyer.email)) {
@@ -515,7 +554,7 @@ export function buildConversionPreview(input: {
     country: input.candidate?.country ?? "",
     websiteLabel: input.candidate ? websiteLabel(input.candidate) : undefined,
     mapping,
-    sourceKind: selection.kind ?? "company_only",
+    sourceKind: selection.kind ?? "revealed_personal_contact",
     options,
     selected: selection,
     duplicate: duplicateMatch?.class ?? "none",
@@ -620,23 +659,38 @@ export async function convertCandidateToBuyer(input: {
   });
 }
 
-export function buyerOpenHref(buyer: Pick<Buyer, "email" | "company">): string {
-  const q = normalizeOptionalEmail(buyer.email) || buyer.company.trim();
+/**
+ * BF5B: prefer an exact `?buyerId=<uuid>` link when the caller knows the
+ * Buyer's id (the conversion linkage always does). The Buyers page reads
+ * `buyerId`, opens the drawer on that exact row, and rejects an unknown
+ * or cross-workspace id safely. When we only have display fields (a
+ * duplicate hint with no id), fall back to a search-style `?q=` link.
+ */
+export function buyerOpenHref(
+  buyer: { id?: string | null } & Pick<Buyer, "email" | "company">,
+): string {
+  const id = (buyer.id ?? "").trim();
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+    return `/buyers?buyerId=${id}`;
+  }
+  const q = normalizeOptionalEmail(buyer.email) || (buyer.company ?? "").trim();
   return `/buyers?q=${encodeURIComponent(q)}`;
 }
 
-/** Browser may send only identity flags — never raw Buyer field values. */
+/**
+ * Browser may send only identity flags — never raw Buyer field values.
+ * BF5B-final: `companyOnly` is no longer a valid identity. Email is
+ * mandatory to create a Buyer; a Candidate with no revealed personal
+ * contact and no public company email stays a research record.
+ */
 export function selectionFromBrowserInput(input: {
   contactId?: string;
   publicEmailId?: string;
-  companyOnly?: boolean;
 }): ConversionSelectionInput | undefined {
   const n =
     Number(Boolean(input.contactId?.trim())) +
-    Number(Boolean(input.publicEmailId?.trim())) +
-    Number(Boolean(input.companyOnly));
+    Number(Boolean(input.publicEmailId?.trim()));
   if (n > 1) return undefined;
-  if (input.companyOnly) return { kind: "company_only" };
   if (input.contactId?.trim()) {
     return { kind: "revealed_personal_contact", contactId: input.contactId.trim() };
   }

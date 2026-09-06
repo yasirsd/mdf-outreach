@@ -7,7 +7,7 @@ import { isEntityUuid } from "@/lib/buyerFinder/ids";
 import {
   buildConversionPreview,
   buyerOpenHref,
-  mapProductInterest,
+  pickAuthoritativeProductMatchId,
   resolveConversionSelection,
   selectionFromBrowserInput,
   type ConversionPreview,
@@ -19,7 +19,6 @@ export type ConversionBrowserInput = {
   candidateId: string;
   contactId?: string;
   publicEmailId?: string;
-  companyOnly?: boolean;
 };
 
 export type ConversionPreviewResult = ConversionPreview & {
@@ -53,12 +52,8 @@ function parseSelection(input: ConversionBrowserInput): ConversionSelectionInput
   const parsed = selectionFromBrowserInput({
     contactId: input.contactId,
     publicEmailId: input.publicEmailId,
-    companyOnly: input.companyOnly,
   });
-  if (
-    (input.contactId || input.publicEmailId || input.companyOnly) &&
-    parsed === undefined
-  ) {
+  if ((input.contactId || input.publicEmailId) && parsed === undefined) {
     return "invalid";
   }
   return parsed;
@@ -66,8 +61,10 @@ function parseSelection(input: ConversionBrowserInput): ConversionSelectionInput
 
 /**
  * Server-derived conversion preview. Does not insert a Buyer.
- * Browser may send candidateId plus a contact/public-email/company_only
- * identity. Company, email, country, website, and product are ignored.
+ * Browser may send candidateId plus a contact/public-email identity.
+ * BF5B-final: no company-only option — email is mandatory to create a
+ * Buyer. Company, email, country, website, and product are ignored on
+ * the wire; the RPC re-loads them from persisted candidate data.
  */
 export async function previewCandidateConversionAction(
   input: ConversionBrowserInput,
@@ -170,13 +167,16 @@ export async function convertCandidateToBuyerAction(
     };
   }
 
-  const productInterest = mapProductInterest(productMatches);
+  // BF5A.1 — pass an authoritative product-match id, not a text label.
+  // The RPC re-loads the row for (id, candidate_id, workspace_id) and
+  // derives buyers.product_interest from the persisted product_key.
+  const productMatchId = pickAuthoritativeProductMatchId(productMatches);
   const result = await repos.buyerFinderCandidateConversions.convert({
     candidateId,
     sourceKind: resolved.selection.kind!,
     contactId: resolved.selection.contactId,
     publicEmailId: resolved.selection.publicEmailId,
-    productInterest,
+    productMatchId,
   });
 
   if (result.outcome === "created" || result.outcome === "already_converted") {
@@ -189,6 +189,7 @@ export async function convertCandidateToBuyerAction(
     ? buyerOpenHref(result.buyer)
     : result.duplicateMatch
       ? buyerOpenHref({
+          id: result.duplicateMatch.buyerId,
           email: result.duplicateMatch.email,
           company: result.duplicateMatch.company,
         })

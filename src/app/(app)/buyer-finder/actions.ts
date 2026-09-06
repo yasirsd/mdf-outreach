@@ -34,6 +34,12 @@ import { assessRevealPriority } from "@/lib/buyerFinder/revealPriority";
 import { repairMissingFreeEnrichmentJobs } from "@/lib/buyerFinder/enqueueFreeEnrichment";
 import { revealPriorityReason } from "@/lib/buyerFinder/revealPriorityPresentation";
 import type { CandidateConversion } from "@/lib/buyerFinder/conversion";
+import type { BuyerIntelligenceViewModel } from "@/lib/buyerIntelligence/types";
+import {
+  buildBuyerIntelligenceViewModel,
+  emptyBuyerIntelligenceViewModel,
+} from "@/lib/buyerIntelligence/viewModel";
+import { isBuyerIntelligenceSchemaUnavailable } from "@/lib/buyerIntelligence/schemaAvailability";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /**
@@ -296,6 +302,7 @@ export type CandidateDetailRecord = BuyerCandidateRecord & {
   peopleJobStatus?: FreeEnrichmentJobStatus;
   conversion?: CandidateConversion;
   convertedBuyer?: { id: string; email: string; company: string };
+  intelligence?: BuyerIntelligenceViewModel;
 };
 
 /**
@@ -323,9 +330,52 @@ export async function loadBuyerCandidateAction(
   const convertedBuyer = conversion
     ? await repos.buyers.get(conversion.buyerId)
     : undefined;
+  const safeContacts = toSafeContacts(contacts);
+  const contactAccess = {
+    contacts: safeContacts,
+    publicEmails,
+    candidateGeneralEmail: candidate.generalEmail,
+  };
+  let intelligence: BuyerIntelligenceViewModel;
+  try {
+    const [sources, claims, trade, metrics, assessments] = await Promise.all([
+      repos.buyerIntelligenceSources.listByCandidate(id),
+      repos.buyerIntelligenceClaims.listByCandidate(id),
+      repos.buyerTradeObservations.listByCandidatePage(id, { limit: 25 }),
+      repos.buyerTradeMetrics.getTradeSummary(id),
+      repos.buyerIntelligenceAssessments.listByCandidate(id),
+    ]);
+    const currentAssessments = assessments.filter((row) => !row.supersededAt);
+    const assessmentEvidence = (
+      await Promise.all(
+        currentAssessments.map((row) =>
+          repos.buyerIntelligenceAssessmentEvidence.listByAssessment(row.id),
+        ),
+      )
+    ).flat();
+    intelligence = buildBuyerIntelligenceViewModel({
+      sources,
+      claims,
+      trade,
+      metrics,
+      assessments,
+      assessmentEvidence,
+      contactAccess,
+      readiness: {
+        candidate,
+        contacts: safeContacts,
+        publicEmails,
+        conversion,
+        buyer: convertedBuyer,
+      },
+    });
+  } catch (error) {
+    if (!isBuyerIntelligenceSchemaUnavailable(error)) throw error;
+    intelligence = emptyBuyerIntelligenceViewModel(contactAccess);
+  }
   return {
     candidate,
-    contacts: toSafeContacts(contacts),
+    contacts: safeContacts,
     productMatches,
     publicEmails,
     publicJobStatus: jobs.find((j) => j.capability === "public_company_contacts")?.status,
@@ -334,6 +384,7 @@ export async function loadBuyerCandidateAction(
     convertedBuyer: convertedBuyer
       ? { id: convertedBuyer.id, email: convertedBuyer.email, company: convertedBuyer.company }
       : undefined,
+    intelligence,
   };
 }
 

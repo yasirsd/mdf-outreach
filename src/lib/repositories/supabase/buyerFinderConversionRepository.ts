@@ -136,7 +136,7 @@ export class SupabaseBuyerFinderCandidateConversionRepository
       p_source_kind: input.sourceKind,
       p_contact_id: input.contactId ?? null,
       p_public_email_id: input.publicEmailId ?? null,
-      p_product_interest: input.productInterest ?? null,
+      p_product_match_id: input.productMatchId ?? null,
     });
     if (error) throw error;
     const payload = (data ?? {}) as RpcPayload;

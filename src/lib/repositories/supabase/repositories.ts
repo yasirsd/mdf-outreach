@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { randomUUID } from "node:crypto";
 import { EMAIL_ASSET_CONFLICT_TARGET } from "@/lib/assets/conflictTargets";
+import { requireValidBuyerEmail } from "@/lib/buyerEmail";
 import type {
   ActivityEvent,
   AssetRecord,
@@ -22,6 +23,13 @@ import type {
   BuyerFinderContactRevealEventRepository,
   BuyerFinderFreeEnrichmentJobRepository,
   BuyerFinderCandidateConversionRepository,
+  BuyerIntelligenceAssessmentEvidenceRepository,
+  BuyerIntelligenceAssessmentRepository,
+  BuyerIntelligenceClaimRepository,
+  BuyerIntelligenceSourceRepository,
+  BuyerTradeMetricRepository,
+  BuyerTradeObservationRepository,
+  BuyerIntelligenceWriteRepository,
   BuyerRepository,
   CampaignRepository,
   PaginatedBuyerQuery,
@@ -60,6 +68,8 @@ import { createBuyerFinderSearchRunRepository } from "./buyerFinderSearchRunRepo
 import { createBuyerFinderContactRevealEventRepository } from "./buyerFinderContactRevealEventRepository";
 import { createBuyerFinderFreeEnrichmentJobRepository } from "./buyerFinderFreeEnrichmentJobRepository";
 import { createBuyerFinderCandidateConversionRepository } from "./buyerFinderConversionRepository";
+import { createBuyerIntelligenceRepositories } from "./buyerIntelligenceRepositories";
+import { createBuyerIntelligenceWriteRepository } from "./buyerIntelligenceWriteRepository";
 
 function clamp(n: number, lo: number, hi: number): number {
   if (!Number.isFinite(n)) return lo;
@@ -153,7 +163,10 @@ class SupabaseBuyerRepository implements BuyerRepository {
   }
 
   async create(b: Buyer): Promise<Buyer> {
-    const row = buyerToRow({ ...b, id: idFor(b.id) }, this.workspaceId);
+    const row = buyerToRow(
+      { ...b, id: idFor(b.id), email: requireValidBuyerEmail(b.email) },
+      this.workspaceId,
+    );
     const { data, error } = await this.supabase
       .from("buyers")
       .insert(row)
@@ -164,7 +177,10 @@ class SupabaseBuyerRepository implements BuyerRepository {
   }
 
   async update(id: string, patch: Partial<Buyer>): Promise<Buyer> {
-    const updateFields = buyerToPatchRow(patch);
+    const safePatch = Object.prototype.hasOwnProperty.call(patch, "email")
+      ? { ...patch, email: requireValidBuyerEmail(patch.email) }
+      : patch;
+    const updateFields = buyerToPatchRow(safePatch);
     const { data, error } = await this.supabase
       .from("buyers")
       .update(updateFields)
@@ -182,7 +198,12 @@ class SupabaseBuyerRepository implements BuyerRepository {
 
   async bulkPut(buyers: Buyer[]): Promise<void> {
     if (!buyers.length) return;
-    const rows = buyers.map((b) => buyerToRow({ ...b, id: idFor(b.id) }, this.workspaceId));
+    const rows = buyers.map((b) =>
+      buyerToRow(
+        { ...b, id: idFor(b.id), email: requireValidBuyerEmail(b.email) },
+        this.workspaceId,
+      ),
+    );
     const { error } = await this.supabase.from("buyers").upsert(rows);
     if (error) throw error;
   }
@@ -629,6 +650,13 @@ export interface SupabaseRepositoryBundle {
   buyerFinderContactRevealEvents: BuyerFinderContactRevealEventRepository;
   buyerFinderFreeEnrichmentJobs: BuyerFinderFreeEnrichmentJobRepository;
   buyerFinderCandidateConversions: BuyerFinderCandidateConversionRepository;
+  buyerIntelligenceSources: BuyerIntelligenceSourceRepository;
+  buyerIntelligenceClaims: BuyerIntelligenceClaimRepository;
+  buyerTradeObservations: BuyerTradeObservationRepository;
+  buyerTradeMetrics: BuyerTradeMetricRepository;
+  buyerIntelligenceAssessments: BuyerIntelligenceAssessmentRepository;
+  buyerIntelligenceAssessmentEvidence: BuyerIntelligenceAssessmentEvidenceRepository;
+  buyerIntelligenceWriter: BuyerIntelligenceWriteRepository;
 }
 
 export function createSupabaseRepositories(
@@ -665,6 +693,8 @@ export function createSupabaseRepositories(
     supabase,
     workspaceId,
   );
+  const buyerIntelligence = createBuyerIntelligenceRepositories(supabase, workspaceId);
+  const buyerIntelligenceWriter = createBuyerIntelligenceWriteRepository(supabase);
   const workspace = new SupabaseWorkspaceService(
     buyers,
     campaigns,
@@ -693,5 +723,7 @@ export function createSupabaseRepositories(
     buyerFinderContactRevealEvents,
     buyerFinderFreeEnrichmentJobs,
     buyerFinderCandidateConversions,
+    ...buyerIntelligence,
+    buyerIntelligenceWriter,
   };
 }

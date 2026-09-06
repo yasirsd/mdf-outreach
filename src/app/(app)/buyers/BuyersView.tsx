@@ -43,6 +43,14 @@ interface Props {
   pageSize: number;
   pageCount: number;
   initialFilters: Filters;
+  /**
+   * BF5B — when the page URL carries `?buyerId=<uuid>` and the server
+   * resolved it to a Buyer in this workspace, open the drawer for that
+   * exact row on mount. `undefined` means the id was missing, malformed,
+   * unknown, or belonged to a different workspace — nothing opens and no
+   * error is surfaced.
+   */
+  initialSelectedBuyer?: Buyer;
 }
 
 /**
@@ -60,6 +68,7 @@ export function BuyersView({
   pageSize,
   pageCount,
   initialFilters,
+  initialSelectedBuyer,
 }: Props) {
   const router = useRouter();
   const pathname = usePathname();
@@ -67,10 +76,27 @@ export function BuyersView({
   const [isPending, startTransition] = useTransition();
 
   // Local UI-only state.
-  const [selected, setSelected] = useState<Buyer | null>(null);
+  const [selected, setSelected] = useState<Buyer | null>(initialSelectedBuyer ?? null);
   const [editing, setEditing] = useState<Buyer | null>(null);
   const [adding, setAdding] = useState(false);
   const [importing, setImporting] = useState(false);
+
+  // BF5B — keep the URL's `?buyerId=<uuid>` and the open drawer in sync
+  // in both directions. Server-side `initialSelectedBuyer` already opened
+  // the drawer; when a browser back/forward removes the param we close it,
+  // and when it appears we open the drawer for the matching row already on
+  // this page (Buyers unrelated to the row's page stay handled by the
+  // server load).
+  useEffect(() => {
+    const urlBuyerId = (params?.get("buyerId") ?? "").trim();
+    if (urlBuyerId && selected?.id !== urlBuyerId) {
+      const row = initialRows.find((b) => b.id === urlBuyerId);
+      if (row) setSelected(row);
+    } else if (!urlBuyerId && selected) {
+      setSelected(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [params]);
 
   // Debounced search input. The URL is the source of truth; the local
   // state exists only so keystrokes feel immediate.
@@ -107,6 +133,20 @@ export function BuyersView({
     startTransition(() => {
       router.replace(`${pathname}?${sp.toString()}`, { scroll: false });
     });
+  }
+
+  // BF5B — remove `buyerId` from the URL without touching filters, so the
+  // drawer can close cleanly without discarding search/filter state.
+  function clearBuyerIdParam() {
+    if (!params?.has("buyerId")) return;
+    const sp = new URLSearchParams(params.toString());
+    sp.delete("buyerId");
+    router.replace(`${pathname}${sp.toString() ? `?${sp.toString()}` : ""}`, { scroll: false });
+  }
+
+  function closeDrawer() {
+    setSelected(null);
+    clearBuyerIdParam();
   }
 
   const activeFilterCount = [initialFilters.status, initialFilters.country, initialFilters.product]
@@ -149,7 +189,7 @@ export function BuyersView({
       toast.success(isNew ? "Buyer added" : "Buyer updated");
       setAdding(false);
       setEditing(null);
-      setSelected(null);
+      closeDrawer();
       router.refresh();
     } catch {
       toast.error("Could not save buyer");
@@ -367,7 +407,7 @@ export function BuyersView({
 
       <Drawer
         open={!!selected && !editing}
-        onClose={() => setSelected(null)}
+        onClose={closeDrawer}
         title={selected?.company || `${selected?.firstName ?? ""} ${selected?.lastName ?? ""}`}
         subtitle={selected?.email}
         width="560px"
@@ -377,7 +417,7 @@ export function BuyersView({
             buyer={selected}
             onEdit={() => setEditing(selected)}
             onClose={() => {
-              setSelected(null);
+              closeDrawer();
               router.refresh();
             }}
           />

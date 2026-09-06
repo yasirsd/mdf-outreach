@@ -19,11 +19,26 @@ export function CandidateConversionPanel({
   companyName,
   approved,
   convertedBuyer,
+  convertedAt,
+  contactUsedName,
+  hasUsableEmail,
 }: {
   candidateId: string;
   companyName: string;
   approved: boolean;
   convertedBuyer?: { id: string; email: string; company: string };
+  /** BF5B — persisted conversion timestamp, if known. */
+  convertedAt?: string;
+  /** BF5B — display name of the persisted contact used, if any. */
+  contactUsedName?: string;
+  /**
+   * BF5B-final — true when at least one selectable email-bearing option
+   * exists for this Candidate (revealed personal contact with a real
+   * email, or a public company email). Email is mandatory to create a
+   * Buyer, so when this is false the panel shows the "Needs contact"
+   * research-only state instead of a Convert button.
+   */
+  hasUsableEmail?: boolean;
 }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
@@ -33,12 +48,32 @@ export function CandidateConversionPanel({
 
   if (convertedBuyer) {
     const href = buyerOpenHref(convertedBuyer);
+    const dateLabel = formatConvertedOn(convertedAt);
     return (
       <div className="px-4 py-3" style={{ borderTop: "1px solid var(--app-border)" }}>
         <div className="text-[11px] font-medium text-text-muted mb-1">CONVERTED TO BUYER</div>
         <p className="text-[13px] text-text-primary leading-relaxed">
-          {companyName} is now available in Buyers.
+          ✓ Buyer created. {companyName} is now available in Outreach.
         </p>
+        <p className="text-[12px] text-text-muted mt-1 leading-relaxed">
+          Research remains preserved.
+        </p>
+        {(dateLabel || contactUsedName) && (
+          <dl className="mt-2 text-[12px] text-text-muted leading-relaxed space-y-0.5">
+            {dateLabel && (
+              <div>
+                <span className="text-text-muted">Converted on </span>
+                <span className="text-text-secondary">{dateLabel}</span>
+              </div>
+            )}
+            {contactUsedName && (
+              <div>
+                <span className="text-text-muted">Contact used: </span>
+                <span className="text-text-secondary">{contactUsedName}</span>
+              </div>
+            )}
+          </dl>
+        )}
         <Link href={href} className="btn-secondary mt-3 inline-flex">
           Open Buyer
         </Link>
@@ -48,6 +83,26 @@ export function CandidateConversionPanel({
 
   if (!approved) return null;
 
+  // BF5B-final — approved but no usable email: Buyer creation is blocked
+  // at the DB layer (migration 0019 rejects company_only outcomes and
+  // migration 0002's Buyers email uniqueness makes email='' a duplicate).
+  // Instead of a Convert button that will fail, present a calm research
+  // state that keeps the Candidate discoverable and encourages free
+  // contact research.
+  if (hasUsableEmail === false) {
+    return (
+      <div className="px-4 py-3" style={{ borderTop: "1px solid var(--app-border)" }}>
+        <div className="text-[11px] font-medium text-text-muted mb-1">NEEDS CONTACT</div>
+        <p className="text-[13px] text-text-primary leading-relaxed">
+          A valid email is required before {companyName} can become an Outreach Buyer.
+        </p>
+        <p className="text-[12px] text-text-muted mt-1 leading-relaxed">
+          Research is preserved. Continue free contact research.
+        </p>
+      </div>
+    );
+  }
+
   async function openPreview(selection?: ConversionSelectionInput) {
     setLoading(true);
     try {
@@ -55,7 +110,6 @@ export function CandidateConversionPanel({
         candidateId,
         contactId: selection?.contactId,
         publicEmailId: selection?.publicEmailId,
-        companyOnly: selection?.kind === "company_only" ? true : undefined,
       });
       setPreview(next);
       setOpen(true);
@@ -68,12 +122,16 @@ export function CandidateConversionPanel({
 
   async function changeSelection(option: ConversionOption) {
     if (!option.selectable) return;
-    const selection: ConversionSelectionInput =
-      option.kind === "revealed_personal_contact"
-        ? { kind: "revealed_personal_contact", contactId: option.contactId }
-        : option.kind === "public_company_email"
-          ? { kind: "public_company_email", publicEmailId: option.publicEmailId }
-          : { kind: "company_only" };
+    // BF5B-final: only email-bearing kinds remain selectable. The type
+    // union still includes company_only for historical linkage rows, so
+    // narrow explicitly and ignore anything else the caller may send.
+    let selection: ConversionSelectionInput | undefined;
+    if (option.kind === "revealed_personal_contact") {
+      selection = { kind: "revealed_personal_contact", contactId: option.contactId };
+    } else if (option.kind === "public_company_email") {
+      selection = { kind: "public_company_email", publicEmailId: option.publicEmailId };
+    }
+    if (!selection) return;
     await openPreview(selection);
   }
 
@@ -85,7 +143,6 @@ export function CandidateConversionPanel({
         candidateId,
         contactId: preview.selected.contactId,
         publicEmailId: preview.selected.publicEmailId,
-        companyOnly: preview.sourceKind === "company_only" ? true : undefined,
       });
       if (result.outcome === "created") {
         toast.success("Buyer created.");
@@ -104,7 +161,6 @@ export function CandidateConversionPanel({
           candidateId,
           contactId: preview.selected.contactId,
           publicEmailId: preview.selected.publicEmailId,
-          companyOnly: preview.sourceKind === "company_only" ? true : undefined,
         });
         setPreview(next);
         toast.error(result.message ?? "A matching Buyer already exists.");
@@ -324,17 +380,18 @@ function ContactChoice({
             <span className="block text-[12px] text-text-muted">Company email · Free</span>
           </>
         )}
-        {option.kind === "company_only" && (
-          <>
-            <span className="block text-text-primary">Company only</span>
-            {!hasPublicEmail ? (
-              <span className="block text-[12px] text-text-muted">No company email available</span>
-            ) : null}
-          </>
-        )}
       </span>
     </label>
   );
+}
+
+function formatConvertedOn(iso: string | undefined): string | undefined {
+  if (!iso) return undefined;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return undefined;
+  // Compact, locale-neutral, calm: "2 Sep 2026". Avoids implying a specific
+  // timezone the operator did not choose.
+  return d.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
 }
 
 function optionKey(option: ConversionOption, index: number): string {
@@ -342,7 +399,7 @@ function optionKey(option: ConversionOption, index: number): string {
     return option.contactId;
   }
   if (option.kind === "public_company_email") return option.publicEmailId;
-  return `company-only-${index}`;
+  return `unknown-${index}`;
 }
 
 function isSelected(option: ConversionOption, selected: ConversionSelectionInput): boolean {
@@ -351,9 +408,6 @@ function isSelected(option: ConversionOption, selected: ConversionSelectionInput
   }
   if (option.kind === "public_company_email") {
     return selected.kind === "public_company_email" && selected.publicEmailId === option.publicEmailId;
-  }
-  if (option.kind === "company_only") {
-    return selected.kind === "company_only";
   }
   return false;
 }

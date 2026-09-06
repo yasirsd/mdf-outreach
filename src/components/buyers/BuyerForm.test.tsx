@@ -1,5 +1,5 @@
 import { afterEach, describe, it, expect, vi } from "vitest";
-import { render, screen, cleanup } from "@testing-library/react";
+import { render, screen, cleanup, fireEvent, waitFor } from "@testing-library/react";
 import { BuyerForm } from "./BuyerForm";
 import type { Buyer } from "@/lib/types";
 
@@ -117,5 +117,41 @@ describe("BuyerForm pre-population (regression test for edit bug)", () => {
     expect(document.body.textContent).toContain("Legacy Product Name");
     // "Legacy" chip appears near unrecognised country.
     expect(document.body.textContent).toContain("Legacy");
+  });
+});
+
+describe("BuyerForm required email", () => {
+  it.each([
+    ["   ", "Email required"],
+    ["not-an-email", "Invalid email"],
+    ["a@b", "Invalid email"],
+  ])("blocks %j before submit", async (email, message) => {
+    const onSubmit = vi.fn();
+    const { container } = render(
+      <BuyerForm
+        initial={makeBuyer({ email })}
+        onSubmit={onSubmit}
+        onCancel={vi.fn()}
+      />,
+    );
+    fireEvent.submit(container.querySelector("form")!);
+    expect(await screen.findByText(message)).toBeTruthy();
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it("normalizes a usable address before submit", async () => {
+    const onSubmit = vi.fn();
+    const { container } = render(
+      <BuyerForm
+        initial={makeBuyer({ email: "  Buyer@Example.COM " })}
+        onSubmit={onSubmit}
+        onCancel={vi.fn()}
+      />,
+    );
+    fireEvent.submit(container.querySelector("form")!);
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled());
+    expect(onSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({ email: "buyer@example.com" }),
+    );
   });
 });

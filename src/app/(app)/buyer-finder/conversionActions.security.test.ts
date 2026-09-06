@@ -28,15 +28,18 @@ describe("BF5A conversion action safety", () => {
     expect(guards.length).toBeGreaterThanOrEqual(2);
   });
 
-  it("browser may send only candidate identity and contact-source identity", () => {
+  it("browser may send only candidate identity and email-bearing contact-source identity", () => {
     expect(ACTIONS).toContain("candidateId");
     expect(ACTIONS).toContain("contactId");
     expect(ACTIONS).toContain("publicEmailId");
-    expect(ACTIONS).toContain("companyOnly");
+    // BF5B-final: email is mandatory. companyOnly is no longer an
+    // accepted browser identity — Buyers require a usable email.
+    expect(ACTIONS).not.toContain("companyOnly");
     expect(ACTIONS).not.toMatch(/workspaceId\??\s*:/);
     expect(ACTIONS).not.toMatch(/NEXT_PUBLIC/);
     const input = ACTIONS.match(/export type ConversionBrowserInput[\s\S]*?\n\};/)?.[0] ?? "";
     expect(input).not.toMatch(/\b(company|email|country|website|productInterest|firstName|lastName|buyerType)\s*[?:]/);
+    expect(input).not.toContain("companyOnly");
   });
 
   it("preview does not insert a Buyer or call the conversion RPC", () => {
@@ -51,9 +54,14 @@ describe("BF5A conversion action safety", () => {
 
   it("final convert reloads authoritative rows and calls the conversion repository RPC", () => {
     expect(ACTIONS).toContain("buyerFinderCandidateConversions.convert");
-    expect(ACTIONS).toContain("mapProductInterest");
+    // BF5A.1 — server action passes an authoritative product-match id;
+    // the RPC derives the display label from persisted product_key.
+    expect(ACTIONS).toContain("pickAuthoritativeProductMatchId");
     expect(ACTIONS).not.toMatch(/repos\.buyers\.create/);
     expect(REPO).toContain('rpc("convert_buyer_finder_candidate"');
+    // BF5A.1 — never forward a free-text product label to the RPC.
+    expect(REPO).not.toMatch(/p_product_interest\s*:/);
+    expect(REPO).toContain("p_product_match_id");
     expect(REPO).not.toMatch(/from\("buyers"\)[\s\S]{0,80}\.insert/);
   });
 

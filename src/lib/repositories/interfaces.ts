@@ -36,6 +36,23 @@ import type {
   ConversionSourceKind,
   ConvertResult,
 } from "@/lib/buyerFinder/conversion";
+import type {
+  BuyerIntelligenceAssessment,
+  BuyerIntelligenceAssessmentEvidence,
+  BuyerIntelligenceClaim,
+  BuyerIntelligenceSource,
+  BuyerTradeMetric,
+  IntelligenceAssessmentType,
+  IntelligenceClaimFilters,
+  TradeObservationPage,
+  TradeObservationPageRequest,
+} from "@/lib/buyerIntelligence/types";
+import type {
+  ClaimIngestionInput,
+  IntelligenceIngestionResult,
+  SourceIngestionInput,
+  TradeObservationIngestionInput,
+} from "@/lib/buyerIntelligence/ingestion";
 
 export interface BuyerListFilter {
   search?: string;
@@ -335,7 +352,14 @@ export interface ConversionRpcInput {
   sourceKind: ConversionSourceKind;
   contactId?: string;
   publicEmailId?: string;
-  productInterest?: string;
+  /**
+   * BF5A.1 — authoritative product-match identity (a row id from
+   * buyer_candidate_product_matches for this candidate). The RPC loads
+   * that row, validates workspace membership, and derives
+   * `buyers.product_interest` from the persisted product_key via a
+   * fixed SQL whitelist. Free-text product labels are no longer accepted.
+   */
+  productMatchId?: string;
 }
 
 export interface BuyerFinderCandidateConversionRepository {
@@ -346,4 +370,49 @@ export interface BuyerFinderCandidateConversionRepository {
    * checks run inside the transaction.
    */
   convert(input: ConversionRpcInput): Promise<ConvertResult>;
+}
+
+/** BI1 read-only repositories. The request-scoped bundle pins workspace. */
+export interface BuyerIntelligenceSourceRepository {
+  listByCandidate(candidateId: string): Promise<BuyerIntelligenceSource[]>;
+}
+
+export interface BuyerIntelligenceClaimRepository {
+  listByCandidate(
+    candidateId: string,
+    filters?: IntelligenceClaimFilters,
+  ): Promise<BuyerIntelligenceClaim[]>;
+}
+
+export interface BuyerTradeObservationRepository {
+  listByCandidatePage(
+    candidateId: string,
+    request?: TradeObservationPageRequest,
+  ): Promise<TradeObservationPage>;
+}
+
+export interface BuyerTradeMetricRepository {
+  listByCandidate(candidateId: string): Promise<BuyerTradeMetric[]>;
+  /** Normalized metric rows used to assemble the Candidate summary. */
+  getTradeSummary(candidateId: string): Promise<BuyerTradeMetric[]>;
+}
+
+export interface BuyerIntelligenceAssessmentRepository {
+  listByCandidate(candidateId: string): Promise<BuyerIntelligenceAssessment[]>;
+  getCurrent(
+    candidateId: string,
+    assessmentType: IntelligenceAssessmentType,
+  ): Promise<BuyerIntelligenceAssessment | undefined>;
+}
+
+export interface BuyerIntelligenceAssessmentEvidenceRepository {
+  listByAssessment(assessmentId: string): Promise<BuyerIntelligenceAssessmentEvidence[]>;
+}
+
+/** BI2 narrow write boundary. Implementations must be transaction-backed and workspace-pinned. */
+export interface BuyerIntelligenceWriteRepository {
+  ingestSource(input: SourceIngestionInput): Promise<IntelligenceIngestionResult>;
+  ingestClaim(input: ClaimIngestionInput): Promise<IntelligenceIngestionResult>;
+  ingestObservation(input: TradeObservationIngestionInput): Promise<IntelligenceIngestionResult>;
+  refreshDerived(candidateId: string): Promise<{ outcome: "refreshed"; candidateId: string }>;
 }

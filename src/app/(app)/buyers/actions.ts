@@ -8,6 +8,7 @@ import { logActivity } from "@/lib/activity";
 import { createClient } from "@/utils/supabase/server";
 import { fetchSendHistoryForBuyer, type BuyerSendHistoryRow } from "@/lib/gmail/buyerSendAudit";
 import type { Buyer, BuyerStatus, BuyerSuppressionReason } from "@/lib/types";
+import { requireValidBuyerEmail } from "@/lib/buyerEmail";
 
 function isUuid(s: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s);
@@ -21,9 +22,14 @@ function sanitize(b: Partial<Buyer>): Partial<Buyer> {
 
 export async function saveBuyerAction(input: Buyer): Promise<Buyer> {
   const { repos } = await serverRepositories();
-  const existing = input.id && isUuid(input.id) ? await repos.buyers.get(input.id) : undefined;
+  // Client validation is convenience only. This server boundary enforces
+  // the permanent MDF invariant for both create and edit paths.
+  const normalizedInput = { ...input, email: requireValidBuyerEmail(input.email) };
+  const existing = normalizedInput.id && isUuid(normalizedInput.id)
+    ? await repos.buyers.get(normalizedInput.id)
+    : undefined;
   if (existing) {
-    const updated = await repos.buyers.update(existing.id, sanitize(input));
+    const updated = await repos.buyers.update(existing.id, sanitize(normalizedInput));
     await logActivity(
       repos,
       "buyer.updated",
@@ -36,7 +42,7 @@ export async function saveBuyerAction(input: Buyer): Promise<Buyer> {
   }
 
   const created = await repos.buyers.create({
-    ...(sanitize(input) as Buyer),
+    ...(sanitize(normalizedInput) as Buyer),
     id: randomUUID(),
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -171,14 +177,17 @@ export async function bulkImportBuyersAction(
   const result: BulkImportResult = { added: 0, updated: 0, skipped: 0, errors: [] };
 
   for (const raw of buyers) {
-    if (!raw.email || !raw.email.includes("@")) {
+    let email: string;
+    try {
+      email = requireValidBuyerEmail(raw.email);
+    } catch {
       result.errors.push({ email: raw.email ?? "", reason: "missing or invalid email" });
       continue;
     }
     try {
-      const found = await repos.buyers.findByEmail(raw.email);
+      const found = await repos.buyers.findByEmail(email);
       const now = new Date().toISOString();
-      const clean = sanitize(raw) as Buyer;
+      const clean = sanitize({ ...raw, email }) as Buyer;
       if (found) {
         if (mode === "skip") {
           result.skipped += 1;
