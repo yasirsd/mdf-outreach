@@ -3,10 +3,11 @@ import "server-only";
 /**
  * MI1C — MARKET INTELLIGENCE writer.
  *
- * The ONLY module (with the sync action beside it) authorised to hold
- * the service-role Supabase client. Exposes a narrow, contract-shaped
- * surface — no `.from(table)`, no arbitrary `.rpc(name)`, no SQL,
- * no generic insert/update/delete.
+ * The ONLY module authorised to use the service-role Supabase client.
+ * "Service-role" refers to the PostgreSQL role; authentication uses the
+ * server-only Supabase Secret API Key held by serviceRoleClient.ts. It
+ * exposes a narrow, contract-shaped surface — no `.from(table)`, no
+ * arbitrary `.rpc(name)`, no SQL, no generic insert/update/delete.
  *
  * Session authority MUST be established by the caller BEFORE
  * obtaining this writer (a `requireMdfSession()` gate in the
@@ -178,11 +179,13 @@ function parseIngestionResult(data: unknown): MarketIngestionResult {
 }
 
 /**
- * Defence-in-depth. The service-role key must never appear in an
- * error message surfaced to the caller. In practice PostgREST does
- * not echo the key, but if a future adapter ever concatenates it,
- * this hard-scrubs anything shaped like a JWT.
+ * Defence-in-depth. A Supabase Secret API Key or legacy JWT-shaped key must
+ * never appear in an error message surfaced to the caller. In practice
+ * PostgREST does not echo the key, but if a future adapter ever concatenates
+ * it, this hard-scrubs either credential shape.
  */
 function scrub(message: string): string {
-  return message.replace(/eyJ[\w-]+\.[\w-]+\.[\w-]+/g, "[REDACTED]");
+  return message
+    .replace(/sb_secret_[A-Za-z0-9._-]+/g, "[REDACTED]")
+    .replace(/eyJ[\w-]+\.[\w-]+\.[\w-]+/g, "[REDACTED]");
 }
