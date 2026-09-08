@@ -1,11 +1,21 @@
 /**
- * MI0 — deterministic growth primitives for Market Intelligence
- * time series. Every helper here is pure; no I/O, no fallbacks.
+ * MI0.1 — deterministic growth primitives for Market Intelligence
+ * annual time series. Every helper here is pure; no I/O, no
+ * fallbacks.
  *
  * Missing-data rule: an absent point stays absent. A `null` sample is
  * never treated as zero. A CAGR / YoY that cannot be computed returns
  * `null` — the caller must render "Not available" or hide the chip
  * rather than manufacture a percentage.
+ *
+ * MI0.1 correctness rules:
+ *   • YoY requires **consecutive annual periods** (2023 → 2024). A
+ *     four-year gap does NOT become a YoY.
+ *   • CAGR uses **actual elapsed calendar years** between the base
+ *     point and the last known point. Point count minus one is
+ *     never used when periods have gaps.
+ *   • The base point is the earliest known observation within the
+ *     requested trailing window; the exponent is `lastYear − baseYear`.
  *
  * Zero vs missing: the type distinguishes `0` (source reported zero
  * imports for that period) from `null` (no observation). MI must not
@@ -25,11 +35,21 @@ export interface DatedPoint {
   value: number | null;
 }
 
+export type GrowthReason =
+  | "ok"
+  | "insufficient_periods"
+  | "non_consecutive_periods"
+  | "zero_base"
+  | "invalid_value"
+  | "unsupported_frequency";
+
 export interface GrowthResult {
   /** null when the calculation cannot be performed under the missing-data rule. */
   percent: number | null;
-  reason: "ok" | "insufficient_periods" | "zero_base" | "invalid_value";
+  reason: GrowthReason;
   supportCount: number;
+  /** MI0.1 — the calendar-year span actually used, when applicable. */
+  yearsSpanned?: number;
 }
 
 function isFinitePositive(value: number | null | undefined): value is number {
@@ -41,52 +61,135 @@ function isFiniteNonNegative(value: number | null | undefined): value is number 
 }
 
 /**
- * Year-over-year growth between the two most recent non-null points.
- * A zero base returns `null` with `reason: "zero_base"` — MI never
- * emits +∞ or NaN. A negative or non-finite value is rejected.
+ * Parse the year out of a period label. Returns `undefined` for
+ * anything that is not a plain annual label — MI0.1's YoY/CAGR only
+ * operate on annual periods. Monthly and quarterly semantics ship
+ * with MI1.
  */
-export function yearOverYear(series: DatedPoint[]): GrowthResult {
+export function annualPeriodYear(period: string): number | undefined {
+  if (!/^\d{4}$/.test(period)) return undefined;
+  const year = Number.parseInt(period, 10);
+  return Number.isFinite(year) ? year : undefined;
+}
+
+interface KnownPoint {
+  year: number;
+  value: number;
+}
+
+/** Sort → dedupe on year → keep only annual points with a non-negative value. */
+function normalizeAnnualSeries(series: DatedPoint[]): KnownPoint[] {
+  const seenYears = new Set<number>();
+  const out: KnownPoint[] = [];
   const sorted = [...series].sort((a, b) => a.period.localeCompare(b.period));
-  const known = sorted.filter((p) => isFiniteNonNegative(p.value));
-  if (known.length < 2) return { percent: null, reason: "insufficient_periods", supportCount: known.length };
-  const last = known[known.length - 1]!.value as number;
-  const prev = known[known.length - 2]!.value as number;
-  if (prev === 0) return { percent: null, reason: "zero_base", supportCount: known.length };
-  if (!Number.isFinite(last) || !Number.isFinite(prev)) {
-    return { percent: null, reason: "invalid_value", supportCount: known.length };
+  for (const p of sorted) {
+    const year = annualPeriodYear(p.period);
+    if (year === undefined) continue; // not annual — skip
+    if (seenYears.has(year)) continue; // duplicate period — first wins
+    seenYears.add(year);
+    if (!isFiniteNonNegative(p.value)) continue;
+    out.push({ year, value: p.value });
   }
-  return { percent: (last - prev) / prev, reason: "ok", supportCount: known.length };
+  return out.sort((a, b) => a.year - b.year);
 }
 
 /**
- * Compound annual growth rate over the trailing N periods. Requires
- * at least two ordered points with strictly positive values (CAGR is
- * undefined when the base is 0 or negative). Fractional years are
- * computed from period count minus one so a 5-year annual series
- * yields a 4-year CAGR — matching accepted trade-statistics practice.
+ * MI0.1 — Year-over-year growth. Requires the two most recent known
+ * annual points to be **consecutive calendar years**. A gap
+ * (2020 → 2024) returns `non_consecutive_periods` rather than
+ * silently producing a four-year growth passed off as annual.
+ * A zero base returns `null` with reason `zero_base`.
+ */
+export function yearOverYear(series: DatedPoint[]): GrowthResult {
+  const known = normalizeAnnualSeries(series);
+  if (known.length < 2) {
+    return { percent: null, reason: "insufficient_periods", supportCount: known.length };
+  }
+  const last = known[known.length - 1]!;
+  const prev = known[known.length - 2]!;
+  if (last.year - prev.year !== 1) {
+    return {
+      percent: null,
+      reason: "non_consecutive_periods",
+      supportCount: known.length,
+      yearsSpanned: last.year - prev.year,
+    };
+  }
+  if (prev.value === 0) {
+    return { percent: null, reason: "zero_base", supportCount: known.length, yearsSpanned: 1 };
+  }
+  if (!Number.isFinite(last.value) || !Number.isFinite(prev.value)) {
+    return { percent: null, reason: "invalid_value", supportCount: known.length };
+  }
+  return {
+    percent: (last.value - prev.value) / prev.value,
+    reason: "ok",
+    supportCount: known.length,
+    yearsSpanned: 1,
+  };
+}
+
+/**
+ * MI0.1 — Compound annual growth rate across the trailing `years`
+ * calendar-year window.
+ *
+ * Base = earliest known observation whose year is >= (latestYear -
+ * years). Exponent = actual `latestYear − baseYear`. If no base
+ * exists in the window (a series with only the latest known point in
+ * the range and everything else older), returns
+ * `insufficient_periods` — MI never fabricates a base point.
  */
 export function cagr(series: DatedPoint[], years: number): GrowthResult {
   if (!Number.isFinite(years) || years <= 0) {
     return { percent: null, reason: "insufficient_periods", supportCount: 0 };
   }
-  const sorted = [...series].sort((a, b) => a.period.localeCompare(b.period));
-  const known = sorted.filter((p) => isFiniteNonNegative(p.value));
-  if (known.length < 2) return { percent: null, reason: "insufficient_periods", supportCount: known.length };
-  const requiredPoints = Math.min(known.length, Math.max(2, years + 1));
-  const window = known.slice(-requiredPoints);
-  const base = window[0]!.value as number;
-  const last = window[window.length - 1]!.value as number;
-  if (!isFinitePositive(base)) return { percent: null, reason: "zero_base", supportCount: window.length };
-  if (!Number.isFinite(last) || last < 0) {
-    return { percent: null, reason: "invalid_value", supportCount: window.length };
+  const known = normalizeAnnualSeries(series);
+  if (known.length < 2) {
+    return { percent: null, reason: "insufficient_periods", supportCount: known.length };
   }
-  const spanYears = window.length - 1;
-  if (spanYears <= 0) return { percent: null, reason: "insufficient_periods", supportCount: window.length };
-  const percent = Math.pow(last / base, 1 / spanYears) - 1;
+  const last = known[known.length - 1]!;
+  const targetBaseYear = last.year - years;
+  const windowBases = known.filter(
+    (p) => p.year >= targetBaseYear && p.year < last.year,
+  );
+  if (windowBases.length === 0) {
+    return {
+      percent: null,
+      reason: "insufficient_periods",
+      supportCount: known.length,
+    };
+  }
+  const base = windowBases[0]!;
+  const spanYears = last.year - base.year;
+  if (spanYears <= 0) {
+    return { percent: null, reason: "insufficient_periods", supportCount: known.length };
+  }
+  if (!isFinitePositive(base.value)) {
+    return {
+      percent: null,
+      reason: "zero_base",
+      supportCount: known.length,
+      yearsSpanned: spanYears,
+    };
+  }
+  if (!Number.isFinite(last.value) || last.value < 0) {
+    return { percent: null, reason: "invalid_value", supportCount: known.length };
+  }
+  const percent = Math.pow(last.value / base.value, 1 / spanYears) - 1;
   if (!Number.isFinite(percent)) {
-    return { percent: null, reason: "invalid_value", supportCount: window.length };
+    return {
+      percent: null,
+      reason: "invalid_value",
+      supportCount: known.length,
+      yearsSpanned: spanYears,
+    };
   }
-  return { percent, reason: "ok", supportCount: window.length };
+  return {
+    percent,
+    reason: "ok",
+    supportCount: known.length,
+    yearsSpanned: spanYears,
+  };
 }
 
 /**
@@ -96,9 +199,7 @@ export function cagr(series: DatedPoint[], years: number): GrowthResult {
  * Returns null when there are fewer than three non-null points.
  */
 export function stabilityIndex(series: DatedPoint[]): { index: number | null; supportCount: number } {
-  const known = series
-    .map((p) => (isFiniteNonNegative(p.value) ? p.value : null))
-    .filter((v): v is number => v !== null);
+  const known = normalizeAnnualSeries(series).map((p) => p.value);
   if (known.length < 3) return { index: null, supportCount: known.length };
   const mean = known.reduce((sum, v) => sum + v, 0) / known.length;
   if (mean <= 0) return { index: null, supportCount: known.length };
@@ -116,9 +217,7 @@ export function stabilityIndex(series: DatedPoint[]): { index: number | null; su
 export type TrendDirection = "rising" | "falling" | "flat" | "unknown";
 
 export function trendDirection(series: DatedPoint[]): TrendDirection {
-  const known = [...series]
-    .sort((a, b) => a.period.localeCompare(b.period))
-    .filter((p) => isFiniteNonNegative(p.value)) as { period: string; value: number }[];
+  const known = normalizeAnnualSeries(series);
   if (known.length < 3) return "unknown";
   const last3 = known.slice(-3);
   const [a, b, c] = [last3[0]!.value, last3[1]!.value, last3[2]!.value];

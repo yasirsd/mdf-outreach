@@ -12,8 +12,32 @@
  * treat unknown countries as "not yet supported" — never as world.
  */
 
+import { iso31661 } from "iso-3166";
 import { COUNTRIES } from "@/lib/catalogue/countries";
-import type { CountryAlpha2 } from "./types";
+import type { CountryAlpha2, CountryAlpha3 } from "./types";
+
+/**
+ * MI0.1 — provider adapter boundary between MI's canonical alpha-2
+ * identity and providers that expose alpha-3 (BACI uses lowercase
+ * alpha-3). Adapters MUST translate at their edge; alpha-3 must
+ * never enter MI's domain code.
+ */
+const ALPHA2_TO_ALPHA3: Map<string, string> = new Map(
+  iso31661.map((row) => [row.alpha2, row.alpha3]),
+);
+const ALPHA3_TO_ALPHA2: Map<string, string> = new Map(
+  iso31661.map((row) => [row.alpha3, row.alpha2]),
+);
+
+export function alpha2ToAlpha3(alpha2: CountryAlpha2 | undefined): CountryAlpha3 | undefined {
+  if (!alpha2) return undefined;
+  return ALPHA2_TO_ALPHA3.get(alpha2.toUpperCase());
+}
+
+export function alpha3ToAlpha2(alpha3: CountryAlpha3 | undefined): CountryAlpha2 | undefined {
+  if (!alpha3) return undefined;
+  return ALPHA3_TO_ALPHA2.get(alpha3.toUpperCase());
+}
 
 const ALPHA2_TO_NAME: Map<string, string> = new Map(
   COUNTRIES.map((c) => [c.code.toUpperCase(), c.name]),

@@ -3,16 +3,21 @@ import {
   MARKET_FIT_MIN_SUPPORTED_WEIGHT,
   MARKET_FIT_WEIGHTS,
   MARKET_FIT_WEIGHT_VERSION,
+  PRODUCT_DEMAND_SIZE_BOUNDS,
+  RECOMMENDATION_MIN_CONFIDENCE_FOR_ACTIONABLE,
   classifyMarketFit,
   clamp01,
   composeDataConfidence,
   composeMarketFit,
+  demandSizeBoundsFor,
   normalizeCompetitiveOpportunity,
   normalizeDemandSize,
+  normalizeDemandSizeForProduct,
   normalizeGrowth,
   normalizeIndiaPosition,
   normalizePriceAttractiveness,
   normalizeStability,
+  recommendationStatus,
 } from "./marketFit";
 
 describe("MI0 Market Fit — weights and versioning", () => {
@@ -36,10 +41,11 @@ describe("MI0 Market Fit — component normalization", () => {
   it("normalizeDemandSize maps log-scale trade value to 0..100 and refuses non-positive input", () => {
     expect(normalizeDemandSize(null)).toBeNull();
     expect(normalizeDemandSize(0)).toBeNull();
-    // At the min-bound: expect a low but non-zero score after rounding.
-    const low = normalizeDemandSize(1_000_000)!;
-    const mid = normalizeDemandSize(100_000_000)!;
-    const high = normalizeDemandSize(5_000_000_000)!;
+    // Explicit bounds so this test does not depend on the MI0.1 fallback band.
+    const bounds = { minUsd: 1_000_000, maxUsd: 5_000_000_000 };
+    const low = normalizeDemandSize(1_000_000, bounds)!;
+    const mid = normalizeDemandSize(100_000_000, bounds)!;
+    const high = normalizeDemandSize(5_000_000_000, bounds)!;
     expect(low).toBeLessThan(mid);
     expect(mid).toBeLessThan(high);
     expect(high).toBe(100);
@@ -148,6 +154,86 @@ describe("MI0 Market Fit — aggregation and classification", () => {
       CALC_AT,
     );
     expect(single.score).toBeNull();
+  });
+});
+
+describe("MI0.1 product-relative demand-size bounds", () => {
+  it("registers a placeholder-calibrated band for every canonical MDF product", () => {
+    for (const productId of [
+      "guntur-dry-red-chilli",
+      "banganapalli-mango",
+      "indian-pomegranate",
+      "indian-apples",
+    ]) {
+      const bounds = demandSizeBoundsFor(productId);
+      expect(bounds.minUsd).toBeGreaterThan(0);
+      expect(bounds.maxUsd).toBeGreaterThan(bounds.minUsd);
+      // Every current band is a placeholder awaiting MI1 hydration —
+      // MI must not present a demand-size score as calibrated yet.
+      expect(bounds.requiresMI1Calibration).toBe(true);
+    }
+    expect(PRODUCT_DEMAND_SIZE_BOUNDS["indian-apples"]!.maxUsd).toBeGreaterThan(
+      PRODUCT_DEMAND_SIZE_BOUNDS["indian-pomegranate"]!.maxUsd,
+    );
+  });
+
+  it("normalizeDemandSizeForProduct uses product-relative bounds instead of one absolute threshold", () => {
+    // $500 M ⇒ big vs. the pomegranate band, small vs. the apple band.
+    const pom = normalizeDemandSizeForProduct(500_000_000, "indian-pomegranate")!;
+    const apple = normalizeDemandSizeForProduct(500_000_000, "indian-apples")!;
+    expect(pom).toBeGreaterThan(apple);
+  });
+
+  it("normalizeDemandSize still accepts an explicit bounds object", () => {
+    const score = normalizeDemandSize(1_000_000_000, { minUsd: 1_000_000, maxUsd: 10_000_000_000 });
+    expect(score).toBeGreaterThan(0);
+    expect(score).toBeLessThanOrEqual(100);
+  });
+});
+
+describe("MI0.1 recommendationStatus — mandatory evidence gate", () => {
+  const ok = {
+    fitScore: 82,
+    mappingEligibility: "exact" as const,
+    hasDemandSizeEvidence: true,
+    hasHistoricalEvidence: true,
+    dataConfidenceScore: 91,
+  };
+
+  it("actionable requires exact mapping AND confidence >= threshold AND numeric fit AND both signals", () => {
+    expect(recommendationStatus(ok)).toBe("actionable");
+    expect(RECOMMENDATION_MIN_CONFIDENCE_FOR_ACTIONABLE).toBeGreaterThanOrEqual(50);
+  });
+
+  it("high fit + LOW confidence downgrades to indicative (not hidden)", () => {
+    expect(recommendationStatus({ ...ok, dataConfidenceScore: 52 })).toBe("indicative");
+  });
+
+  it("proxy mapping never reaches actionable regardless of numbers", () => {
+    expect(
+      recommendationStatus({ ...ok, mappingEligibility: "proxy_allowed" }),
+    ).toBe("indicative");
+  });
+
+  it("composite mapping = insufficient_evidence — MI must not publish a numeric score", () => {
+    expect(
+      recommendationStatus({ ...ok, mappingEligibility: "insufficient_specificity" }),
+    ).toBe("insufficient_evidence");
+  });
+
+  it("missing demand-size or historical evidence = insufficient_evidence", () => {
+    expect(
+      recommendationStatus({ ...ok, hasDemandSizeEvidence: false }),
+    ).toBe("insufficient_evidence");
+    expect(
+      recommendationStatus({ ...ok, hasHistoricalEvidence: false }),
+    ).toBe("insufficient_evidence");
+  });
+
+  it("null fit score = insufficient_evidence, even with high confidence", () => {
+    expect(
+      recommendationStatus({ ...ok, fitScore: null, dataConfidenceScore: 100 }),
+    ).toBe("insufficient_evidence");
   });
 });
 

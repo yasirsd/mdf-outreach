@@ -23,6 +23,14 @@
 /** ISO 3166-1 alpha-2 country code. Uppercase, exactly two letters. */
 export type CountryAlpha2 = string;
 
+/**
+ * ISO 3166-1 alpha-3 country code. Some free trade-data providers
+ * (BACI notably) expose lowercase alpha-3 as their reporter/partner
+ * identity. MI stores alpha-2 internally; provider adapters translate
+ * at their boundary and MUST never surface alpha-3 into the domain.
+ */
+export type CountryAlpha3 = string;
+
 /** Canonical MDF business product id from `src/lib/catalogue/products.ts`. */
 export type MdfProductId = string;
 
@@ -39,9 +47,43 @@ export type HsRevision = "HS92" | "HS96" | "HS02" | "HS07" | "HS12" | "HS17" | "
 export type HsLevel = 2 | 4 | 6;
 
 /**
+ * MI0.1 — how tightly a given HS classification actually corresponds
+ * to the MDF business product.
+ *
+ * `exact` — the HS code isolates the MDF product with negligible
+ * spillover from other products (e.g. HS 080810 = "Fresh apples";
+ * origin still determines "Indian"). Full Market Fit publishing is
+ * eligible for this code.
+ *
+ * `proxy` — the HS code covers the MDF product AND close cousins
+ * that MDF does not sell (e.g. HS 090421 = "dried Capsicum/Pimenta"
+ * — Guntur chilli plus every other dried chilli). Market Fit may be
+ * published but must be labelled as a trade proxy in the UI.
+ *
+ * `composite` — the HS code is a broad bucket where the MDF product
+ * is one of many unrelated items (e.g. HS 080450 = mango + guava +
+ * mangosteen; HS 081090 = "other fresh fruit"). Publishing a
+ * numeric Market Fit from a composite code would misrepresent the
+ * market. MI publishes proxy metrics and lowers recommendation
+ * status accordingly.
+ */
+export type MappingKind = "exact" | "proxy" | "composite";
+
+/**
+ * How specifically the MDF product may be scored from this code.
+ * Populated deterministically from `mappingKind` in
+ * `mappingFitEligibility()` — never set by hand at ingest time.
+ */
+export type MappingFitEligibility =
+  | "exact"                    // suitable for actionable score
+  | "proxy_allowed"            // usable but must be UI-labelled
+  | "insufficient_specificity"; // must gate the numeric score
+
+/**
  * A single HS classification that (partially or fully) covers an MDF
  * product for a given revision. A product may map to more than one
- * code; the mapping records how each code contributes.
+ * code; the mapping records how each code contributes AND how
+ * confidently it represents the MDF product itself.
  *
  * `form` describes what the code covers in operator-readable terms
  * ("dried", "fresh", "powdered", …). `weight` allows a future
@@ -66,6 +108,25 @@ export interface ProductTradeMapping {
   weight?: number;
   effectiveFrom?: string;
   effectiveTo?: string;
+  /** MI0.1 — specificity of this classification for the MDF product. */
+  mappingKind: MappingKind;
+  /**
+   * MI0.1 — 0..1 subjective confidence that this HS bucket represents
+   * the MDF product. Feeds directly into Market Fit's
+   * `hs_mapping_certainty` confidence axis.
+   *   • exact           → 0.9..1.0
+   *   • proxy           → 0.5..0.8
+   *   • composite       → 0.2..0.4
+   */
+  mappingConfidence: number;
+  /** MI0.1 — plain-English scope shown in the UI ("Trade proxy: …"). */
+  scopeDescription: string;
+  /**
+   * MI0.1 — plain-English hint listing the non-MDF items the code
+   * also captures. UI may render as "Also includes: …" so the
+   * operator understands what dilutes the number.
+   */
+  includedProductsNote?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -74,10 +135,24 @@ export interface ProductTradeMapping {
 
 export type MarketDataCostClass = "free" | "free_tier" | "paid";
 
+export type MarketProviderQuotaState =
+  | "unlimited"
+  | "available"
+  | "unknown"
+  | "exhausted";
+
+export type MarketProviderQuotaPolicy = "unlimited" | "free_only_limited";
+
+export type MarketHsCompatibility = "native" | "harmonized";
+
+export type MarketGeographicCoverage =
+  | { scope: "global" }
+  | { scope: "countries"; reporterCountries: CountryAlpha2[] };
+
 /**
- * Analytical goals a provider adapter may declare. MI selects the
- * cheapest configured provider that supports the requested goal;
- * providers that do not declare a capability are never called for it.
+ * Analytical goals a provider adapter may declare. MI filters eligibility
+ * first, then ranks free providers by the versioned selection policy.
+ * Providers that do not declare a capability are never called for it.
  */
 export type MarketProviderCapability =
   | "import_series"       // World-imports value / quantity time series
@@ -97,6 +172,34 @@ export type MarketSourceTier =
   ;
 
 /**
+ * Dataset and distribution-service rights remain separate. Persistent
+ * ingestion requires explicit service-term verification and storage approval;
+ * missing fields never imply permission.
+ */
+export interface MarketProviderLicense {
+  datasetSource: string;
+  datasetLicenseName?: string;
+  datasetLicenseUrl?: string;
+  datasetAttributionRequirement?: string;
+  distributionService: string;
+  distributionServiceTermsUrl?: string;
+  distributionCatalogLicenseName?: string;
+  serviceTermsVerified: boolean;
+  storageAllowed?: boolean;
+  redistributionAllowed?: boolean;
+  licenceVerifiedAt?: string;
+  licenceVerificationNote?: string;
+}
+
+/**
+ * MI0.1 — reporter-side country coding used by the provider on the
+ * wire. MI's canonical identity is always alpha-2 uppercase; the
+ * adapter must translate at the boundary and never leak alpha-3 into
+ * the domain.
+ */
+export type ProviderCountryCoding = "iso_alpha2" | "iso_alpha3";
+
+/**
  * Static declaration of what an adapter can do and what it costs. No
  * adapter may be automatically called for a capability it did not
  * declare; no adapter above cost_class `free_tier` may be required.
@@ -104,15 +207,30 @@ export type MarketSourceTier =
 export interface MarketProviderDescriptor {
   providerId: string;
   displayName: string;
+  enabled: boolean;
   costClass: MarketDataCostClass;
   requiresKey: boolean;
   requiresCard: boolean;
+  quotaPolicy: MarketProviderQuotaPolicy;
+  /** Allows an unknown quota state only when there is no metered paid fallback. */
+  unknownQuotaSafe: boolean;
   freeLimit?: string;
   coverage: string;
+  geographicCoverage: MarketGeographicCoverage;
   latestPeriod?: string;
+  /** Dataset release/update time when the provider publishes one. */
+  datasetUpdatedAt?: string;
   frequency: MarketDataFrequency[];
   capabilities: MarketProviderCapability[];
   sourceTier: MarketSourceTier;
+  /** MI0.1 — provider wire coding (translated at adapter boundary). */
+  countryCoding: ProviderCountryCoding;
+  /** MI0.1 — HS revision(s) the provider actually serves. */
+  hsRevisions: HsRevision[];
+  hsCompatibility: Partial<Record<HsRevision, MarketHsCompatibility>>;
+  queryResultLimit?: number;
+  /** MI0.1 — dataset licence, when the provider publishes one. */
+  license?: MarketProviderLicense;
 }
 
 // ---------------------------------------------------------------------------
@@ -218,6 +336,80 @@ export interface MarketFitScore {
   negativeReasons: string[];
   calculationVersion: string;
   calculatedAt: string;
+}
+
+/**
+ * MI0.1 — deterministic recommendation state that lives ALONGSIDE
+ * (never inside) Market Fit and Data Confidence. The gate is
+ * evaluated by `recommendationStatus()` in `marketFit.ts` from:
+ *   • hasNumericScore (Fit is not null)
+ *   • hasDemandSizeEvidence (any positive market total)
+ *   • hasHistoricalEvidence (a trend or CAGR/YoY exists)
+ *   • mappingFitEligibility (exact / proxy_allowed / insufficient)
+ *   • dataConfidenceScore
+ * The three states are mutually exclusive.
+ */
+export type MarketRecommendationStatus =
+  | "actionable"
+  | "indicative"
+  | "insufficient_evidence";
+
+/**
+ * MI0.1 — freshness triangle. `analysisDate` is when MI computed the
+ * result the operator sees now. `retrievedAt` is when the underlying
+ * observation last hit the provider. `latestSourcePeriod` is the
+ * period the provider actually reports for. Three distinct facts;
+ * the UI must never conflate them (a 2024 BACI figure retrieved in
+ * Sep 2026 is not "current market activity").
+ */
+export interface MarketDataFreshness {
+  analysisDate: string;
+  retrievedAt?: string;
+  latestSourcePeriod?: string;
+  frequency?: MarketDataFrequency;
+  providerId?: string;
+}
+
+/**
+ * MI0.1 — durable provider fetch/cache ledger. MI0 does NOT persist
+ * these; the type defines the future MI1 table so architecture
+ * discussion is grounded in real fields. Never carries API keys,
+ * cookies, tokens, or paid-provider raw payloads.
+ */
+export interface MarketProviderFetchLedgerEntry {
+  providerId: string;
+  datasetId: string;
+  /**
+   * Stable canonical key derived from every material query dimension,
+   * including provider/dataset, reporter/partner, flow, HS revision/code
+   * set, frequency, coverage, and provider-selection version. A repeat
+   * call resolves to the same ledger identity without ambiguity.
+   */
+  queryFingerprint: string;
+  reporterCountry: CountryAlpha2;
+  tradeFlow: MarketTradeFlow;
+  hsRevision: HsRevision;
+  hsCodes: string[];
+  partnerCountry?: CountryAlpha2 | null;
+  frequency: MarketDataFrequency;
+  providerSelectionVersion: string;
+  coverageStart: string;
+  coverageEnd: string;
+  fetchedAt: string;
+  freshUntil: string;
+  outcome:
+    | "success"
+    | "partial"
+    | "empty"
+    | "quota_exhausted"
+    | "timeout"
+    | "provider_error"
+    | "invalid_request"
+    | "unavailable";
+  rowsReceived: number;
+  /** Earliest safe retry time for quota/unavailable outcomes, when known. */
+  retryAfter?: string;
+  safeMetadata?: Record<string, unknown>;
 }
 
 export interface DataConfidenceScore {

@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { countryDisplayName, marketCountryOptions, toCountryAlpha2 } from "./country";
+import {
+  alpha2ToAlpha3,
+  alpha3ToAlpha2,
+  countryDisplayName,
+  marketCountryOptions,
+  toCountryAlpha2,
+} from "./country";
 
 describe("MI0 country identity", () => {
   it("resolves ISO alpha-2 codes case-insensitively", () => {
@@ -31,6 +37,19 @@ describe("MI0 country identity", () => {
     expect(countryDisplayName("MY")).toBe("Malaysia");
     expect(countryDisplayName("AE")).toBe("United Arab Emirates");
     expect(countryDisplayName(undefined)).toBeUndefined();
+  });
+
+  it("MI0.1 — alpha2 ↔ alpha3 boundary translates BACI-style codes without leaking them", () => {
+    expect(alpha2ToAlpha3("MY")).toBe("MYS");
+    expect(alpha2ToAlpha3("IN")).toBe("IND");
+    expect(alpha2ToAlpha3("GB")).toBe("GBR");
+    expect(alpha3ToAlpha2("MYS")).toBe("MY");
+    expect(alpha3ToAlpha2("IND")).toBe("IN");
+    // Unknown / garbage → undefined; MI never invents a code.
+    expect(alpha2ToAlpha3("ZZ")).toBeUndefined();
+    expect(alpha3ToAlpha2("ZZZ")).toBeUndefined();
+    expect(alpha2ToAlpha3(undefined)).toBeUndefined();
+    expect(alpha3ToAlpha2(undefined)).toBeUndefined();
   });
 
   it("marketCountryOptions returns the ISO catalogue sorted alphabetically", () => {

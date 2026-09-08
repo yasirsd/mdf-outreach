@@ -1,10 +1,45 @@
 # Market Intelligence MI0 — Country × Product Opportunity Engine
 
-Status: architecture only. No migration, no live provider call, no
-seeded data. MI0 introduces one new module tree under
-`src/lib/marketIntelligence/` with pure calculation helpers and
-domain types, plus this design document. MI1 will build on it to
-wire the first free trade-data source.
+Status: MI1A contract reconciliation complete. No migration, live provider
+call, seeded data, or network adapter. This section is the single current
+authority. Later MI0/MI0.1 sections are retained as a historical design
+record; any conflicting earlier statement is superseded here.
+
+## Current architecture — MI1A authoritative contract
+
+- **Provider execution:** `checkFreeMarketProviderExecution()` is fail-closed.
+  Paid, card-requiring, disabled, incompatible, uncredentialed,
+  quota-exhausted, or unapproved persistent providers cannot enter ranking.
+  Missing required-key state is treated as false.
+- **Selection:** `mi-select-v2` ranks eligible providers by source authority,
+  HS compatibility, geographic coverage quality, recency, frequency, quota,
+  canonical preference, then provider id. Canonical is a late stability
+  tie-breaker and cannot outrank a better authority tier.
+- **Quota:** `unlimited | available | unknown | exhausted` is explicit.
+  Unknown is eligible only for a documented free-only path with no known
+  metered paid fallback. Exhausted is ineligible.
+- **BACI proposal:** `baci_oec` (“BACI via OEC BotMarket”) is a future free,
+  key-required, no-card, annual HS17 adapter with global alpha-3 wire identity,
+  2024 latest period, three trade capabilities, and a 1,000-row request limit.
+  MDF remains alpha-2 internally. No adapter or key exists in MI1A.
+- **Rights:** CEPII BACI is the dataset source; OEC BotMarket is the
+  distribution service. Etalab Open Licence 2.0 and the catalog's CC BY 4.0
+  statement are recorded separately. BotMarket service terms remain
+  unverified, so storage and persistent ingestion stay blocked.
+- **Publication:** `buildMarketRecommendation()` is the public Market Fit
+  boundary. Composite mappings publish no number; proxy mappings carry
+  `isTradeProxy=true` and cap at indicative; exact mappings may become
+  actionable only after every evidence/confidence gate passes.
+- **Cache:** observation uniqueness protects writes, not provider calls. The
+  fetch ledger decides `use_cache | fetch | blocked`; only fresh, covering
+  `success` or `empty` outcomes are cache-complete.
+- **Fingerprint:** `mi-query-v1` includes provider, dataset, reporter,
+  partner, flow, HS revision, sorted HS codes, frequency, coverage, and
+  provider-selection version. Secrets are outside the typed input.
+- **Calibration:** all product demand bands remain
+  `requiresMI1Calibration=true`; `mi-fit-v1` is unchanged.
+
+## Historical MI0 and MI0.1 design record
 
 ## 1 · Scope and domain boundary
 
@@ -213,18 +248,16 @@ interface MarketProviderDescriptor {
 }
 ```
 
-MI selects the cheapest configured provider whose declared
-`capabilities` include the requested goal. A provider that did not
-declare a capability is never called for it. `costClass = "paid"`
-providers are never *required* dependencies and are never invoked as
-an automatic fallback. See [types.ts](../src/lib/marketIntelligence/types.ts).
+Superseded by MI1A: eligibility is evaluated first by the free-only execution
+guard. Eligible providers then use the versioned quality ranking in the
+current architecture section.
 
 **MI1 provider shortlist (documentation only, none integrated):**
 
 | Provider | Cost class | Requires key | Card | Notes |
 | --- | --- | --- | --- | --- |
 | UN Comtrade (public) | free_tier | free key | no | Rate-limited; annual data. Tier A. |
-| BACI / OEC | free | no | no | Harmonized normalizations. Tier B. |
+| BACI / OEC BotMarket | free | free key required | no | Harmonized BACI data. Tier B; persistent use blocked pending service-terms review. |
 | World Bank WITS / UNCTAD TRAINS | free | no | no | Bilateral + tariff. Tier A/B. |
 | US Census Trade API | free | free key | no | US-detail only. Tier A. |
 
@@ -459,9 +492,9 @@ Scores and metrics carry `calculationVersion`; component links carry
   silently rewritten.
 - UI keeps the "as of methodology vN" annotation next to the score.
 
-## 22 · Cache design
+## 22 · Cache design (superseded by MI1A fetch ledger)
 
-Caching lives at the *observation* layer, not the API-call layer:
+Observation retention and provider-call caching are separate:
 
 - Free public annual trade series → **long cache** (e.g. 30 days
   for closed years, 24 hours for the current year).
@@ -471,10 +504,9 @@ Caching lives at the *observation* layer, not the API-call layer:
 - Score / metric refresh is derived from the observation table
   under an advisory lock; no external call is required.
 
-The observation table's composite unique key (§6) means a refresh
-that finds the same underlying rows returns `existing` outcomes and
-never re-queries the provider. Cache is the schema, not a
-`Cache-Control` header.
+The observation table's composite unique key prevents duplicate writes but
+cannot prevent a provider request. Only a fresh, covering fetch-ledger entry
+with a cache-complete outcome permits reuse without another provider call.
 
 ## 23 · API budget strategy
 
@@ -487,7 +519,7 @@ estimates the free-API call count:
 - Optionally 1 call: tariff.
 
 Target ≤ 4 free-quota calls per analysis and less if any of the four
-already sits in the observation cache. The MI1 orchestrator surfaces
+already has fresh covering fetch-ledger evidence. The MI1 orchestrator surfaces
 the estimated + actual call count to the operator.
 
 Circuit breakers:
@@ -617,9 +649,10 @@ MI0 explicitly does not create this migration.
 ## 30 · MI1 implementation plan (recommended)
 
 1. **Apply migration 0022** after operator review (see §29).
-2. **Wire one Tier B provider** — BACI or OEC — via a new
+2. **Wire one Tier B provider** — BACI via OEC BotMarket — via a new
    `src/lib/marketIntelligence/providers/<id>` module implementing
-   the `MarketProviderDescriptor` contract. Free, no key, no card.
+   the `MarketProviderDescriptor` contract. Free, key required, no card;
+   persistent use remains blocked until service terms are approved.
 3. **Implement the four ingestion RPCs** described in §29.
 4. **Build `analyze_market(country, product)`** server orchestrator:
    check cache → fan out ≤ 4 provider calls → ingest → refresh
@@ -662,3 +695,280 @@ MI1 must NOT:
 - No live API call.
 - No seeded market data.
 - No LLM in scoring, ever.
+
+---
+
+## MI0.1 — Architecture Hardening
+
+MI0.1 is a narrow correction pass on the MI0 design. No migration,
+no provider integration, no live call. The corrections codify
+mapping specificity, calendar-aware growth math, an explicit
+recommendation gate, a durable fetch/cache ledger, and a versioned
+provider-selection policy.
+
+### 0.1.a HS mapping specificity
+
+Every `ProductTradeMapping` now declares three additional fields
+enforced by `validateProductTradeMappings()`:
+
+- `mappingKind: "exact" | "proxy" | "composite"` — how tightly the
+  HS code isolates the MDF product.
+- `mappingConfidence: number` in `(0, 1]`, banded by kind:
+  `exact ≥ 0.85`, `proxy ∈ (0.4, 0.85]`, `composite ≤ 0.4`.
+- `scopeDescription` — operator-readable prose the UI can render
+  as "Trade proxy: HS 090421 — dried Capsicum/Pimenta".
+- `includedProductsNote` — non-MDF items the code also captures.
+
+`mappingFitEligibility(kind)` derives an eligibility label:
+`"exact" | "proxy_allowed" | "insufficient_specificity"`.
+`productFitEligibility(productId)` returns the best eligibility
+across all codes for a product. `productMappingCertainty(productId)`
+returns the highest mapping confidence for use in Data Confidence's
+`hs_mapping_certainty` axis.
+
+**Corrected MI0.1 initial mappings**:
+
+| MDF product | HS17 code | Kind | Confidence | Product fit eligibility |
+| --- | --- | --- | --- | --- |
+| Guntur Dry Red Chilli | 090421 | proxy | 0.70 | `proxy_allowed` |
+| Guntur Dry Red Chilli | 090422 | proxy | 0.55 | (proxy — same product) |
+| Banganapalli Mango | 080450 | composite | 0.30 | `insufficient_specificity` |
+| Indian Pomegranate | 081090 | composite | 0.25 | `insufficient_specificity` |
+| Indian Apples | 080810 | exact | 0.95 | `exact` |
+
+**Fit-publishing behaviour per product**:
+
+- **Apples** — a numeric Market Fit is eligible for publication as
+  actionable when other gates pass.
+- **Chilli (Guntur)** — proxy_allowed. UI labels every chart and
+  the score as "Trade proxy" and downgrades recommendation to
+  `indicative` even at high fit + confidence.
+- **Mango (Banganapalli) / Pomegranate (Indian)** — MI must not
+  publish a numeric Market Fit from a composite HS bucket. The
+  recommendation gate returns `insufficient_evidence`; the UI shows
+  the raw partner and origin observations for context but never a
+  precise score.
+
+### 0.1.b Corrected YoY semantics
+
+`yearOverYear(series)`:
+
+- Sorts series by period, dedupes duplicate years (first wins),
+  and takes only annual labels (`^\d{4}$`).
+- **Requires the two most recent known points to be consecutive
+  calendar years**. `2023 → 2024` computes YoY; `2020 → 2024` returns
+  `{ percent: null, reason: "non_consecutive_periods", yearsSpanned: 4 }`.
+- Zero base returns `{ reason: "zero_base" }`; non-finite returns
+  `{ reason: "invalid_value" }`.
+- Non-annual periods (`YYYY-Qn`, `YYYY-MM`) are ignored under
+  MI0.1's annual-only scope. MI1 will add monthly/quarterly
+  primitives when the first monthly provider is wired.
+
+### 0.1.c Corrected CAGR semantics
+
+`cagr(series, years)`:
+
+- Deduped + sorted internally like YoY.
+- **Base point** is the earliest known observation whose year is
+  ≥ `latestYear − years`. Exponent = actual `latestYear − baseYear`.
+- If no base exists inside the requested trailing window, returns
+  `{ reason: "insufficient_periods" }` — MI never fabricates a
+  synthetic base.
+- Returns `yearsSpanned` alongside `percent` so the UI can render
+  the real span ("4-year CAGR based on 2020 → 2024").
+- Point-count-minus-one is never used when periods have gaps.
+
+### 0.1.d BACI descriptor correction
+
+The proposed BACI adapter must declare:
+
+```ts
+{
+  providerId: "baci_oec",
+  displayName: "BACI (via OEC)",
+  costClass: "free",
+  requiresKey: true,      // free API key registration required
+  requiresCard: false,
+  frequency: ["annual"],
+  latestPeriod: "2024",   // BACI HS17 as of this writing
+  capabilities: ["import_series", "partner_series", "origin_breakdown"],
+  sourceTier: "B",
+  countryCoding: "iso_alpha3", // BACI serves lowercase alpha-3
+  hsRevisions: ["HS17"],
+  license: { … },              // to be filled in from provider terms at MI1
+}
+```
+
+`requiresCard: false` — no payment method is ever a required
+dependency. No BACI API key is obtained during MI0.1.
+
+### 0.1.e Country-code adapter boundary
+
+`alpha2ToAlpha3` and `alpha3ToAlpha2` in `country.ts` provide the
+strict translation boundary. MI's domain layer stores and reasons
+in alpha-2 uppercase; provider adapters translate at their edge.
+Alpha-3 codes never enter tables, types, or UI copy. An unknown
+alpha-3 (from a garbled provider payload) resolves to `undefined`
+so the ingestion path can drop the row rather than misattribute it.
+
+### 0.1.f Strengthened Market Fit evidence gate
+
+`composeMarketFit` remains a low-level diagnostic calculator with the
+supported-weight ≥ 55 rule. MI1A makes `buildMarketRecommendation()` the sole
+publication boundary. It returns separate diagnostic/published Fit values,
+Data Confidence, mapping metadata, proxy state, status, and publication reason:
+
+```
+buildMarketRecommendation({ diagnosticFit, dataConfidence, mappingKind,
+  mappingConfidence, hasDemandSizeEvidence, hasHistoricalEvidence })
+→ { publishedFitScore, diagnosticFitScore, dataConfidenceScore,
+    recommendationStatus, fitEligibility, isTradeProxy, publicationReason }
+```
+
+- `publishedFitScore = null` and `insufficient_evidence` when ANY of:
+  diagnostic Fit is null; mapping is
+  `insufficient_specificity`; no demand-size observation exists; no
+  historical/trend evidence exists; Data Confidence is unavailable.
+- `actionable` only when: mapping is `exact`, both signal flags are
+  true, fitScore is not null, and data confidence ≥
+  `RECOMMENDATION_MIN_CONFIDENCE_FOR_ACTIONABLE` (65).
+- `indicative` otherwise (published fit exists but is proxy-based,
+  short-history, or low-confidence).
+
+Concrete example the UI must be able to render:
+
+```
+Fit         86
+Confidence  52
+Recommendation status: indicative
+Reason: HS 090421 is a trade proxy for chilli; confidence below 65.
+```
+
+MI never hides a high mathematical fit merely because confidence is
+low, but never labels a low-confidence/proxy result as an
+actionable recommendation.
+
+### 0.1.g Product-relative demand-size normalization
+
+`PRODUCT_DEMAND_SIZE_BOUNDS` and `demandSizeBoundsFor(productId)`
+in `marketFit.ts` replace the earlier single absolute band. Each
+product carries its own `{ minUsd, maxUsd, requiresMI1Calibration,
+note }`. Every current band is `requiresMI1Calibration: true` — MI
+must display the "requires calibration" hint on the demand-size
+component until MI1 hydrates real BACI figures. The old
+`normalizeDemandSize(value, {min, max})` signature remains for
+tests and explicit callers; production code paths should use
+`normalizeDemandSizeForProduct(value, productId)`.
+
+### 0.1.h Cache / fetch ledger
+
+The MI0 draft implied observation uniqueness would prevent API
+re-querying. That is wrong — observation uniqueness only prevents
+duplicate INSERTs. To prevent duplicate provider CALLS, MI1's
+schema adds:
+
+```
+public.market_provider_fetch_ledger (
+  id, provider_id, dataset_id, query_fingerprint,
+  reporter_country, hs_revision, hs_codes[], partner_country,
+  frequency, coverage_start, coverage_end,
+  fetched_at, fresh_until,
+  outcome text CHECK (outcome IN (
+    'success','partial','empty','quota_exhausted',
+    'timeout','provider_error','invalid_request','unavailable'
+  )),
+  rows_received int,
+  safe_metadata jsonb
+)
+```
+
+Rules:
+
+- If `fresh_until > now()` AND `outcome IN ('success','empty')`,
+  MI does NOT call the provider — it consumes the existing
+  observations.
+- A `partial`, `timeout`, or `provider_error` entry is NOT complete
+  coverage and remains retry-eligible under the caller's retry policy.
+  `quota_exhausted` is blocked until a known reset/recovery point; it is
+  never treated as an automatic retry. No failed request is confused with
+  a legitimate zero-trade series.
+- `safe_metadata` never carries API keys, cookies, or paid raw
+  payloads (mirrors BI2's SQL-side check).
+
+TypeScript shape: `MarketProviderFetchLedgerEntry` in `types.ts`.
+
+### 0.1.i Provider selection policy
+
+`selectProvider()` in `providerSelection.ts` is versioned
+(`MI_PROVIDER_SELECTION_VERSION = "mi-select-v2"`). Eligibility is evaluated
+before this ranking:
+
+1. Source authority (tier A > B > C > D > E).
+2. HS/product compatibility.
+3. Geographic coverage quality.
+4. Data recency.
+5. Requested-frequency match.
+6. Free-quota state.
+7. Canonical-provider preference.
+8. Provider id deterministic tie-break.
+
+`CANONICAL_PROVIDER_BY_CAPABILITY` names the stability preference per
+capability. It applies only after the preceding quality dimensions tie.
+
+### 0.1.j Data freshness triangle
+
+Every MI panel eventually shows three distinct dates:
+
+```
+Analyzed 6 Sep 2026
+Latest trade data 2024
+Source: BACI · Retrieved Sep 2026
+```
+
+`MarketDataFreshness` (in `types.ts`) carries `analysisDate |
+retrievedAt | latestSourcePeriod | frequency | providerId`. Data
+Confidence's recency axis reflects the lag between `analysisDate`
+and `latestSourcePeriod`.
+
+### 0.1.k License metadata
+
+`MarketProviderLicense` keeps the underlying dataset/source licence and the
+distribution service/catalog terms separate. It records attribution,
+service-term verification, storage/redistribution permission, verification
+time, and a note. Missing approval blocks persistent ingestion.
+
+### 0.1.l MI1 recommendation (revised)
+
+Order of operations, revised for MI0.1:
+
+1. **Author + preflight migration 0022** including the corrected
+   schema: observations + metrics + scores + score components +
+   **fetch ledger** + product_trade_mappings + workspace-scoped
+   `market_analysis_events`.
+2. **Freeze mapping semantics** in SQL: mirror
+   `mappingKind`, `mappingConfidence`, `scopeDescription` as
+   NOT-NULL columns with the same banded CHECK constraints the TS
+   registry enforces.
+3. **Ship the BACI adapter** implementing the corrected descriptor
+   (`requiresKey: true`, `countryCoding: "iso_alpha3"`,
+   `hsRevisions: ["HS17"]`) only after BotMarket service terms and storage
+   permission are reviewed and recorded. Wire the
+   alpha-2 ↔ alpha-3 boundary at the adapter edge.
+4. **Ship `analyze_market(country, product)` server orchestrator**:
+   check fetch ledger → if stale/missing, run `selectProvider` → up
+   to 4 provider calls → ingest observations → refresh metrics →
+   refresh diagnostic score → run `buildMarketRecommendation` → return
+   only the central publication-safe result.
+5. **Calibrate demand-size bounds** from the first real BACI year
+   and flip `requiresMI1Calibration: false` per product. Bump the
+   Market Fit version to `mi-fit-v2` so the change is traceable.
+6. **UI wiring** — Market Explorer, Market Detail with the three-
+   date freshness triangle, mapping-specificity chip on every
+   chart, and the `recommendationStatus` badge next to Fit +
+   Confidence. Zero client-side scoring.
+
+MI1 must NOT: introduce a chart library that binds MDF to a
+specific vendor without operator decision; call a paid provider;
+persist market data per workspace; publish a numeric fit for a
+composite HS mapping; call a provider when a fresh ledger entry
+already covers the query.
