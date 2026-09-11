@@ -1,18 +1,17 @@
-import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { historicalMigrationSha256 } from "@/test/historicalMigrationHash";
 
 const read = (name: string) => readFileSync(path.resolve(process.cwd(), "supabase/migrations", name), "utf8");
 const SQL = read("0021_buyer_intelligence_write_pipeline.sql");
 const ACTIVE = SQL.replace(/--[^\n]*/g, "");
-const sha = (value: string) => createHash("sha256").update(value).digest("hex").toUpperCase();
 
 describe("BI2 migration 0021", () => {
-  it("guards every applied migration byte-for-byte", () => {
-    expect(sha(read("0018_buyer_finder_candidate_conversion.sql"))).toBe("E7DD2418C2BB93FCD6E8C2F90A2E2FF070609019468EB5AA47B1998557043200");
-    expect(sha(read("0019_buyer_email_required_conversion.sql"))).toBe("1095537A7E71154EC683B0F457E602C48C85BA627D2657F54B353D66FFA3EB64");
-    expect(sha(read("0020_buyer_intelligence_foundation.sql"))).toBe("4B95F56585C14692182EEC77224F6A55873B0BA84BD6C60C42487D76A5D6ED67");
+  it("guards every applied migration as canonical LF text", () => {
+    expect(historicalMigrationSha256(read("0018_buyer_finder_candidate_conversion.sql"))).toBe("BC8312019A46F11C68DAFE8617AB181F2C815F718F315B7D57B716F65828FAA8");
+    expect(historicalMigrationSha256(read("0019_buyer_email_required_conversion.sql"))).toBe("1095537A7E71154EC683B0F457E602C48C85BA627D2657F54B353D66FFA3EB64");
+    expect(historicalMigrationSha256(read("0020_buyer_intelligence_foundation.sql"))).toBe("4B95F56585C14692182EEC77224F6A55873B0BA84BD6C60C42487D76A5D6ED67");
   });
 
   it("creates only four narrow authenticated SECURITY DEFINER entry points", () => {

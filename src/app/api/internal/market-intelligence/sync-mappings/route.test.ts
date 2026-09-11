@@ -1,7 +1,7 @@
-import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { historicalMigrationSha256 } from "@/test/historicalMigrationHash";
 
 vi.mock("server-only", () => ({}));
 
@@ -179,12 +179,12 @@ describe("MI1C.2 route isolation and immutable migration guardrails", () => {
   });
 
   it("keeps applied migrations 0022 and 0023 content-identical across line endings", () => {
-    const hash = (relative: string) => createHash("sha256")
-      .update(readFileSync(path.resolve(root, relative), "utf8").replace(/\r\n/g, "\n"))
-      .digest("hex");
+    const hash = (relative: string) => historicalMigrationSha256(
+      readFileSync(path.resolve(root, relative), "utf8"),
+    );
     expect(hash("supabase/migrations/0022_market_intelligence_foundation.sql"))
-      .toBe("eb6ba7077c957664f64f3b8595ab26dfb30953416508a9fb7bbb8cb0147357e3");
+      .toBe("EB6BA7077C957664F64F3B8595AB26DFB30953416508A9FB7BBB8CB0147357E3");
     expect(hash("supabase/migrations/0023_market_product_mapping_sync.sql"))
-      .toBe("eec6892b0c69f8c28b070fd8aef4cd699961eaf159d94cb2a62a43e70b95bdda");
+      .toBe("EEC6892B0C69F8C28B070FD8AEF4CD699961EAF159D94CB2A62A43E70B95BDDA");
   });
 });

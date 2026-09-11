@@ -1,7 +1,7 @@
-import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { historicalMigrationSha256 } from "@/test/historicalMigrationHash";
 
 function migration(name: string): string {
   return readFileSync(path.resolve(process.cwd(), "supabase/migrations", name), "utf8");
@@ -133,12 +133,11 @@ describe("BI1 migration 0020", () => {
     expect(ACTIVE_SQL).not.toMatch(/\b(insert|update|delete)\s+(into\s+|from\s+)?public\.(buyers|buyer_candidates|campaigns|campaign_recipients)\b/i);
   });
 
-  it("guards the already-applied 0018 and 0019 bytes", () => {
-    const sha256 = (text: string) => createHash("sha256").update(text).digest("hex").toUpperCase();
-    expect(sha256(migration("0018_buyer_finder_candidate_conversion.sql"))).toBe(
-      "E7DD2418C2BB93FCD6E8C2F90A2E2FF070609019468EB5AA47B1998557043200",
+  it("guards the already-applied 0018 and 0019 canonical text", () => {
+    expect(historicalMigrationSha256(migration("0018_buyer_finder_candidate_conversion.sql"))).toBe(
+      "BC8312019A46F11C68DAFE8617AB181F2C815F718F315B7D57B716F65828FAA8",
     );
-    expect(sha256(migration("0019_buyer_email_required_conversion.sql"))).toBe(
+    expect(historicalMigrationSha256(migration("0019_buyer_email_required_conversion.sql"))).toBe(
       "1095537A7E71154EC683B0F457E602C48C85BA627D2657F54B353D66FFA3EB64",
     );
   });
