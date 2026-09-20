@@ -52,13 +52,27 @@ function responseFor(result: SyncMarketProductMappingsResult): NextResponse {
     });
   }
 
-  const status = result.outcome === "unauthorised"
-    ? 401
-    : result.outcome === "forbidden"
-      ? 403
-      : result.outcome === "invalid_registry"
-        ? 422
-        : 503;
+  // Sanitized outcome → HTTP status mapping. All error variants carry a
+  // server-only classified log line so an operator can identify the
+  // real cause; the browser sees only the outcome + fixed message.
+  const status =
+    result.outcome === "unauthorised"
+      ? 401
+      : result.outcome === "forbidden"
+        ? 403
+        : result.outcome === "authorization_error"
+          ? 401
+          : result.outcome === "invalid_registry"
+            ? 422
+            : result.outcome === "database_permission_error"
+              ? 403
+              : result.outcome === "network_error"
+                ? 502
+                : result.outcome === "rpc_error"
+                  ? 502
+                  : result.outcome === "unexpected_server_error"
+                    ? 500
+                    : 503;
   return NextResponse.json({
     outcome: result.outcome,
     registryVersion: result.registryVersion,

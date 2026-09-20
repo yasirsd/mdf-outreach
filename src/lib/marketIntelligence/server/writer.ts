@@ -32,6 +32,8 @@ import type {
   MarketIngestionResult,
   MarketFetchLedgerRecordResult,
 } from "./types";
+import type { ProductTradeMapping } from "../types";
+import { mappingFitEligibility } from "../product";
 
 export { MarketIntelligenceServiceRoleConfigError };
 
@@ -132,8 +134,16 @@ class SupabaseMarketIntelligenceWriter implements MarketIntelligenceWriter {
     snapshot: ProductTradeMappingSnapshot,
   ): Promise<ProductTradeMappingSyncSummary> {
     const supabase = getMarketIntelligenceServiceRoleClient();
+    // Migration 0023's mdf.__validate_product_trade_mapping_row reads
+    // `p_row->>'mdf_product_id'`, `p_row->>'hs_revision'`, etc. — snake_case.
+    // The TypeScript registry uses camelCase, so serialising the raw
+    // snapshot object caused every SQL lookup to see NULL and the RPC
+    // to abort. Applied migrations 0022/0023 are immutable, so the
+    // adapter converts each mapping to the wire shape the SQL validator
+    // already expects.
+    const wirePayload = toSyncRpcPayload(snapshot);
     const { data, error } = await supabase.rpc("sync_product_trade_mappings", {
-      p_input: snapshot,
+      p_input: wirePayload,
     });
     if (error) throw new Error(scrub(error.message));
     const parsed = (data ?? {}) as Partial<ProductTradeMappingSyncSummary>;
@@ -147,6 +157,41 @@ class SupabaseMarketIntelligenceWriter implements MarketIntelligenceWriter {
       registryVersion: parsed.registryVersion ?? snapshot.registryVersion,
     };
   }
+}
+
+/**
+ * Adapter — transforms the TypeScript camelCase snapshot into the exact
+ * snake_case shape that migration 0023's per-row validator and INSERT
+ * read. Exported for tests only; production callers must go through
+ * `syncProductTradeMappings` on the writer.
+ */
+export function toSyncRpcPayload(snapshot: ProductTradeMappingSnapshot): {
+  registryVersion: string;
+  generatedAt: string;
+  mappings: Array<Record<string, unknown>>;
+} {
+  return {
+    registryVersion: snapshot.registryVersion,
+    generatedAt: snapshot.generatedAt,
+    mappings: snapshot.mappings.map(mappingToWireRow),
+  };
+}
+
+function mappingToWireRow(m: ProductTradeMapping): Record<string, unknown> {
+  const row: Record<string, unknown> = {
+    mdf_product_id: m.mdfProductId,
+    hs_revision: m.hsRevision,
+    hs_level: m.hsLevel,
+    hs_code: m.hsCode,
+    trade_label: m.tradeLabel,
+    mapping_kind: m.mappingKind,
+    mapping_confidence: m.mappingConfidence,
+    fit_eligibility: mappingFitEligibility(m.mappingKind),
+    scope_description: m.scopeDescription,
+  };
+  if (m.includedProductsNote !== undefined) row.included_products_note = m.includedProductsNote;
+  if (m.weight !== undefined) row.weight = m.weight;
+  return row;
 }
 
 let cachedWriter: MarketIntelligenceWriter | undefined;

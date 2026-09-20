@@ -195,7 +195,11 @@ describe("MI1C.1 syncMarketProductMappingsAction — authorisation gate", () => 
     expect(JSON.stringify(result)).not.toMatch(/SUPABASE_(?:SECRET_KEY|SERVICE_ROLE_KEY)/);
   });
 
-  it("writer/RPC failures are sanitized instead of exposing database details", async () => {
+  it("writer/RPC failures are classified and sanitized instead of exposing database details", async () => {
+    // MI1C.4 — the maintenance layer classifies the failure server-side
+    // (a plain `Error("permission denied ...")` shape maps to
+    // `database_permission_error`) and returns ONLY a sanitized fixed
+    // message; the raw PostgREST text must never leak to the caller.
     requireMdfSessionMock.mockResolvedValueOnce(ownerSession());
     syncProductTradeMappingsMock.mockRejectedValueOnce(
       new Error("PostgREST permission denied: secret internal detail"),
@@ -203,10 +207,26 @@ describe("MI1C.1 syncMarketProductMappingsAction — authorisation gate", () => 
     const action = await importAction();
     const result = await action();
     expect(result).toMatchObject({
-      outcome: "configuration_error",
-      message: "Market mapping synchronization could not be completed.",
+      outcome: "database_permission_error",
+      message:
+        "Market Intelligence writer role is missing execute permission on the sync operation.",
     });
     expect(JSON.stringify(result)).not.toMatch(/PostgREST|permission denied|secret internal detail/);
+  });
+
+  it("unclassified writer failures map to the generic unexpected_server_error message", async () => {
+    // MI1C.4 — anything the classifier can't attribute to a documented
+    // shape falls back to the previous generic "could not be completed"
+    // message under the `unexpected_server_error` outcome.
+    requireMdfSessionMock.mockResolvedValueOnce(ownerSession());
+    syncProductTradeMappingsMock.mockRejectedValueOnce(new Error("something odd"));
+    const action = await importAction();
+    const result = await action();
+    expect(result).toMatchObject({
+      outcome: "unexpected_server_error",
+      message: "Market mapping synchronization could not be completed.",
+    });
+    expect(JSON.stringify(result)).not.toMatch(/something odd/);
   });
 });
 
