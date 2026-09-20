@@ -1,0 +1,14 @@
+{
+  "year": 2023,
+  "exporter_id": "vnm",
+  "exporter_name": "Vietnam",
+  "importer_id": "svn",
+  "importer_name": "Slovenia",
+  "hs_code": "040110",
+  "product_name": "Milk (<1% Fat)",
+  "hs_revision": 5,
+  "value": 64.0,
+  "quantity": 0.015,
+  "unit_abbrevation": "mt",
+  "unit_name": "Metric Tonne"
+}

@@ -100,12 +100,14 @@ describe("MI1A free-only provider eligibility", () => {
     })).toEqual({ ok: false, reason: "unsupported_capability" });
   });
 
-  it("blocks persistent ingestion without verified service terms and storage approval", () => {
+  it("allows the verified BACI internal-storage boundary", () => {
     expect(checkFreeMarketProviderExecution(BACI_OEC_PROVIDER, {
       capability: "import_series", reporterCountry: "MY", hsRevision: "HS17", frequency: "annual",
       hasKey: true, quotaState: "unknown", persistentIngestion: true,
-    })).toEqual({ ok: false, reason: "licence_unverified" });
+    })).toEqual({ ok: true, quotaState: "unknown" });
+  });
 
+  it("blocks persistent ingestion without verified service terms and storage approval", () => {
     expect(checkFreeMarketProviderExecution(descriptor({
       license: {
         datasetSource: "Test dataset",
@@ -193,7 +195,9 @@ describe("MI1A BACI production descriptor", () => {
     expect(BACI_OEC_PROVIDER.license?.datasetLicenseName).toBe("Etalab Open Licence 2.0");
     expect(BACI_OEC_PROVIDER.license?.distributionService).toBe("OEC BotMarket");
     expect(BACI_OEC_PROVIDER.license?.distributionCatalogLicenseName).toBe("CC BY 4.0");
-    expect(BACI_OEC_PROVIDER.license?.serviceTermsVerified).toBe(false);
-    expect(BACI_OEC_PROVIDER.license?.storageAllowed).toBe(false);
+    expect(BACI_OEC_PROVIDER.license?.serviceTermsVerified).toBe(true);
+    expect(BACI_OEC_PROVIDER.license?.storageAllowed).toBe(true);
+    expect(BACI_OEC_PROVIDER.license?.redistributionAllowed).toBe(false);
+    expect(BACI_OEC_PROVIDER.license?.licenceVerifiedAt).toBe("2026-09-20T00:00:00.000Z");
   });
 });

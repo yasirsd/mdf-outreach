@@ -120,6 +120,10 @@ export interface MarketReadRepositoryScore {
 export interface MarketReadRepository {
   listActiveProductMappings(): Promise<MarketReadRepositoryProductMapping[]>;
   getSource(sourceId: string): Promise<MarketReadRepositorySource | undefined>;
+  getSourceByProviderDataset(
+    providerId: string,
+    datasetId: string,
+  ): Promise<MarketReadRepositorySource | undefined>;
   listAnnualObservations(
     countryAlpha2: CountryAlpha2,
     hsRevision: HsRevision,
@@ -130,6 +134,19 @@ export interface MarketReadRepository {
     hsRevision: HsRevision,
     hsCode: string,
     period: string,
+  ): Promise<MarketReadRepositoryObservation[]>;
+  listPartnerAnnualObservations(
+    countryAlpha2: CountryAlpha2,
+    partnerCountry: CountryAlpha2,
+    hsRevision: HsRevision,
+    hsCode: string,
+  ): Promise<MarketReadRepositoryObservation[]>;
+  listBilateralAnnualObservations(
+    countryAlpha2: CountryAlpha2,
+    hsRevision: HsRevision,
+    hsCode: string,
+    providerId: string,
+    datasetId: string,
   ): Promise<MarketReadRepositoryObservation[]>;
   listCurrentMetrics(
     countryAlpha2: CountryAlpha2,
@@ -190,6 +207,20 @@ class SupabaseMarketReadRepository implements MarketReadRepository {
     return data ? rowToSource(data) : undefined;
   }
 
+  async getSourceByProviderDataset(
+    providerId: string,
+    datasetId: string,
+  ): Promise<MarketReadRepositorySource | undefined> {
+    const { data, error } = await this.supabase
+      .from("market_intelligence_sources")
+      .select(SOURCE_COLS)
+      .eq("provider_id", providerId)
+      .eq("dataset_id", datasetId)
+      .maybeSingle();
+    if (error) throw error;
+    return data ? rowToSource(data) : undefined;
+  }
+
   async listAnnualObservations(
     countryAlpha2: CountryAlpha2,
     hsRevision: HsRevision,
@@ -223,6 +254,47 @@ class SupabaseMarketReadRepository implements MarketReadRepository {
       .eq("period", period)
       .not("partner_country", "is", null)
       .order("trade_value_usd", { ascending: false, nullsFirst: false });
+    if (error) throw error;
+    return (data ?? []).map(rowToObservation);
+  }
+
+  async listPartnerAnnualObservations(
+    countryAlpha2: CountryAlpha2,
+    partnerCountry: CountryAlpha2,
+    hsRevision: HsRevision,
+    hsCode: string,
+  ): Promise<MarketReadRepositoryObservation[]> {
+    const { data, error } = await this.supabase
+      .from("market_trade_observations")
+      .select(OBSERVATION_COLS)
+      .eq("reporter_country", countryAlpha2)
+      .eq("partner_country", partnerCountry)
+      .eq("hs_revision", hsRevision)
+      .eq("hs_code", hsCode)
+      .eq("frequency", "annual")
+      .order("period", { ascending: false });
+    if (error) throw error;
+    return (data ?? []).map(rowToObservation);
+  }
+
+  async listBilateralAnnualObservations(
+    countryAlpha2: CountryAlpha2,
+    hsRevision: HsRevision,
+    hsCode: string,
+    providerId: string,
+    datasetId: string,
+  ): Promise<MarketReadRepositoryObservation[]> {
+    const { data, error } = await this.supabase
+      .from("market_trade_observations")
+      .select(OBSERVATION_COLS)
+      .eq("provider_id", providerId)
+      .eq("dataset_id", datasetId)
+      .eq("reporter_country", countryAlpha2)
+      .eq("hs_revision", hsRevision)
+      .eq("hs_code", hsCode)
+      .eq("frequency", "annual")
+      .not("partner_country", "is", null)
+      .order("period", { ascending: true });
     if (error) throw error;
     return (data ?? []).map(rowToObservation);
   }
