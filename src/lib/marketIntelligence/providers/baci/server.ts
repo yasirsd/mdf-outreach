@@ -19,6 +19,8 @@ import {
   BaciProviderError,
   assertUniqueBaciRows,
   parseBaciQueryPage,
+  sanitizeUpstreamExcerpt,
+  type BaciErrorDiagnostic,
   type BaciQueryPage,
   type BaciRawRow,
 } from "./normalize";
@@ -80,6 +82,57 @@ function retryAfterIso(response: Response, now: Date): string | undefined {
   return Number.isFinite(parsed) ? new Date(parsed).toISOString() : undefined;
 }
 
+async function readSanitizedUpstream(response: Response): Promise<{
+  body?: string;
+  contentType?: string;
+  providerRequestId?: string;
+}> {
+  const contentType = response.headers.get("content-type") ?? undefined;
+  const providerRequestId =
+    response.headers.get("x-request-id") ??
+    response.headers.get("x-oec-request-id") ??
+    undefined;
+  try {
+    const raw = await response.text();
+    if (!raw) return { contentType, providerRequestId };
+    if (contentType?.includes("application/json")) {
+      try {
+        const parsed = JSON.parse(raw) as unknown;
+        const excerpt =
+          parsed && typeof parsed === "object" && !Array.isArray(parsed)
+            ? (() => {
+                const rec = parsed as Record<string, unknown>;
+                const detail = rec.detail ?? rec.message ?? rec.error ?? rec.code;
+                if (typeof detail === "string") return detail;
+                try { return JSON.stringify(rec); } catch { return raw; }
+              })()
+            : raw;
+        return { body: sanitizeUpstreamExcerpt(excerpt), contentType, providerRequestId };
+      } catch {
+        return { body: sanitizeUpstreamExcerpt(raw), contentType, providerRequestId };
+      }
+    }
+    return { body: sanitizeUpstreamExcerpt(raw), contentType, providerRequestId };
+  } catch {
+    return { contentType, providerRequestId };
+  }
+}
+
+function httpDiagnostic(
+  response: Response,
+  category: BaciErrorDiagnostic["category"],
+  sanitized: Awaited<ReturnType<typeof readSanitizedUpstream>>,
+): BaciErrorDiagnostic {
+  return {
+    stage: "provider_http",
+    httpStatus: response.status,
+    category,
+    responseContentType: sanitized.contentType,
+    providerRequestId: sanitized.providerRequestId,
+    sanitizedBody: sanitized.body,
+  };
+}
+
 async function fetchPage(
   spec: BaciQuerySpec,
   offset: number,
@@ -99,43 +152,101 @@ async function fetchPage(
       signal: controller.signal,
     });
     if (response.status === 429) {
+      const sanitized = await readSanitizedUpstream(response);
       throw new BaciProviderError(
         "quota_exhausted",
         "BACI/OEC free access is temporarily unavailable",
         retryAfterIso(response, new Date()),
+        undefined,
+        0,
+        httpDiagnostic(response, "rate_limited", sanitized),
       );
     }
-    if (response.status === 400 || response.status === 404 || response.status === 422) {
-      throw new BaciProviderError("invalid_request", "BACI/OEC rejected the controlled query");
+    if (response.status === 401 || response.status === 403) {
+      const sanitized = await readSanitizedUpstream(response);
+      throw new BaciProviderError(
+        "invalid_request",
+        "BACI/OEC rejected the controlled query credentials",
+        undefined, undefined, 0,
+        httpDiagnostic(response, "auth_error", sanitized),
+      );
+    }
+    if (response.status === 400 || response.status === 422) {
+      const sanitized = await readSanitizedUpstream(response);
+      throw new BaciProviderError(
+        "invalid_request",
+        "BACI/OEC rejected the controlled query",
+        undefined, undefined, 0,
+        httpDiagnostic(response, "invalid_request", sanitized),
+      );
+    }
+    if (response.status === 404) {
+      const sanitized = await readSanitizedUpstream(response);
+      throw new BaciProviderError(
+        "invalid_request",
+        "BACI/OEC dataset endpoint not found",
+        undefined, undefined, 0,
+        httpDiagnostic(response, "not_found", sanitized),
+      );
     }
     if (!response.ok) {
-      throw new BaciProviderError("provider_error", "BACI/OEC returned an unsuccessful response");
+      const sanitized = await readSanitizedUpstream(response);
+      throw new BaciProviderError(
+        "provider_error",
+        "BACI/OEC returned an unsuccessful response",
+        undefined, undefined, 0,
+        httpDiagnostic(response, "upstream_error", sanitized),
+      );
     }
+    const contentType = response.headers.get("content-type") ?? undefined;
     let payload: unknown;
     try {
       payload = await response.json();
     } catch {
-      throw new BaciProviderError("provider_error", "BACI/OEC returned invalid JSON");
+      throw new BaciProviderError(
+        "provider_error", "BACI/OEC returned invalid JSON",
+        undefined, undefined, 0,
+        { stage: "provider_json", category: "invalid_json", responseContentType: contentType },
+      );
     }
     return parseBaciQueryPage(payload, spec, offset);
   } catch (error) {
     if (error instanceof BaciProviderError || error instanceof BaciOecConfigError) throw error;
     if (error && typeof error === "object" && "name" in error && error.name === "AbortError") {
-      throw new BaciProviderError("timeout", "BACI/OEC request timed out");
+      throw new BaciProviderError(
+        "timeout", "BACI/OEC request timed out",
+        undefined, undefined, 0,
+        { stage: "provider_timeout", category: "timeout" },
+      );
     }
-    throw new BaciProviderError("provider_error", "BACI/OEC request failed");
+    throw new BaciProviderError(
+      "provider_error", "BACI/OEC request failed",
+      undefined, undefined, 0,
+      { stage: "provider_network", category: "network_error" },
+    );
   } finally {
     clearTimeout(timeout);
   }
 }
 
 function partial(reason: string, rowsReceived: number): BaciProviderError {
+  const category = ((): BaciErrorDiagnostic["category"] => {
+    switch (reason) {
+      case "proof_budget_exceeded": return "proof_budget_exceeded";
+      case "row_count_mismatch": return "row_count_mismatch";
+      case "pagination_gap": return "pagination_gap";
+      case "total_count_changed": return "total_count_changed";
+      case "duplicate_rows": return "duplicate_rows";
+      default: return "schema_error";
+    }
+  })();
   return new BaciProviderError(
     "partial",
     "BACI/OEC result could not be proven complete",
     undefined,
     reason,
     rowsReceived,
+    { stage: "provider_pagination", category },
   );
 }
 
