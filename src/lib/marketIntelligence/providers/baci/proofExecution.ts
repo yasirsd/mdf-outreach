@@ -64,7 +64,7 @@ function persistedRowsAreComplete(
     if (
       row.providerId !== "baci_oec" ||
       row.datasetId !== BACI_OEC_DATASET_ID ||
-      row.reporterCountry !== "MY" ||
+      row.reporterCountry !== spec.reporterCountry ||
       row.partnerCountry === null ||
       row.tradeFlow !== "import" ||
       row.hsRevision !== "HS17" ||
@@ -82,9 +82,10 @@ function persistedRowsAreComplete(
 
 async function readBilateralRows(
   repository: ControlledBaciProofDependencies["repository"],
+  reporter: BaciQuerySpec["reporterCountry"],
 ): Promise<MarketReadRepositoryObservation[]> {
   return repository.listBilateralAnnualObservations(
-    "MY",
+    reporter,
     "HS17",
     "090421",
     "baci_oec",
@@ -96,8 +97,22 @@ async function readBilateralRows(
 export async function executeControlledMalaysiaChilliProof(
   dependencies: ControlledBaciProofDependencies,
 ): Promise<ControlledBaciProofResult> {
+  return executeControlledChilliProof(buildMalaysiaChilliProofQuery(), dependencies);
+}
+
+/**
+ * MI1F — cohort-generic execution primitive. Mirrors the Malaysia proof
+ * but accepts any BaciQuerySpec built with the same HS proxy contract.
+ * Malaysia continues to call this via `executeControlledMalaysiaChilliProof`.
+ * The reporter, importer, and years all come from `spec`; behaviour is
+ * otherwise identical to the MI1D proof, including the ledger-first
+ * cache decision and the read-back completeness gate.
+ */
+export async function executeControlledChilliProof(
+  spec: BaciQuerySpec,
+  dependencies: ControlledBaciProofDependencies,
+): Promise<ControlledBaciProofResult> {
   const now = dependencies.now ?? (() => new Date());
-  const spec = buildMalaysiaChilliProofQuery();
   const execution = await fetchBaciQueryWithLedger(spec, {
     env: dependencies.env,
     fetchImpl: dependencies.fetchImpl,
@@ -153,7 +168,7 @@ export async function executeControlledMalaysiaChilliProof(
     }
   }
 
-  const persisted = await readBilateralRows(dependencies.repository);
+  const persisted = await readBilateralRows(dependencies.repository, spec.reporterCountry);
   if (!persistedRowsAreComplete(persisted, expectedRows, spec)) {
     return { outcome: "cache_incomplete" };
   }

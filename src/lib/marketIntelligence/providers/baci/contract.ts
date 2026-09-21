@@ -48,16 +48,32 @@ function inclusiveYears(start: number, end: number): number[] {
  * every page shares this scope and fingerprint.
  */
 export function buildMalaysiaChilliProofQuery(): BaciQuerySpec {
-  const importerId = toBaciCountryId("MY");
   const years = inclusiveYears(BACI_NATIVE_HS17_START_YEAR, BACI_LATEST_VERIFIED_YEAR);
+  return buildCountryChilliQuery("MY", years);
+}
+
+/**
+ * MI1F — cohort-generic country query. Same HS 090421 trade proxy scope
+ * as the MI1D Malaysia proof, but reporter/importer + analytical years
+ * are supplied. `years` MUST be the current provider-supported analytical
+ * window; the orchestrator obtains it from `fetchBaciYearMembers()`.
+ * Freezes the returned spec so pagination cannot mutate it.
+ */
+export function buildCountryChilliQuery(
+  reporterCountry: CountryAlpha2,
+  years: readonly number[],
+): BaciQuerySpec {
+  if (!Number.isInteger(years[0]) || years.length === 0) {
+    throw new Error("buildCountryChilliQuery requires a non-empty year list");
+  }
   return Object.freeze({
     kind: "canonical_bilateral" as const,
     capability: "origin_breakdown" as const,
-    reporterCountry: "MY",
+    reporterCountry,
     partnerCountry: null,
-    years,
+    years: [...years].sort((a, b) => a - b),
     hsCode: MALAYSIA_CHILLI_HS17_CODE,
-    importerId,
+    importerId: toBaciCountryId(reporterCountry),
     limit: BACI_OEC_QUERY_LIMIT,
   });
 }
