@@ -1,4 +1,5 @@
 import { cagr, yearOverYear } from "../../series";
+import { canonicalizeBaciNumber } from "./numeric";
 
 export interface BaciReportObservation {
   period: string;
@@ -35,23 +36,36 @@ export interface BaciDevelopmentReport {
 
 function sumComplete(values: readonly (number | null)[]): number | null {
   if (values.length === 0 || values.some((value) => value === null)) return null;
-  return (values as readonly number[]).reduce((sum, value) => sum + value, 0);
+  return canonicalizeBaciNumber(
+    (values as readonly number[]).reduce((sum, value) => sum + value, 0),
+  );
 }
 
 function sumCompatibleTonnes(rows: readonly BaciReportObservation[]): number | null {
   if (rows.length === 0 || rows.some((row) => row.quantity === null || row.quantityUnit !== "tonne")) {
     return null;
   }
-  return (rows as readonly (BaciReportObservation & { quantity: number })[])
-    .reduce((sum, row) => sum + row.quantity, 0);
+  return canonicalizeBaciNumber(
+    (rows as readonly (BaciReportObservation & { quantity: number })[])
+      .reduce((sum, row) => sum + row.quantity, 0),
+  );
 }
 
 /** Derive every analytical view from one complete set of raw bilateral rows. */
 export function buildBaciDevelopmentReport(
   bilateral: readonly BaciReportObservation[],
 ): BaciDevelopmentReport {
+  const canonicalBilateral = bilateral.map((row): BaciReportObservation => ({
+    ...row,
+    tradeValueUsd: typeof row.tradeValueUsd === "number"
+      ? canonicalizeBaciNumber(row.tradeValueUsd)
+      : row.tradeValueUsd,
+    quantity: typeof row.quantity === "number"
+      ? canonicalizeBaciNumber(row.quantity)
+      : row.quantity,
+  }));
   const byYear = new Map<string, BaciReportObservation[]>();
-  for (const row of bilateral) {
+  for (const row of canonicalBilateral) {
     const bucket = byYear.get(row.period) ?? [];
     bucket.push(row);
     byYear.set(row.period, bucket);
@@ -63,7 +77,7 @@ export function buildBaciDevelopmentReport(
       tradeValueUsd: sumComplete(rows.map((row) => row.tradeValueUsd ?? null)),
       quantityTonnes: sumCompatibleTonnes(rows),
     }));
-  const indiaRows = bilateral
+  const indiaRows = canonicalBilateral
     .filter((row) => row.partnerCountry === "IN")
     .sort((a, b) => a.period.localeCompare(b.period));
   const annualImportsFromIndia = indiaRows.map((row) => ({

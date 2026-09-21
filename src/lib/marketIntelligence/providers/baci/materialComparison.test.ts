@@ -60,7 +60,7 @@ function comparison(
   return compareBaciObservationMaterial(normalized, persisted, rawRows);
 }
 
-describe("MI1F.2 BACI observation material comparator", () => {
+describe("MI1F.3 BACI observation material comparator", () => {
   it("reports all exact matches", () => {
     const result = comparison([raw()]);
     expect(result).toMatchObject({
@@ -70,30 +70,72 @@ describe("MI1F.2 BACI observation material comparator", () => {
       mismatches: 0,
       providerOnly: 0,
       persistedOnly: 0,
+      representationNoiseRows: 0,
     });
     expect(result.examples).toEqual([]);
   });
 
-  it("attributes a trade-value mismatch to the raw provider value", () => {
+  it("attributes a genuine trade-value mismatch to the canonical provider value", () => {
     const result = comparison([raw()], { tradeValueUsd: 1200 });
     expect(result.mismatchFieldCounts.trade_value_usd).toBe(1);
     expect(result.examples[0]).toMatchObject({
       differingFields: ["trade_value_usd"],
-      differenceOrigins: { trade_value_usd: "raw_provider_value_differs" },
+      differenceOrigins: { trade_value_usd: "canonical_provider_value_differs" },
       persisted: { trade_value_usd: 1200 },
       provider: { trade_value_usd: 1234.5 },
       rawProvider: { trade_value_usd: 1234.5 },
     });
     expect(result.mismatchOriginCounts).toEqual({
-      raw_provider_value_differs: 1,
+      canonical_provider_value_differs: 1,
       normalization_or_derived_value_differs: 0,
     });
   });
 
-  it("attributes a quantity mismatch to the raw provider value", () => {
+  it("attributes a genuine quantity mismatch to the canonical provider value", () => {
     const result = comparison([raw()], { quantity: 6 });
     expect(result.mismatchFieldCounts.quantity).toBe(1);
-    expect(result.examples[0]?.differenceOrigins?.quantity).toBe("raw_provider_value_differs");
+    expect(result.examples[0]?.differenceOrigins?.quantity).toBe("canonical_provider_value_differs");
+  });
+
+  it("classifies raw trade-value noise as an exact canonical match", () => {
+    const result = comparison([raw({ value: 675.9999999999999 })], { tradeValueUsd: 676 });
+    expect(result).toMatchObject({
+      exactMatches: 1,
+      mismatches: 0,
+      representationNoiseRows: 1,
+      representationNoiseFieldCounts: { trade_value_usd: 1, quantity: 0 },
+      mismatchFieldCounts: { trade_value_usd: 0 },
+    });
+    expect(result.representationNoiseExamples[0]).toMatchObject({
+      fields: ["trade_value_usd"],
+      rawProvider: { trade_value_usd: 675.9999999999999 },
+      canonicalProvider: { trade_value_usd: 676 },
+    });
+    expect(result.examples).toEqual([]);
+  });
+
+  it("classifies raw quantity noise as an exact canonical match", () => {
+    const result = comparison(
+      [raw({ quantity: 0.052000000000000005 })],
+      { quantity: 0.052 },
+    );
+    expect(result).toMatchObject({
+      exactMatches: 1,
+      mismatches: 0,
+      representationNoiseRows: 1,
+      representationNoiseFieldCounts: { trade_value_usd: 0, quantity: 1 },
+      mismatchFieldCounts: { quantity: 0 },
+    });
+  });
+
+  it("keeps genuine canonical provider revisions as material mismatches", () => {
+    const tradeValue = comparison([raw({ value: 677 })], { tradeValueUsd: 676 });
+    expect(tradeValue).toMatchObject({ mismatches: 1, exactMatches: 0 });
+    expect(tradeValue.mismatchFieldCounts.trade_value_usd).toBe(1);
+
+    const quantity = comparison([raw({ quantity: 0.053 })], { quantity: 0.052 });
+    expect(quantity).toMatchObject({ mismatches: 1, exactMatches: 0 });
+    expect(quantity.mismatchFieldCounts.quantity).toBe(1);
   });
 
   it("keeps null distinct from numeric zero", () => {

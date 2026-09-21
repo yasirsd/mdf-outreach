@@ -74,8 +74,14 @@ function source(): MarketReadRepositorySource {
   };
 }
 
-function dependencies(overrides: Partial<MalaysiaMaterialDiagnosticDependencies> = {}) {
-  const rows = [raw()];
+function dependencies(
+  overrides: Partial<MalaysiaMaterialDiagnosticDependencies> = {},
+  rows: BaciWireRow[] = [raw()],
+  persistedRows: MarketReadRepositoryMaterialObservation[] = normalizeBaciBilateralRows(
+    rows,
+    NOW.toISOString(),
+  ).map((row) => persisted(row)),
+) {
   const forbiddenWrites = {
     ingestTradeObservation: vi.fn(),
     recordFetchResult: vi.fn(),
@@ -102,7 +108,7 @@ function dependencies(overrides: Partial<MalaysiaMaterialDiagnosticDependencies>
         registryVersion: "mi-product-map-v1",
       }],
       getSourceByProviderDataset: async () => source(),
-      listBilateralAnnualMaterialObservations: async () => [persisted()],
+      listBilateralAnnualMaterialObservations: async () => persistedRows,
       ...forbiddenWrites,
     }),
     fetchYears: async () => ({ years: [2024], outcome: "ok" as const }),
@@ -138,6 +144,24 @@ describe("MI1F.2 Malaysia material diagnostic service", () => {
       mismatches: 0,
     });
     for (const write of Object.values(forbiddenWrites)) expect(write).not.toHaveBeenCalled();
+  });
+
+  it("reports raw floating noise informationally without a material mismatch", async () => {
+    const noisy = {
+      ...raw(),
+      value: 675.9999999999999,
+      quantity: 0.052000000000000005,
+    };
+    const { deps } = dependencies({}, [noisy]);
+    const result = await runMalaysiaMaterialDiagnostic(deps);
+    expect(result).toMatchObject({
+      outcome: "comparison_complete",
+      exactMatches: 1,
+      mismatches: 0,
+      representationNoiseRows: 1,
+      representationNoiseFieldCounts: { trade_value_usd: 1, quantity: 1 },
+      mismatchFieldCounts: { trade_value_usd: 0, quantity: 0 },
+    });
   });
 
   it("reports two transport requests for a two-page diagnostic", async () => {

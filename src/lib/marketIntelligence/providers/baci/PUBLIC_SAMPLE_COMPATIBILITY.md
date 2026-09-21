@@ -15,5 +15,7 @@ canonical MDF observations use `HS17` from the `baci-hs17` dataset identity.
 
 The wire field is deliberately spelled `unit_abbrevation`. It is validated
 before normalization. A non-null quantity is accepted as metric tonnes only
-when that literal field is `mt`; missing quantity remains `null`, and raw
-numeric precision is not rounded during normalization.
+when that literal field is `mt`; missing quantity remains `null`. Raw numeric
+values remain available as provider evidence, while normalized values pass
+through the provider-local IEEE-754 decimal-noise stabilizer. The stabilizer
+does not impose a currency or quantity scale.

@@ -67,7 +67,7 @@ describe("MI1D.2 BACI public sample compatibility", () => {
     expect(observation.hsRevision).not.toBe("5");
   });
 
-  it("preserves quantity precision, null, and explicit zero without rounding or coercion", () => {
+  it("preserves raw evidence, then canonicalizes only representation noise", () => {
     const precise = parseBaciWireRow({ ...fixture(), quantity: 0.013999999999999999 });
     const small = parseBaciWireRow({ ...fixture(), quantity: 0.003 });
     const missing = parseBaciWireRow({
@@ -81,6 +81,10 @@ describe("MI1D.2 BACI public sample compatibility", () => {
     expect(small.quantity).toBe(0.003);
     expect(missing.quantity).toBeNull();
     expect(zero.quantity).toBe(0);
+    expect(normalizeBaciBilateralRows([precise], "2026-09-20T12:00:00.000Z")[0])
+      .toMatchObject({ quantity: 0.014, quantityUnit: "tonne" });
+    expect(normalizeBaciBilateralRows([small], "2026-09-20T12:00:00.000Z")[0])
+      .toMatchObject({ quantity: 0.003, quantityUnit: "tonne" });
     expect(normalizeBaciBilateralRows([missing], "2026-09-20T12:00:00.000Z")[0])
       .toMatchObject({ quantity: null, quantityUnit: null });
     expect(normalizeBaciBilateralRows([zero], "2026-09-20T12:00:00.000Z")[0])

@@ -16,6 +16,7 @@ import {
   BaciProviderError,
   normalizeBaciBilateralRows,
   parseBaciQueryPage,
+  parseBaciWireRow,
   type BaciRawRow,
 } from "./normalize";
 import { buildBaciDevelopmentReport } from "./report";
@@ -126,6 +127,20 @@ describe("MI1D.1 BACI page parsing and raw normalization", () => {
     expect(observations[0]?.metadata).toMatchObject({ source_row_kind: "bilateral_raw" });
   });
 
+  it("canonicalizes observed BACI numeric noise while preserving null", () => {
+    const observations = normalizeBaciBilateralRows([
+      row({ year: 2023, value: 675.9999999999999, quantity: 0.052000000000000005 }),
+      row({ year: 2024, value: 240914.00000000003, quantity: null }),
+    ], "2026-09-20T12:00:00.000Z");
+    expect(observations[0]).toMatchObject({ tradeValueUsd: 676, quantity: 0.052 });
+    expect(observations[1]).toMatchObject({ tradeValueUsd: 240914, quantity: null });
+  });
+
+  it("retains the existing rejection of negative provider values", () => {
+    expect(() => parseBaciWireRow(row({ value: -1 }))).toThrow(BaciProviderError);
+    expect(() => parseBaciWireRow(row({ quantity: -0.001 }))).toThrow(BaciProviderError);
+  });
+
   it("rejects duplicate provider rows before persistence", () => {
     expect(() => normalizeBaciBilateralRows([row(), row()], "2026-09-20T12:00:00.000Z"))
       .toThrow(/duplicate bilateral/);
@@ -181,6 +196,22 @@ describe("MI1D.1 report derivation from the canonical bilateral set", () => {
       totalImportQuantityTonnes: null,
     });
   });
+
+  it("keeps aggregate outputs free of binary representation tails", () => {
+    expect(buildBaciDevelopmentReport([
+      {
+        period: "2024", partnerCountry: "IN", tradeValueUsd: 0.1,
+        quantity: 36346.7, quantityUnit: "tonne",
+      },
+      {
+        period: "2024", partnerCountry: "CN", tradeValueUsd: 0.2,
+        quantity: 0.05700000000000001, quantityUnit: "tonne",
+      },
+    ])).toMatchObject({
+      totalImportValueUsd: 0.3,
+      totalImportQuantityTonnes: 36346.757,
+    });
+  });
 });
 
 describe("MI1D.1 provenance and scope boundaries", () => {
@@ -210,6 +241,18 @@ describe("MI1D.1 provenance and scope boundaries", () => {
       trade_flow: "import",
       hs_revision: "HS17",
       hs_code: "090421",
+    });
+  });
+
+  it("canonicalizes numeric fields at the persistence-payload boundary", () => {
+    const normalized = normalizeBaciBilateralRows([row()], "2026-09-20T12:00:00.000Z")[0]!;
+    expect(toMarketTradeObservationBody({
+      ...normalized,
+      tradeValueUsd: 675.9999999999999,
+      quantity: 0.052000000000000005,
+    })).toMatchObject({
+      trade_value_usd: 676,
+      quantity: 0.052,
     });
   });
 

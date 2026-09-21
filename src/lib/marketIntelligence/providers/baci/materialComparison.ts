@@ -4,6 +4,7 @@ import type {
 import type { MarketTradeObservation } from "../../types";
 import { fromBaciCountryId } from "./country";
 import type { BaciWireRow } from "./normalize";
+import { canonicalizeBaciNumber } from "./numeric";
 
 export const MATERIAL_FIELDS = [
   "trade_value_usd",
@@ -17,6 +18,8 @@ export const MATERIAL_FIELDS = [
 
 export type MaterialField = typeof MATERIAL_FIELDS[number];
 export type MaterialValue = number | string | null;
+export const REPRESENTATION_NOISE_FIELDS = ["trade_value_usd", "quantity"] as const;
+export type RepresentationNoiseField = typeof REPRESENTATION_NOISE_FIELDS[number];
 
 export interface ObservationIdentityDiagnostic {
   provider_id: string;
@@ -31,8 +34,15 @@ export interface ObservationIdentityDiagnostic {
 }
 
 export type DifferenceOrigin =
-  | "raw_provider_value_differs"
+  | "canonical_provider_value_differs"
   | "normalization_or_derived_value_differs";
+
+export interface RepresentationNoiseExample {
+  identity: ObservationIdentityDiagnostic;
+  fields: RepresentationNoiseField[];
+  rawProvider: Partial<Record<RepresentationNoiseField, number>>;
+  canonicalProvider: Partial<Record<RepresentationNoiseField, number>>;
+}
 
 export interface MaterialComparisonExample {
   kind: "material_mismatch" | "provider_only" | "persisted_only";
@@ -53,6 +63,9 @@ export interface MaterialComparisonSummary {
   persistedOnly: number;
   mismatchFieldCounts: Record<MaterialField, number>;
   mismatchOriginCounts: Record<DifferenceOrigin, number>;
+  representationNoiseRows: number;
+  representationNoiseFieldCounts: Record<RepresentationNoiseField, number>;
+  representationNoiseExamples: RepresentationNoiseExample[];
   examples: MaterialComparisonExample[];
 }
 
@@ -164,20 +177,33 @@ function rawEvidence(row: BaciWireRow | undefined): Record<MaterialField, Materi
   };
 }
 
-function differenceOrigin(
-  field: MaterialField,
-  raw: BaciWireRow | undefined,
-  persistedValue: MaterialValue,
-): DifferenceOrigin {
-  if (field === "trade_value_usd" && raw &&
-      !materialValuesEqual(field, raw.value, persistedValue)) {
-    return "raw_provider_value_differs";
-  }
-  if (field === "quantity" && raw &&
-      !materialValuesEqual(field, raw.quantity, persistedValue)) {
-    return "raw_provider_value_differs";
+function differenceOrigin(field: MaterialField): DifferenceOrigin {
+  if (field === "trade_value_usd" || field === "quantity") {
+    return "canonical_provider_value_differs";
   }
   return "normalization_or_derived_value_differs";
+}
+
+function rawNumericValue(
+  field: RepresentationNoiseField,
+  raw: BaciWireRow,
+): number | null {
+  return field === "trade_value_usd" ? raw.value : raw.quantity;
+}
+
+function representationNoiseFields(
+  raw: BaciWireRow | undefined,
+  provider: ComparableRow,
+): RepresentationNoiseField[] {
+  if (!raw) return [];
+  return REPRESENTATION_NOISE_FIELDS.filter((field) => {
+    const rawValue = rawNumericValue(field, raw);
+    const canonicalValue = provider.material[field];
+    return typeof rawValue === "number" &&
+      typeof canonicalValue === "number" &&
+      rawValue !== canonicalValue &&
+      canonicalizeBaciNumber(rawValue) === canonicalValue;
+  });
 }
 
 function indexComparable(rows: readonly ComparableRow[]): Map<string, ComparableRow> {
@@ -205,9 +231,15 @@ export function compareBaciObservationMaterial(
   ) as Record<MaterialField, number>;
   const examples: MaterialComparisonExample[] = [];
   const mismatchOriginCounts: Record<DifferenceOrigin, number> = {
-    raw_provider_value_differs: 0,
+    canonical_provider_value_differs: 0,
     normalization_or_derived_value_differs: 0,
   };
+  const representationNoiseFieldCounts: Record<RepresentationNoiseField, number> = {
+    trade_value_usd: 0,
+    quantity: 0,
+  };
+  const representationNoiseExamples: RepresentationNoiseExample[] = [];
+  let representationNoiseRows = 0;
   let exactMatches = 0;
   let mismatches = 0;
   let providerOnly = 0;
@@ -217,6 +249,28 @@ export function compareBaciObservationMaterial(
   for (const key of keys) {
     const providerRow = provider.get(key);
     const persistedRow = persisted.get(key);
+    const rawRow = raw.get(key);
+    if (providerRow) {
+      const noiseFields = representationNoiseFields(rawRow, providerRow);
+      if (noiseFields.length > 0) {
+        representationNoiseRows += 1;
+        const rawProvider: RepresentationNoiseExample["rawProvider"] = {};
+        const canonicalProvider: RepresentationNoiseExample["canonicalProvider"] = {};
+        for (const field of noiseFields) {
+          representationNoiseFieldCounts[field] += 1;
+          rawProvider[field] = rawNumericValue(field, rawRow!)!;
+          canonicalProvider[field] = providerRow.material[field] as number;
+        }
+        if (representationNoiseExamples.length < exampleLimit) {
+          representationNoiseExamples.push({
+            identity: providerRow.identity,
+            fields: noiseFields,
+            rawProvider,
+            canonicalProvider,
+          });
+        }
+      }
+    }
     if (!providerRow) {
       persistedOnly += 1;
       if (examples.length < exampleLimit) {
@@ -237,7 +291,7 @@ export function compareBaciObservationMaterial(
           identity: providerRow.identity,
           differingFields: [],
           provider: providerRow.material,
-          rawProvider: rawEvidence(raw.get(key)),
+          rawProvider: rawEvidence(rawRow),
         });
       }
       continue;
@@ -251,11 +305,10 @@ export function compareBaciObservationMaterial(
       continue;
     }
     mismatches += 1;
-    const rawRow = raw.get(key);
     const origins: Partial<Record<MaterialField, DifferenceOrigin>> = {};
     for (const field of differingFields) {
       mismatchFieldCounts[field] += 1;
-      const origin = differenceOrigin(field, rawRow, persistedRow.material[field]);
+      const origin = differenceOrigin(field);
       origins[field] = origin;
       mismatchOriginCounts[origin] += 1;
     }
@@ -287,6 +340,9 @@ export function compareBaciObservationMaterial(
     persistedOnly,
     mismatchFieldCounts,
     mismatchOriginCounts,
+    representationNoiseRows,
+    representationNoiseFieldCounts,
+    representationNoiseExamples,
     examples,
   };
 }

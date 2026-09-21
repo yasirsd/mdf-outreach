@@ -5,6 +5,7 @@ import {
   type BaciQuerySpec,
 } from "./contract";
 import { BaciCountryCodeError, fromBaciCountryId } from "./country";
+import { canonicalizeBaciNumber } from "./numeric";
 
 export type BaciFetchOutcome =
   | "partial"
@@ -386,8 +387,8 @@ export function normalizeBaciBilateralRows(
     hsCode: row.hs_code,
     frequency: "annual",
     period: String(row.year),
-    tradeValueUsd: row.value,
-    quantity: row.quantity,
+    tradeValueUsd: canonicalizeBaciNumber(row.value),
+    quantity: row.quantity === null ? null : canonicalizeBaciNumber(row.quantity),
     quantityUnit: row.quantity === null ? null : "tonne",
     netWeightKg: null,
     sourcePeriod: String(row.year),

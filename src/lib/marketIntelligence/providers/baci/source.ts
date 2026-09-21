@@ -8,6 +8,7 @@ import type {
 import type { MarketTradeObservation } from "../../types";
 import { BACI_OEC_PROVIDER } from "../../providers";
 import { BACI_OEC_DATASET_ID, BACI_OEC_DATASET_PAGE } from "./contract";
+import { canonicalizeBaciNumber } from "./numeric";
 
 const licence = BACI_OEC_PROVIDER.license!;
 
@@ -63,8 +64,12 @@ export function toMarketTradeObservationBody(
     hs_code: row.hsCode,
     frequency: row.frequency,
     period: row.period,
-    trade_value_usd: row.tradeValueUsd,
-    quantity: row.quantity,
+    trade_value_usd: row.tradeValueUsd == null
+      ? row.tradeValueUsd
+      : canonicalizeBaciNumber(row.tradeValueUsd),
+    quantity: row.quantity == null
+      ? row.quantity
+      : canonicalizeBaciNumber(row.quantity),
     quantity_unit: row.quantityUnit,
     net_weight_kg: row.netWeightKg,
     source_period: row.sourcePeriod,

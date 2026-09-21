@@ -87,7 +87,7 @@ describe("MI1D.1 controlled proof orchestration", () => {
     const rows = [
       providerRow(2023, "ind", 7, 1),
       providerRow(2023, "chn", 3, 1),
-      providerRow(2024, "ind", 8, 2),
+      providerRow(2024, "ind", 675.9999999999999, 0.052000000000000005),
       providerRow(2024, "chn", 12, 2),
     ];
     const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ rows, total: rows.length }), {
@@ -108,16 +108,17 @@ describe("MI1D.1 controlled proof orchestration", () => {
       observations: { created: 4, existing: 0 },
       report: {
         latestAvailableYear: "2024",
-        totalImportValueUsd: 20,
-        totalImportQuantityTonnes: 4,
-        indiaImportValueUsd: 8,
-        indiaShare: 0.4,
-        indiaRank: 2,
+        totalImportValueUsd: 688,
+        totalImportQuantityTonnes: 2.052,
+        indiaImportValueUsd: 676,
+        indiaRank: 1,
       },
     });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     expect(writer.ingestTradeObservation).toHaveBeenCalledTimes(4);
     expect(stored.every((item) => item.partnerCountry !== null)).toBe(true);
+    expect(stored.find((item) => item.period === "2024" && item.partnerCountry === "IN"))
+      .toMatchObject({ tradeValueUsd: 676, quantity: 0.052 });
     expect(ledgerRecords).toHaveLength(1);
     expect(ledgerRecords[0]).toMatchObject({ outcome: "success", rows_received: 4 });
     expect(eventOrder.indexOf("source")).toBeLessThan(eventOrder.indexOf("observation"));
