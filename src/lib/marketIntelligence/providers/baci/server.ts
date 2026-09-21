@@ -42,6 +42,8 @@ export interface BaciHttpOptions {
   env?: NodeJS.ProcessEnv;
   quotaState?: MarketProviderQuotaState;
   timeoutMs?: number;
+  /** False only for explicitly read-only diagnostics that never persist rows. */
+  persistentIngestion?: boolean;
 }
 
 export interface BaciCompleteQueryResult {
@@ -66,7 +68,7 @@ function assertEligible(spec: BaciQuerySpec, options: BaciHttpOptions): string {
     frequency: "annual",
     hasKey: true,
     quotaState: options.quotaState ?? "unknown",
-    persistentIngestion: true,
+    persistentIngestion: options.persistentIngestion ?? true,
   });
   return key;
 }

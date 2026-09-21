@@ -29,6 +29,11 @@ import {
   buildCountryChilliQuery,
   baciQueryFingerprint,
 } from "../providers/baci/contract";
+import { createBaciProviderRequestCounter } from "../providers/baci/requestAccounting";
+import type {
+  MarketReadRepositoryObservation,
+  MarketReadRepositorySource,
+} from "../marketReadRepository";
 import { toBaciCountryId } from "../providers/baci/country";
 import {
   fetchBaciImporterMembers,
@@ -63,7 +68,8 @@ export type CohortFetchOutcome =
   | "unexpected_error";
 
 export type CountryClassification =
-  | "complete_fresh"
+  | "complete_fresh_exact"
+  | "complete_fresh_compatible"
   | "needs_fetch"
   | "unavailable"
   | "blocked"
@@ -123,6 +129,19 @@ export interface CohortRepositoryLike {
   listRecentLedgerEntriesForFingerprint: (
     providerId: string, datasetId: string, queryFingerprint: string, limit?: number,
   ) => Promise<MarketProviderFetchLedgerEntry[]>;
+  listRecentLedgerEntriesForReporter: (
+    providerId: string, datasetId: string, reporterCountry: CountryAlpha2, limit?: number,
+  ) => Promise<MarketProviderFetchLedgerEntry[]>;
+  getSourceByProviderDataset: (
+    providerId: string, datasetId: string,
+  ) => Promise<MarketReadRepositorySource | undefined>;
+  listBilateralAnnualObservations: (
+    countryAlpha2: CountryAlpha2,
+    hsRevision: "HS17",
+    hsCode: string,
+    providerId: string,
+    datasetId: string,
+  ) => Promise<MarketReadRepositoryObservation[]>;
 }
 
 export type CohortProofOutcome =
@@ -159,6 +178,121 @@ interface ClassifiedCountry {
 }
 
 const FRESH_LEDGER_OUTCOMES: ReadonlySet<string> = new Set(["success", "empty"]);
+
+function sourceRightsAreValid(source: MarketReadRepositorySource | undefined): boolean {
+  return Boolean(
+    source &&
+    source.providerId === "baci_oec" &&
+    source.datasetId === BACI_OEC_DATASET_ID &&
+    source.serviceTermsVerified &&
+    source.storageAllowed === true &&
+    source.licenceVerifiedAt,
+  );
+}
+
+function inclusiveYearSet(entry: MarketProviderFetchLedgerEntry): Set<number> | undefined {
+  const start = Number(entry.coverageStart);
+  const end = Number(entry.coverageEnd);
+  if (!Number.isInteger(start) || !Number.isInteger(end) || start > end) return undefined;
+  return new Set(Array.from({ length: end - start + 1 }, (_, index) => start + index));
+}
+
+function compatibleLedgerIdentity(
+  entry: MarketProviderFetchLedgerEntry,
+  reporterCountry: CountryAlpha2,
+): boolean {
+  return entry.providerId === "baci_oec" &&
+    entry.datasetId === BACI_OEC_DATASET_ID &&
+    entry.reporterCountry === reporterCountry &&
+    entry.partnerCountry === null &&
+    entry.tradeFlow === "import" &&
+    entry.hsRevision === CANONICAL_HS_REVISION &&
+    entry.hsCodes.length === 1 &&
+    entry.hsCodes[0] === CANONICAL_HS_CODE &&
+    entry.frequency === "annual";
+}
+
+function persistedRowsSatisfyCompatibleLedger(
+  rows: readonly MarketReadRepositoryObservation[],
+  entry: MarketProviderFetchLedgerEntry,
+  reporterCountry: CountryAlpha2,
+  supportedYears: ReadonlySet<number>,
+): boolean {
+  if (rows.length !== entry.rowsReceived) return false;
+  const identities = new Set<string>();
+  for (const row of rows) {
+    const year = Number(row.period);
+    if (
+      row.providerId !== entry.providerId ||
+      row.datasetId !== entry.datasetId ||
+      row.reporterCountry !== reporterCountry ||
+      row.partnerCountry === null ||
+      row.tradeFlow !== entry.tradeFlow ||
+      row.hsRevision !== entry.hsRevision ||
+      row.hsCode !== CANONICAL_HS_CODE ||
+      row.frequency !== entry.frequency ||
+      !Number.isInteger(year) ||
+      !supportedYears.has(year)
+    ) return false;
+    const identity = `${row.period}|${row.partnerCountry}`;
+    if (identities.has(identity)) return false;
+    identities.add(identity);
+  }
+  return true;
+}
+
+/**
+ * Find a fresh historical query whose exact identity remains untouched but
+ * whose wider annual window safely satisfies the current metadata window.
+ */
+async function findCompatibleFreshLedger(
+  repository: CohortRepositoryLike,
+  reporterCountry: CountryAlpha2,
+  analyticalYears: readonly number[],
+  now: Date,
+): Promise<MarketProviderFetchLedgerEntry | undefined> {
+  const supportedYears = new Set(analyticalYears);
+  const candidates = await repository.listRecentLedgerEntriesForReporter(
+    "baci_oec", BACI_OEC_DATASET_ID, reporterCountry, 25,
+  );
+  // A failed/stale latest attempt for a fingerprint must not expose an older
+  // successful row for that same fingerprint.
+  const latestByFingerprint = new Map<string, MarketProviderFetchLedgerEntry>();
+  for (const candidate of candidates) {
+    if (!latestByFingerprint.has(candidate.queryFingerprint)) {
+      latestByFingerprint.set(candidate.queryFingerprint, candidate);
+    }
+  }
+  if (latestByFingerprint.size === 0) return undefined;
+
+  const source = await repository.getSourceByProviderDataset("baci_oec", BACI_OEC_DATASET_ID);
+  if (!sourceRightsAreValid(source)) return undefined;
+  const rows = await repository.listBilateralAnnualObservations(
+    reporterCountry, CANONICAL_HS_REVISION, CANONICAL_HS_CODE,
+    "baci_oec", BACI_OEC_DATASET_ID,
+  );
+
+  for (const candidate of latestByFingerprint.values()) {
+    const freshUntil = Date.parse(candidate.freshUntil);
+    if (
+      !compatibleLedgerIdentity(candidate, reporterCountry) ||
+      !FRESH_LEDGER_OUTCOMES.has(candidate.outcome) ||
+      !Number.isFinite(freshUntil) ||
+      freshUntil <= now.getTime()
+    ) continue;
+    const priorYears = inclusiveYearSet(candidate);
+    if (!priorYears) continue;
+    // Current provider support must be wholly covered by the old request.
+    if (analyticalYears.some((year) => !priorYears.has(year))) continue;
+    // Metadata is the authority for support: every prior year outside the
+    // current set is therefore explicitly unsupported in this invocation.
+    const excludedPriorYears = [...priorYears].filter((year) => !supportedYears.has(year));
+    if (!excludedPriorYears.every((year) => !supportedYears.has(year))) continue;
+    if (!persistedRowsSatisfyCompatibleLedger(rows, candidate, reporterCountry, supportedYears)) continue;
+    return candidate;
+  }
+  return undefined;
+}
 
 function isPrivilegedMember(m: MdfMembership | undefined | null): boolean {
   if (!m) return false;
@@ -285,7 +419,7 @@ export async function runCohortFetchBatch(
       classified.push({
         countryAlpha2: entry.countryAlpha2,
         baciImporterId: entry.baciImporterId,
-        classification: "complete_fresh",
+        classification: "complete_fresh_exact",
       });
     } else if (latest && !FRESH_LEDGER_OUTCOMES.has(latest.outcome) &&
         Date.parse(latest.freshUntil) > now().getTime()) {
@@ -294,6 +428,14 @@ export async function runCohortFetchBatch(
         baciImporterId: entry.baciImporterId,
         classification: "blocked",
         reason: latest.outcome,
+      });
+    } else if (await findCompatibleFreshLedger(
+      repository, entry.countryAlpha2, analyticalYears, now(),
+    )) {
+      classified.push({
+        countryAlpha2: entry.countryAlpha2,
+        baciImporterId: entry.baciImporterId,
+        classification: "complete_fresh_compatible",
       });
     } else {
       classified.push({
@@ -304,7 +446,9 @@ export async function runCohortFetchBatch(
     }
   }
 
-  const alreadyComplete = classified.filter((c) => c.classification === "complete_fresh").map((c) => c.countryAlpha2);
+  const alreadyComplete = classified.filter((c) =>
+    c.classification === "complete_fresh_exact" || c.classification === "complete_fresh_compatible"
+  ).map((c) => c.countryAlpha2);
   const unavailable = classified.filter((c) => c.classification === "unavailable").map((c) => c.countryAlpha2);
   const blocked = classified.filter((c) => c.classification === "blocked").map((c) => ({
     country: c.countryAlpha2, reason: c.reason ?? "blocked",
@@ -329,17 +473,17 @@ export async function runCohortFetchBatch(
 
   // 6) Bounded selection.
   const selected = needsFetch.slice(0, MAX_COUNTRIES_PER_INVOCATION);
-  const carriedRemainder = needsFetch.slice(MAX_COUNTRIES_PER_INVOCATION).map((c) => c.countryAlpha2);
   const processed: ProcessedCountry[] = [];
   const executor = await proofLoader();
-  let providerRequestsUsed = 0;
   let stopReason: CohortFetchOutcome | null = null;
-  const remainder: CountryAlpha2[] = [...carriedRemainder];
+  const providerTransport = createBaciProviderRequestCounter(
+    deps.fetchImpl ?? fetch,
+    MAX_PROVIDER_HTTP_REQUESTS_PER_INVOCATION,
+  );
 
   for (const entry of selected) {
     // Reserve 2 request slots (worst case = 2 pages).
-    if (providerRequestsUsed + 2 > MAX_PROVIDER_HTTP_REQUESTS_PER_INVOCATION) {
-      remainder.unshift(entry.countryAlpha2);
+    if (providerTransport.requestsUsed() + 2 > MAX_PROVIDER_HTTP_REQUESTS_PER_INVOCATION) {
       break;
     }
     const spec = buildCountryChilliQuery(entry.countryAlpha2, analyticalYears);
@@ -347,13 +491,12 @@ export async function runCohortFetchBatch(
       const execDeps: {
         repository: unknown; writer: unknown; now?: () => Date;
         fetchImpl?: typeof fetch; env?: NodeJS.ProcessEnv;
-      } = { repository, writer, now, fetchImpl: deps.fetchImpl, env: deps.env };
+      } = { repository, writer, now, fetchImpl: providerTransport.fetchImpl, env: deps.env };
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const result = await executor.executeControlledChilliProof(spec, execDeps as any);
       if (result.outcome === "completed") {
         const observations = result.observations ?? { created: 0, existing: 0 };
         const use_cache_hit = result.fetches?.canonical_bilateral === "use_cache";
-        providerRequestsUsed += use_cache_hit ? 0 : (observations.created > 1000 ? 2 : 1);
         processed.push({
           country: entry.countryAlpha2,
           result: use_cache_hit ? "use_cache" : (observations.created === 0 && observations.existing === 0 ? "empty" : "fetched"),
@@ -417,7 +560,6 @@ export async function runCohortFetchBatch(
     } catch (error) {
       // Config error at the writer (missing server credential) → stop.
       if (error instanceof BaciOecConfigError) {
-        remainder.unshift(entry.countryAlpha2);
         return {
           outcome: "configuration_error",
           analyticalYears,
@@ -425,16 +567,15 @@ export async function runCohortFetchBatch(
           alreadyComplete,
           unavailable,
           blocked,
-          remaining: dedupeRemainder(needsFetch.map((c) => c.countryAlpha2), processed, remainder),
+          remaining: canonicalRemaining(needsFetch.map((c) => c.countryAlpha2), processed),
           moreRemaining: true,
-          providerRequestsUsed,
+          providerRequestsUsed: providerTransport.requestsUsed(),
           metadataRequestsUsed,
           productMappingRegistryVersion: mapping.registryVersion,
           message: "BACI provider credential missing on the server.",
         };
       }
       if (error instanceof BaciProviderError) {
-        providerRequestsUsed += error.rowsReceived > 1000 ? 2 : 1;
         const perCountry: CountryResult = ((): CountryResult => {
           switch (error.outcome) {
             case "invalid_request": return "invalid_request";
@@ -464,14 +605,12 @@ export async function runCohortFetchBatch(
             : error.diagnostic?.category === "auth_error"
               ? "auth_stopped"
               : "provider_stopped";
-          remainder.unshift(entry.countryAlpha2);
           break;
         }
         // Otherwise a per-country invalid_request / partial → continue.
         continue;
       }
       // Anything else → stop safely.
-      remainder.unshift(entry.countryAlpha2);
       return {
         outcome: "unexpected_error",
         analyticalYears,
@@ -479,19 +618,17 @@ export async function runCohortFetchBatch(
         alreadyComplete,
         unavailable,
         blocked,
-        remaining: dedupeRemainder(needsFetch.map((c) => c.countryAlpha2), processed, remainder),
+        remaining: canonicalRemaining(needsFetch.map((c) => c.countryAlpha2), processed),
         moreRemaining: true,
-        providerRequestsUsed,
+        providerRequestsUsed: providerTransport.requestsUsed(),
         metadataRequestsUsed,
         productMappingRegistryVersion: mapping.registryVersion,
       };
     }
   }
 
-  const finalRemainder = dedupeRemainder(
-    needsFetch.map((c) => c.countryAlpha2),
-    processed,
-    remainder,
+  const finalRemainder = canonicalRemaining(
+    needsFetch.map((c) => c.countryAlpha2), processed,
   );
   const outcome: CohortFetchOutcome =
     stopReason ??
@@ -508,50 +645,23 @@ export async function runCohortFetchBatch(
     blocked,
     remaining: finalRemainder,
     moreRemaining: finalRemainder.length > 0,
-    providerRequestsUsed,
+    providerRequestsUsed: providerTransport.requestsUsed(),
     metadataRequestsUsed,
     productMappingRegistryVersion: mapping.registryVersion,
   };
 }
 
-function dedupeRemainder(
+function canonicalRemaining(
   needsFetch: CountryAlpha2[],
   processed: ProcessedCountry[],
-  extra: CountryAlpha2[],
 ): CountryAlpha2[] {
   const done = new Set(
     processed.filter((p) => p.result === "fetched" || p.result === "use_cache" || p.result === "empty")
       .map((p) => p.country),
   );
-  const seen = new Set<CountryAlpha2>();
-  const remaining: CountryAlpha2[] = [];
-  const consider = (list: CountryAlpha2[]) => {
-    for (const c of list) {
-      if (done.has(c)) continue;
-      if (seen.has(c)) continue;
-      seen.add(c);
-      remaining.push(c);
-    }
-  };
-  consider(extra);
-  const processedSet = new Set(processed.map((p) => p.country));
-  consider(needsFetch.filter((c) => !processedSet.has(c) && !done.has(c)));
-  // If processed had a terminal failure (partial/invalid_request/provider_error)
-  // include those back in the remainder so the operator can retry after fixing.
-  for (const p of processed) {
-    if (
-      p.result === "provider_error" || p.result === "invalid_request" ||
-      p.result === "partial" || p.result === "timeout" || p.result === "quota_exhausted" ||
-      p.result === "material_mismatch" || p.result === "source_conflict" ||
-      p.result === "blocked" || p.result === "cache_incomplete"
-    ) {
-      if (!seen.has(p.country)) {
-        seen.add(p.country);
-        remaining.push(p.country);
-      }
-    }
-  }
-  return remaining;
+  // needsFetch was projected from calibrationCohort(), so filtering this
+  // authoritative sequence preserves canonical order for retries and skips.
+  return needsFetch.filter((country) => !done.has(country));
 }
 
 function baseResult(

@@ -68,6 +68,13 @@ export interface MarketReadRepositoryObservation {
   retrievedAt: string;
 }
 
+/** Narrow read shape for immutable observation-material diagnostics. */
+export interface MarketReadRepositoryMaterialObservation extends MarketReadRepositoryObservation {
+  sourcePeriod: string | null;
+  sourceUrl: string | null;
+  safeSourceRef: string | null;
+}
+
 export interface MarketReadRepositoryMetric {
   id: string;
   countryAlpha2: CountryAlpha2;
@@ -148,6 +155,13 @@ export interface MarketReadRepository {
     providerId: string,
     datasetId: string,
   ): Promise<MarketReadRepositoryObservation[]>;
+  listBilateralAnnualMaterialObservations(
+    countryAlpha2: CountryAlpha2,
+    hsRevision: HsRevision,
+    hsCode: string,
+    providerId: string,
+    datasetId: string,
+  ): Promise<MarketReadRepositoryMaterialObservation[]>;
   listCurrentMetrics(
     countryAlpha2: CountryAlpha2,
     mdfProductId: string,
@@ -160,6 +174,12 @@ export interface MarketReadRepository {
     providerId: string,
     datasetId: string,
     queryFingerprint: string,
+    limit?: number,
+  ): Promise<MarketProviderFetchLedgerEntry[]>;
+  listRecentLedgerEntriesForReporter(
+    providerId: string,
+    datasetId: string,
+    reporterCountry: CountryAlpha2,
     limit?: number,
   ): Promise<MarketProviderFetchLedgerEntry[]>;
 }
@@ -175,6 +195,8 @@ const SOURCE_COLS =
   "id, provider_id, dataset_id, source_tier, dataset_source, distribution_service, service_terms_verified, storage_allowed, redistribution_allowed, licence_verified_at, source_url, retrieved_at";
 const OBSERVATION_COLS =
   "id, source_id, provider_id, dataset_id, reporter_country, partner_country, trade_flow, hs_revision, hs_code, frequency, period, trade_value_usd, quantity, quantity_unit, net_weight_kg, retrieved_at";
+const MATERIAL_OBSERVATION_COLS =
+  `${OBSERVATION_COLS}, source_period, source_url, safe_source_ref`;
 const METRIC_COLS =
   "id, country_alpha2, mdf_product_id, metric_key, numeric_value, json_value, text_value, unit, calculation_window, support_count, observation_watermark, calculation_version, calculated_at";
 const SCORE_COLS =
@@ -299,6 +321,30 @@ class SupabaseMarketReadRepository implements MarketReadRepository {
     return (data ?? []).map(rowToObservation);
   }
 
+  async listBilateralAnnualMaterialObservations(
+    countryAlpha2: CountryAlpha2,
+    hsRevision: HsRevision,
+    hsCode: string,
+    providerId: string,
+    datasetId: string,
+  ): Promise<MarketReadRepositoryMaterialObservation[]> {
+    const { data, error } = await this.supabase
+      .from("market_trade_observations")
+      .select(MATERIAL_OBSERVATION_COLS)
+      .eq("provider_id", providerId)
+      .eq("dataset_id", datasetId)
+      .eq("reporter_country", countryAlpha2)
+      .eq("trade_flow", "import")
+      .eq("hs_revision", hsRevision)
+      .eq("hs_code", hsCode)
+      .eq("frequency", "annual")
+      .not("partner_country", "is", null)
+      .order("period", { ascending: true })
+      .order("partner_country", { ascending: true });
+    if (error) throw error;
+    return (data ?? []).map(rowToMaterialObservation);
+  }
+
   async listCurrentMetrics(
     countryAlpha2: CountryAlpha2,
     mdfProductId: string,
@@ -346,6 +392,29 @@ class SupabaseMarketReadRepository implements MarketReadRepository {
       .eq("provider_id", providerId)
       .eq("dataset_id", datasetId)
       .eq("query_fingerprint", queryFingerprint)
+      .order("fetched_at", { ascending: false })
+      .limit(limit);
+    if (error) throw error;
+    return (data ?? []).map(rowToLedgerEntry);
+  }
+
+  /**
+   * Read-side compatibility candidate lookup. This deliberately does not
+   * alter or relax query fingerprints: callers must re-check every remaining
+   * scope field before treating any returned row as compatible.
+   */
+  async listRecentLedgerEntriesForReporter(
+    providerId: string,
+    datasetId: string,
+    reporterCountry: CountryAlpha2,
+    limit = 25,
+  ): Promise<MarketProviderFetchLedgerEntry[]> {
+    const { data, error } = await this.supabase
+      .from("market_provider_fetch_ledger")
+      .select(LEDGER_COLS)
+      .eq("provider_id", providerId)
+      .eq("dataset_id", datasetId)
+      .eq("reporter_country", reporterCountry)
       .order("fetched_at", { ascending: false })
       .limit(limit);
     if (error) throw error;
@@ -416,6 +485,17 @@ function rowToObservation(r: Record<string, unknown>): MarketReadRepositoryObser
     quantityUnit: (r.quantity_unit as string) ?? null,
     netWeightKg: r.net_weight_kg == null ? null : Number(r.net_weight_kg),
     retrievedAt: r.retrieved_at as string,
+  };
+}
+
+function rowToMaterialObservation(
+  r: Record<string, unknown>,
+): MarketReadRepositoryMaterialObservation {
+  return {
+    ...rowToObservation(r),
+    sourcePeriod: (r.source_period as string) ?? null,
+    sourceUrl: (r.source_url as string) ?? null,
+    safeSourceRef: (r.safe_source_ref as string) ?? null,
   };
 }
 

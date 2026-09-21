@@ -2,6 +2,11 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { calibrationCohort } from "../calibration/cohort";
+import type {
+  MarketReadRepositoryObservation,
+  MarketReadRepositorySource,
+} from "../marketReadRepository";
+import { BACI_OEC_QUERY_ENDPOINT } from "../providers/baci/contract";
 import { BaciProviderError } from "../providers/baci/normalize";
 import { BaciOecConfigError } from "../providers/baci/server";
 import type { MarketProviderFetchLedgerEntry } from "../types";
@@ -63,16 +68,71 @@ function ledgerFresh(overrides: Partial<MarketProviderFetchLedgerEntry> = {}): M
   };
 }
 
+function verifiedSource(overrides: Partial<MarketReadRepositorySource> = {}): MarketReadRepositorySource {
+  return {
+    id: "source-1",
+    providerId: "baci_oec",
+    datasetId: "baci-hs17",
+    sourceTier: "A",
+    datasetSource: "CEPII BACI",
+    distributionService: "OEC BotMarket",
+    serviceTermsVerified: true,
+    storageAllowed: true,
+    redistributionAllowed: false,
+    licenceVerifiedAt: "2026-09-01T00:00:00.000Z",
+    sourceUrl: "https://botmarket.oec.world/dataset/baci-hs17",
+    retrievedAt: "2026-09-15T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+function persistedRows(
+  count = 204,
+  overrides: Partial<MarketReadRepositoryObservation> = {},
+): MarketReadRepositoryObservation[] {
+  return Array.from({ length: count }, (_, index) => {
+    const period = String(2018 + Math.floor(index / 30));
+    const partnerIndex = index % 30;
+    const partner = `${String.fromCharCode(65 + Math.floor(partnerIndex / 26))}${String.fromCharCode(65 + (partnerIndex % 26))}`;
+    return {
+      id: `observation-${index}`,
+      sourceId: "source-1",
+      providerId: "baci_oec",
+      datasetId: "baci-hs17",
+      reporterCountry: "MY",
+      partnerCountry: partner,
+      tradeFlow: "import",
+      hsRevision: "HS17",
+      hsCode: "090421",
+      frequency: "annual",
+      period,
+      tradeValueUsd: index + 1,
+      quantity: index + 1,
+      quantityUnit: "tonne",
+      netWeightKg: null,
+      retrievedAt: "2026-09-15T00:00:00.000Z",
+      ...overrides,
+    } as MarketReadRepositoryObservation;
+  });
+}
+
 function buildDeps(opts: {
   session?: typeof OWNER_SESSION | typeof MEMBER_SESSION | null;
   mappings?: ReturnType<typeof makeMapping>[];
   ledgerFor?: (country: string) => MarketProviderFetchLedgerEntry[];
+  compatibleLedgerFor?: (country: string) => MarketProviderFetchLedgerEntry[];
+  observationsFor?: (country: string) => MarketReadRepositoryObservation[];
+  source?: MarketReadRepositorySource;
+  providerYears?: number[];
+  writer?: Record<string, unknown>;
+  fetchImpl?: typeof fetch;
   yearOutcome?: "ok" | "network_error";
   importerOutcome?: "ok" | "network_error";
   importerRoster?: string[];
   executor?: (
     countryAlpha2: string,
     call: number,
+    dependencies: { fetchImpl?: typeof fetch },
   ) => Promise<{
     outcome: CohortProofOutcome["outcome"] | string;
     fetches?: Record<string, "fetched" | "use_cache">;
@@ -99,12 +159,16 @@ function buildDeps(opts: {
         const country = fpToCountry(fp);
         return opts.ledgerFor ? opts.ledgerFor(country) : [];
       },
-      listBilateralAnnualObservations: async () => [],
-      getSourceByProviderDataset: async () => undefined,
+      listRecentLedgerEntriesForReporter: async (
+        _providerId: string, _datasetId: string, country: string,
+      ) => opts.compatibleLedgerFor ? opts.compatibleLedgerFor(country) : [],
+      listBilateralAnnualObservations: async (country: string) =>
+        opts.observationsFor ? opts.observationsFor(country) : [],
+      getSourceByProviderDataset: async () => opts.source,
     }),
-    loadWriter: async () => ({ recordFetchResult: async () => ({}) } as unknown as { recordFetchResult: () => unknown } & Record<string, unknown>),
+    loadWriter: async () => opts.writer ?? ({ recordFetchResult: async () => ({}) } as unknown as { recordFetchResult: () => unknown } & Record<string, unknown>),
     loadProofExecutor: async () => ({
-      executeControlledChilliProof: async (spec) => {
+      executeControlledChilliProof: async (spec, dependencies) => {
         executorCallCount += 1;
         if (!opts.executor) {
           return {
@@ -113,7 +177,7 @@ function buildDeps(opts: {
             observations: { created: 300, existing: 0 },
           } as CohortProofOutcome;
         }
-        const result = await opts.executor(spec.reporterCountry, executorCallCount);
+        const result = await opts.executor(spec.reporterCountry, executorCallCount, dependencies);
         if (result.throw) throw result.throw;
         return {
           outcome: result.outcome,
@@ -125,7 +189,7 @@ function buildDeps(opts: {
     }),
     fetchMetadata: {
       fetchYearMembers: async () => ({
-        years: opts.yearOutcome === "network_error" ? [] : PROVIDER_YEARS,
+        years: opts.yearOutcome === "network_error" ? [] : (opts.providerYears ?? PROVIDER_YEARS),
         outcome: opts.yearOutcome ?? "ok",
       }),
       fetchImporterMembers: async () => ({
@@ -134,6 +198,7 @@ function buildDeps(opts: {
       }),
     },
     now: () => NOW,
+    fetchImpl: opts.fetchImpl,
   };
 }
 
@@ -148,6 +213,7 @@ describe("MI1F cohort fetch — owner authority", () => {
     const listRepo = vi.fn(async () => ({
       listActiveProductMappings: async () => [makeMapping()],
       listRecentLedgerEntriesForFingerprint: async () => [],
+      listRecentLedgerEntriesForReporter: async () => [],
       listBilateralAnnualObservations: async () => [],
       getSourceByProviderDataset: async () => undefined,
     }));
@@ -260,6 +326,152 @@ describe("MI1F cohort fetch — classification + selection", () => {
   });
 });
 
+describe("MI1F.1 strict analytical cache compatibility", () => {
+  function compatibilityDeps(overrides: Parameters<typeof buildDeps>[0] = {}) {
+    return buildDeps({
+      importerRoster: ["mys"],
+      compatibleLedgerFor: (country) => country === "MY"
+        ? [ledgerFresh({
+            queryFingerprint: "legacy-my-2017-2024",
+            coverageStart: "2017",
+            coverageEnd: "2024",
+          })]
+        : [],
+      observationsFor: (country) => country === "MY" ? persistedRows() : [],
+      source: verifiedSource(),
+      ...overrides,
+    });
+  }
+
+  it("reuses the verified MY 2017–2024 proof for supported 2018–2024 without executing or writing", async () => {
+    const executor = vi.fn(async (_country: string) => ({
+      outcome: "completed" as const,
+      fetches: { canonical_bilateral: "fetched" as const },
+      observations: { created: 1, existing: 0 },
+    }));
+    const observationWrite = vi.fn();
+    const result = await runCohortFetchBatch(compatibilityDeps({
+      importerRoster: calibrationCohort().map((entry) => entry.baciImporterId),
+      executor,
+      writer: { ingestTradeObservation: observationWrite },
+    }));
+
+    expect(result.alreadyComplete).toEqual(["MY"]);
+    expect(result.processed.map((entry) => entry.country)).toEqual(["AE", "SA", "QA"]);
+    expect(executor.mock.calls.map((call) => call[0])).toEqual(["AE", "SA", "QA"]);
+    expect(result.providerRequestsUsed).toBe(0);
+    expect(observationWrite).not.toHaveBeenCalled();
+  });
+
+  it("keeps an exact-fingerprint hit exact and does not consult compatibility for MY", async () => {
+    const compatibilityLookup = vi.fn(() => [] as MarketProviderFetchLedgerEntry[]);
+    const result = await runCohortFetchBatch(buildDeps({
+      importerRoster: ["mys"],
+      ledgerFor: (country) => country === "MY" ? [ledgerFresh()] : [],
+      compatibleLedgerFor: compatibilityLookup,
+    }));
+    expect(result.alreadyComplete).toEqual(["MY"]);
+    expect(compatibilityLookup).not.toHaveBeenCalled();
+  });
+
+  it("does not reuse 2018–2024 when metadata adds supported year 2025", async () => {
+    const executor = vi.fn(async () => ({ outcome: "completed" as const }));
+    const result = await runCohortFetchBatch(compatibilityDeps({
+      providerYears: [...PROVIDER_YEARS, 2025],
+      compatibleLedgerFor: () => [ledgerFresh({ coverageStart: "2018", coverageEnd: "2024" })],
+      executor,
+    }));
+    expect(result.alreadyComplete).toEqual([]);
+    expect(executor).toHaveBeenCalledOnce();
+    expect(result.processed[0]?.country).toBe("MY");
+  });
+
+  it("reuses an old extra year only when that year is absent from current metadata", async () => {
+    const compatible = await runCohortFetchBatch(compatibilityDeps());
+    expect(compatible.alreadyComplete).toEqual(["MY"]);
+  });
+
+  it("reuses 2018–2024 for current 2019–2024 when 2018 is unsupported", async () => {
+    const rows = persistedRows().filter((row) => row.period !== "2018");
+    const result = await runCohortFetchBatch(compatibilityDeps({
+      providerYears: PROVIDER_YEARS.slice(1),
+      compatibleLedgerFor: () => [ledgerFresh({
+        coverageStart: "2018", coverageEnd: "2024", rowsReceived: rows.length,
+      })],
+      observationsFor: () => rows,
+    }));
+    expect(result.alreadyComplete).toEqual(["MY"]);
+  });
+
+  it.each([
+    ["stale success", { freshUntil: "2026-09-20T00:00:00.000Z" }],
+    ["partial", { outcome: "partial" as const }],
+    ["provider error", { outcome: "provider_error" as const }],
+    ["quota", { outcome: "quota_exhausted" as const }],
+  ])("never promotes %s evidence", async (_label, ledgerOverride) => {
+    const result = await runCohortFetchBatch(compatibilityDeps({
+      compatibleLedgerFor: () => [ledgerFresh({
+        coverageStart: "2017",
+        coverageEnd: "2024",
+        ...ledgerOverride,
+      })],
+    }));
+    expect(result.alreadyComplete).toEqual([]);
+    expect(result.processed[0]?.country).toBe("MY");
+  });
+
+  it("supports complete-empty compatibility without synthesizing observations", async () => {
+    const result = await runCohortFetchBatch(compatibilityDeps({
+      compatibleLedgerFor: () => [ledgerFresh({
+        coverageStart: "2017", coverageEnd: "2024", outcome: "empty", rowsReceived: 0,
+      })],
+      observationsFor: () => [],
+    }));
+    expect(result.alreadyComplete).toEqual(["MY"]);
+    expect(result.processed).toEqual([]);
+    expect(result.providerRequestsUsed).toBe(0);
+  });
+
+  it.each([
+    ["HS", { hsCodes: ["090422"] }],
+    ["reporter", { reporterCountry: "AE" }],
+    ["provider", { providerId: "other" }],
+    ["partner scope", { partnerCountry: "IN" }],
+  ])("rejects a different %s identity", async (_label, ledgerOverride) => {
+    const result = await runCohortFetchBatch(compatibilityDeps({
+      compatibleLedgerFor: () => [ledgerFresh({
+        coverageStart: "2017",
+        coverageEnd: "2024",
+        ...ledgerOverride,
+      })],
+    }));
+    expect(result.alreadyComplete).toEqual([]);
+    expect(result.processed[0]?.country).toBe("MY");
+  });
+
+  it("rejects incomplete, duplicate, unexpected-period, or unlicensed persisted read-back", async () => {
+    const incomplete = await runCohortFetchBatch(compatibilityDeps({
+      observationsFor: () => persistedRows(203),
+    }));
+    const duplicateRows = persistedRows();
+    duplicateRows[1] = { ...duplicateRows[0]!, id: "duplicate" };
+    const duplicate = await runCohortFetchBatch(compatibilityDeps({
+      observationsFor: () => duplicateRows,
+    }));
+    const unexpected = await runCohortFetchBatch(compatibilityDeps({
+      observationsFor: () => persistedRows(204, { period: "2017" }),
+    }));
+    const unlicensed = await runCohortFetchBatch(compatibilityDeps({
+      source: verifiedSource({ storageAllowed: false }),
+    }));
+
+    for (const result of [incomplete, duplicate, unexpected, unlicensed]) {
+      expect(result.alreadyComplete).toEqual([]);
+      expect(result.processed[0]?.country).toBe("MY");
+    }
+  });
+});
+
 describe("MI1F cohort fetch — provider-request budget", () => {
   it("never issues more than MAX_PROVIDER_HTTP_REQUESTS_PER_INVOCATION query calls", async () => {
     let calls = 0;
@@ -285,6 +497,26 @@ describe("MI1F cohort fetch — provider-request budget", () => {
     });
     const result = await runCohortFetchBatch(deps);
     expect(result.metadataRequestsUsed).toBe(2);
+  });
+
+  it("counts an actual /query attempt even when observation ingest returns material_mismatch", async () => {
+    const transport = vi.fn(async () => new Response("{}", { status: 200 }));
+    const result = await runCohortFetchBatch(buildDeps({
+      ledgerFor: (country) => country === "MY" ? [ledgerFresh()] : [],
+      fetchImpl: transport as typeof fetch,
+      executor: async (country, _call, dependencies) => {
+        if (country === "AE") {
+          await dependencies.fetchImpl!(BACI_OEC_QUERY_ENDPOINT, {
+            headers: { authorization: "Bearer redacted" },
+          });
+          return { outcome: "observation_conflict", reason: "material_mismatch" };
+        }
+        return { outcome: "completed", observations: { created: 1, existing: 0 } };
+      },
+    }));
+    expect(transport).toHaveBeenCalledOnce();
+    expect(result.providerRequestsUsed).toBe(1);
+    expect(result.processed[0]).toMatchObject({ country: "AE", result: "material_mismatch" });
   });
 });
 
@@ -358,7 +590,7 @@ describe("MI1F cohort fetch — failure isolation", () => {
     const result = await runCohortFetchBatch(deps);
     expect(result.outcome).toBe("provider_stopped");
     expect(result.processed[0]).toMatchObject({ country: "AE", result: "material_mismatch" });
-    expect(result.remaining).toContain("AE");
+    expect(result.remaining.slice(0, 3)).toEqual(["AE", "SA", "QA"]);
   });
 
   it("country-specific empty result is recorded as 'empty' and the batch continues", async () => {
@@ -373,6 +605,38 @@ describe("MI1F cohort fetch — failure isolation", () => {
     const result = await runCohortFetchBatch(deps);
     expect(result.processed.every((p) => p.result === "empty")).toBe(true);
     expect(result.outcome).toBe("batch_completed");
+  });
+});
+
+describe("MI1F.1 canonical response projection", () => {
+  it("projects complete, unavailable, blocked, and remaining arrays from cohort order", async () => {
+    const roster = calibrationCohort()
+      .filter((entry) => entry.countryAlpha2 !== "SA" && entry.countryAlpha2 !== "KW")
+      .map((entry) => entry.baciImporterId);
+    const result = await runCohortFetchBatch(buildDeps({
+      importerRoster: roster,
+      ledgerFor: (country) => {
+        if (country === "MY" || country === "OM") {
+          return [ledgerFresh({ reporterCountry: country })];
+        }
+        if (country === "AE") {
+          return [ledgerFresh({
+            reporterCountry: "AE",
+            outcome: "quota_exhausted",
+            freshUntil: "2026-09-25T00:00:00.000Z",
+          })];
+        }
+        return [];
+      },
+      executor: async (country) => country === "QA"
+        ? { outcome: "observation_conflict", reason: "material_mismatch" }
+        : { outcome: "completed", observations: { created: 1, existing: 0 } },
+    }));
+
+    expect(result.alreadyComplete).toEqual(["MY", "OM"]);
+    expect(result.unavailable).toEqual(["SA", "KW"]);
+    expect(result.blocked).toEqual([{ country: "AE", reason: "quota_exhausted" }]);
+    expect(result.remaining.slice(0, 4)).toEqual(["QA", "SG", "TH", "VN"]);
   });
 });
 
