@@ -9,8 +9,8 @@ import "server-only";
  * touches Buyer Intelligence.
  *
  * Budgets:
- *   MAX_COUNTRIES_PER_INVOCATION           = 3
- *   MAX_PROVIDER_HTTP_REQUESTS_PER_INVOC.  = 6   (auth'd BACI /query)
+ *   MAX_COUNTRIES_PER_INVOCATION           = 1
+ *   MAX_PROVIDER_HTTP_REQUESTS_PER_INVOC.  = 2   (auth'd BACI /query)
  *   PROVIDER_METADATA_REQUESTS_PER_INVOC.  = 2   (year + importer roster,
  *                                                 counted separately)
  *
@@ -42,8 +42,8 @@ import {
 import { BaciOecConfigError } from "../providers/baci/server";
 import type { CountryAlpha2, MarketProviderFetchLedgerEntry } from "../types";
 
-export const MAX_COUNTRIES_PER_INVOCATION = 3;
-export const MAX_PROVIDER_HTTP_REQUESTS_PER_INVOCATION = 6;
+export const MAX_COUNTRIES_PER_INVOCATION = 1;
+export const MAX_PROVIDER_HTTP_REQUESTS_PER_INVOCATION = 2;
 /** Public-metadata reads used per invocation (year + importer roster). */
 export const METADATA_HTTP_REQUESTS_PER_INVOCATION = 2;
 

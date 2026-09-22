@@ -272,24 +272,18 @@ describe("MI1F cohort fetch — mapping + metadata gates", () => {
 });
 
 describe("MI1F cohort fetch — classification + selection", () => {
-  it("Malaysia with a fresh success ledger becomes complete_fresh and consumes zero provider calls", async () => {
-    let executorCalls = 0;
+  it("one fresh-complete country consumes zero provider requests", async () => {
+    const executor = vi.fn();
     const deps = buildDeps({
+      importerRoster: ["mys"],
       ledgerFor: (country) => country === "MY" ? [ledgerFresh()] : [],
-      executor: async () => {
-        executorCalls += 1;
-        return {
-          outcome: "completed",
-          fetches: { canonical_bilateral: "fetched" as const },
-          observations: { created: 100, existing: 0 },
-        };
-      },
+      executor,
     });
     const result = await runCohortFetchBatch(deps);
-    expect(result.alreadyComplete).toContain("MY");
-    // 3 first non-MY needs_fetch selected.
-    expect(result.processed.map((p) => p.country)).toEqual(["AE", "SA", "QA"]);
-    expect(executorCalls).toBe(3);
+    expect(result.alreadyComplete).toEqual(["MY"]);
+    expect(result.processed).toEqual([]);
+    expect(result.providerRequestsUsed).toBe(0);
+    expect(executor).not.toHaveBeenCalled();
   });
 
   it("selects countries in canonical cohort order and caps at MAX_COUNTRIES_PER_INVOCATION", async () => {
@@ -298,8 +292,9 @@ describe("MI1F cohort fetch — classification + selection", () => {
     });
     const result = await runCohortFetchBatch(deps);
     expect(result.processed).toHaveLength(MAX_COUNTRIES_PER_INVOCATION);
+    expect(result.processed.map((p) => p.country)).toEqual(["AE"]);
     expect(result.moreRemaining).toBe(true);
-    expect(result.remaining[0]).toBe("OM");
+    expect(result.remaining[0]).toBe("SA");
   });
 
   it("unavailable importer is reported, never queried, never substituted", async () => {
@@ -357,8 +352,8 @@ describe("MI1F.1 strict analytical cache compatibility", () => {
     }));
 
     expect(result.alreadyComplete).toEqual(["MY"]);
-    expect(result.processed.map((entry) => entry.country)).toEqual(["AE", "SA", "QA"]);
-    expect(executor.mock.calls.map((call) => call[0])).toEqual(["AE", "SA", "QA"]);
+    expect(result.processed.map((entry) => entry.country)).toEqual(["AE"]);
+    expect(executor.mock.calls.map((call) => call[0])).toEqual(["AE"]);
     expect(result.providerRequestsUsed).toBe(0);
     expect(observationWrite).not.toHaveBeenCalled();
   });
@@ -473,6 +468,50 @@ describe("MI1F.1 strict analytical cache compatibility", () => {
 });
 
 describe("MI1F cohort fetch — provider-request budget", () => {
+  it("locks the production batch and authenticated-query budgets to one country / two pages", () => {
+    expect(MAX_COUNTRIES_PER_INVOCATION).toBe(1);
+    expect(MAX_PROVIDER_HTTP_REQUESTS_PER_INVOCATION).toBe(2);
+  });
+
+  it("a one-page country fetch uses one authenticated request", async () => {
+    const transport = vi.fn(async () => new Response("{}", { status: 200 }));
+    const result = await runCohortFetchBatch(buildDeps({
+      ledgerFor: (country) => country === "MY" ? [ledgerFresh()] : [],
+      fetchImpl: transport as typeof fetch,
+      executor: async (_country, _call, dependencies) => {
+        await dependencies.fetchImpl!(BACI_OEC_QUERY_ENDPOINT);
+        return {
+          outcome: "completed",
+          fetches: { canonical_bilateral: "fetched" as const },
+          observations: { created: 1, existing: 0 },
+        };
+      },
+    }));
+    expect(result.processed.map((entry) => entry.country)).toEqual(["AE"]);
+    expect(result.providerRequestsUsed).toBe(1);
+    expect(transport).toHaveBeenCalledOnce();
+  });
+
+  it("a two-page country fetch fits the authenticated request budget exactly", async () => {
+    const transport = vi.fn(async () => new Response("{}", { status: 200 }));
+    const result = await runCohortFetchBatch(buildDeps({
+      ledgerFor: (country) => country === "MY" ? [ledgerFresh()] : [],
+      fetchImpl: transport as typeof fetch,
+      executor: async (_country, _call, dependencies) => {
+        await dependencies.fetchImpl!(BACI_OEC_QUERY_ENDPOINT);
+        await dependencies.fetchImpl!(`${BACI_OEC_QUERY_ENDPOINT}?offset=1000`);
+        return {
+          outcome: "completed",
+          fetches: { canonical_bilateral: "fetched" as const },
+          observations: { created: 1001, existing: 0 },
+        };
+      },
+    }));
+    expect(result.processed.map((entry) => entry.country)).toEqual(["AE"]);
+    expect(result.providerRequestsUsed).toBe(MAX_PROVIDER_HTTP_REQUESTS_PER_INVOCATION);
+    expect(transport).toHaveBeenCalledTimes(2);
+  });
+
   it("never issues more than MAX_PROVIDER_HTTP_REQUESTS_PER_INVOCATION query calls", async () => {
     let calls = 0;
     const deps = buildDeps({
@@ -641,14 +680,59 @@ describe("MI1F.1 canonical response projection", () => {
 });
 
 describe("MI1F cohort fetch — resumability + terminal state", () => {
-  it("second invocation after MY complete + AE/SA/QA fetched picks up at OM/KW/SG", async () => {
+  it("next invocation after MY + AE/SA/QA complete advances exactly one country to OM", async () => {
     const seenFresh = new Set(["MY", "AE", "SA", "QA"]);
     const deps = buildDeps({
       ledgerFor: (country) => seenFresh.has(country) ? [ledgerFresh()] : [],
     });
     const result = await runCohortFetchBatch(deps);
     expect(result.alreadyComplete).toEqual(["MY", "AE", "SA", "QA"]);
-    expect(result.processed.map((p) => p.country)).toEqual(["OM", "KW", "SG"]);
+    expect(result.processed.map((p) => p.country)).toEqual(["OM"]);
+    expect(result.remaining.slice(0, 3)).toEqual(["KW", "SG", "TH"]);
+  });
+
+  it("skips verified KR/JP/GB completion and resumes DE, then NL, in canonical order", async () => {
+    const throughGb = new Set([
+      "MY", "AE", "SA", "QA", "OM", "KW", "SG", "TH", "VN", "LK", "KR", "JP", "GB",
+    ]);
+    const first = await runCohortFetchBatch(buildDeps({
+      ledgerFor: (country) => throughGb.has(country)
+        ? [ledgerFresh({ reporterCountry: country as MarketProviderFetchLedgerEntry["reporterCountry"] })]
+        : [],
+    }));
+    expect(first.alreadyComplete).toEqual([...throughGb]);
+    expect(first.processed.map((entry) => entry.country)).toEqual(["DE"]);
+    expect(first.remaining).toEqual(["NL", "US", "CA", "AU"]);
+
+    const throughDe = new Set([...throughGb, "DE"]);
+    const second = await runCohortFetchBatch(buildDeps({
+      ledgerFor: (country) => throughDe.has(country)
+        ? [ledgerFresh({ reporterCountry: country as MarketProviderFetchLedgerEntry["reporterCountry"] })]
+        : [],
+    }));
+    expect(second.processed.map((entry) => entry.country)).toEqual(["NL"]);
+    expect(second.remaining).toEqual(["US", "CA", "AU"]);
+  });
+
+  it("never runs more than one country proof concurrently", async () => {
+    let active = 0;
+    let maxActive = 0;
+    const result = await runCohortFetchBatch(buildDeps({
+      ledgerFor: (country) => country === "MY" ? [ledgerFresh()] : [],
+      executor: async () => {
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        await Promise.resolve();
+        active -= 1;
+        return {
+          outcome: "completed",
+          fetches: { canonical_bilateral: "fetched" as const },
+          observations: { created: 1, existing: 0 },
+        };
+      },
+    }));
+    expect(result.processed).toHaveLength(1);
+    expect(maxActive).toBe(1);
   });
 
   it("all countries complete_fresh → outcome cohort_fetch_complete and moreRemaining false", async () => {
