@@ -293,6 +293,7 @@ describe("MI1F cohort fetch — classification + selection", () => {
     const result = await runCohortFetchBatch(deps);
     expect(result.processed).toHaveLength(MAX_COUNTRIES_PER_INVOCATION);
     expect(result.processed.map((p) => p.country)).toEqual(["AE"]);
+    expect(result.outcome).toBe("batch_completed");
     expect(result.moreRemaining).toBe(true);
     expect(result.remaining[0]).toBe("SA");
   });
@@ -318,6 +319,30 @@ describe("MI1F cohort fetch — classification + selection", () => {
     });
     const result = await runCohortFetchBatch(deps);
     expect(result.blocked.map((b) => b.country)).toContain("AE");
+  });
+
+  it("does not classify an otherwise-finished cohort as complete while a country is blocked", async () => {
+    const result = await runCohortFetchBatch(buildDeps({
+      ledgerFor: (country) => country === "AE"
+        ? [ledgerFresh({ reporterCountry: "AE", outcome: "quota_exhausted" })]
+        : [ledgerFresh({
+            reporterCountry: country as MarketProviderFetchLedgerEntry["reporterCountry"],
+          })],
+    }));
+    expect(result.outcome).toBe("batch_completed");
+    expect(result.blocked).toEqual([{ country: "AE", reason: "quota_exhausted" }]);
+    expect(result.processed).toEqual([]);
+    expect(result.remaining).toEqual([]);
+    expect(result.moreRemaining).toBe(true);
+  });
+
+  it("preserves provider-unavailable reporters as terminally resolved", async () => {
+    const result = await runCohortFetchBatch(buildDeps({ importerRoster: [] }));
+    expect(result.outcome).toBe("cohort_fetch_complete");
+    expect(result.unavailable).toEqual(calibrationCohort().map((entry) => entry.countryAlpha2));
+    expect(result.blocked).toEqual([]);
+    expect(result.remaining).toEqual([]);
+    expect(result.moreRemaining).toBe(false);
   });
 });
 
@@ -733,6 +758,30 @@ describe("MI1F cohort fetch — resumability + terminal state", () => {
     }));
     expect(result.processed).toHaveLength(1);
     expect(maxActive).toBe(1);
+  });
+
+  it("returns cohort_fetch_complete in the invocation that processes the final country", async () => {
+    const beforeAu = new Set(
+      calibrationCohort()
+        .map((entry) => entry.countryAlpha2)
+        .filter((country) => country !== "AU"),
+    );
+    const result = await runCohortFetchBatch(buildDeps({
+      ledgerFor: (country) => beforeAu.has(country as MarketProviderFetchLedgerEntry["reporterCountry"])
+        ? [ledgerFresh({
+            reporterCountry: country as MarketProviderFetchLedgerEntry["reporterCountry"],
+          })]
+        : [],
+    }));
+    expect(result.processed).toEqual([{
+      country: "AU",
+      result: "fetched",
+      observationsCreated: 300,
+      observationsExisting: 0,
+    }]);
+    expect(result.remaining).toEqual([]);
+    expect(result.outcome).toBe("cohort_fetch_complete");
+    expect(result.moreRemaining).toBe(false);
   });
 
   it("all countries complete_fresh → outcome cohort_fetch_complete and moreRemaining false", async () => {

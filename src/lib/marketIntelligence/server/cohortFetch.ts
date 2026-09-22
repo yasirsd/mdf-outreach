@@ -456,15 +456,19 @@ export async function runCohortFetchBatch(
   const needsFetch = classified.filter((c) => c.classification === "needs_fetch");
 
   if (needsFetch.length === 0) {
+    // Provider-unavailable reporters are terminally resolved by the existing
+    // MI1F contract. A blocked reporter is not: it still requires a later
+    // persisted-state reclassification before the cohort can be complete.
+    const hasBlockedWork = blocked.length > 0;
     return {
-      outcome: "cohort_fetch_complete",
+      outcome: hasBlockedWork ? "batch_completed" : "cohort_fetch_complete",
       analyticalYears,
       processed: [],
       alreadyComplete,
       unavailable,
       blocked,
       remaining: [],
-      moreRemaining: false,
+      moreRemaining: hasBlockedWork,
       providerRequestsUsed: 0,
       metadataRequestsUsed,
       productMappingRegistryVersion: mapping.registryVersion,
@@ -630,11 +634,10 @@ export async function runCohortFetchBatch(
   const finalRemainder = canonicalRemaining(
     needsFetch.map((c) => c.countryAlpha2), processed,
   );
+  const hasUnresolvedWork = finalRemainder.length > 0 || blocked.length > 0;
   const outcome: CohortFetchOutcome =
     stopReason ??
-    (finalRemainder.length === 0 && processed.length > 0 && processed.every((p) => p.result !== "provider_error")
-      ? "batch_completed"
-      : "batch_completed");
+    (hasUnresolvedWork ? "batch_completed" : "cohort_fetch_complete");
 
   return {
     outcome,
@@ -644,7 +647,7 @@ export async function runCohortFetchBatch(
     unavailable,
     blocked,
     remaining: finalRemainder,
-    moreRemaining: finalRemainder.length > 0,
+    moreRemaining: hasUnresolvedWork,
     providerRequestsUsed: providerTransport.requestsUsed(),
     metadataRequestsUsed,
     productMappingRegistryVersion: mapping.registryVersion,
