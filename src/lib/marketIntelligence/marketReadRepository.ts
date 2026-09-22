@@ -206,6 +206,25 @@ const COMPONENT_COLS =
 const LEDGER_COLS =
   "provider_id, dataset_id, query_fingerprint, reporter_country, partner_country, trade_flow, hs_revision, hs_codes, frequency, coverage_start, coverage_end, provider_selection_version, fetched_at, fresh_until, outcome, rows_received, safe_metadata";
 
+/** Kept below Supabase's default 1,000-row Data API response ceiling. */
+export const MARKET_OBSERVATION_READ_PAGE_SIZE = 500;
+
+/** Deterministic page collector shared by complete observation reads and tests. */
+export async function collectAllMarketObservationPages<T>(
+  loadPage: (from: number, to: number) => Promise<readonly T[]>,
+  pageSize = MARKET_OBSERVATION_READ_PAGE_SIZE,
+): Promise<T[]> {
+  if (!Number.isInteger(pageSize) || pageSize <= 0) {
+    throw new Error("market observation page size must be a positive integer");
+  }
+  const rows: T[] = [];
+  for (let from = 0; ; from += pageSize) {
+    const page = await loadPage(from, from + pageSize - 1);
+    rows.push(...page);
+    if (page.length < pageSize) return rows;
+  }
+}
+
 class SupabaseMarketReadRepository implements MarketReadRepository {
   constructor(private supabase: SupabaseClient) {}
 
@@ -306,19 +325,28 @@ class SupabaseMarketReadRepository implements MarketReadRepository {
     providerId: string,
     datasetId: string,
   ): Promise<MarketReadRepositoryObservation[]> {
-    const { data, error } = await this.supabase
-      .from("market_trade_observations")
-      .select(OBSERVATION_COLS)
-      .eq("provider_id", providerId)
-      .eq("dataset_id", datasetId)
-      .eq("reporter_country", countryAlpha2)
-      .eq("hs_revision", hsRevision)
-      .eq("hs_code", hsCode)
-      .eq("frequency", "annual")
-      .not("partner_country", "is", null)
-      .order("period", { ascending: true });
-    if (error) throw error;
-    return (data ?? []).map(rowToObservation);
+    const rows = await collectAllMarketObservationPages<Record<string, unknown>>(
+      async (from, to) => {
+        const { data, error } = await this.supabase
+          .from("market_trade_observations")
+          .select(OBSERVATION_COLS)
+          .eq("provider_id", providerId)
+          .eq("dataset_id", datasetId)
+          .eq("reporter_country", countryAlpha2)
+          .eq("trade_flow", "import")
+          .eq("hs_revision", hsRevision)
+          .eq("hs_code", hsCode)
+          .eq("frequency", "annual")
+          .not("partner_country", "is", null)
+          .order("period", { ascending: true })
+          .order("partner_country", { ascending: true })
+          .order("id", { ascending: true })
+          .range(from, to);
+        if (error) throw error;
+        return (data ?? []) as Record<string, unknown>[];
+      },
+    );
+    return rows.map(rowToObservation);
   }
 
   async listBilateralAnnualMaterialObservations(
@@ -328,21 +356,28 @@ class SupabaseMarketReadRepository implements MarketReadRepository {
     providerId: string,
     datasetId: string,
   ): Promise<MarketReadRepositoryMaterialObservation[]> {
-    const { data, error } = await this.supabase
-      .from("market_trade_observations")
-      .select(MATERIAL_OBSERVATION_COLS)
-      .eq("provider_id", providerId)
-      .eq("dataset_id", datasetId)
-      .eq("reporter_country", countryAlpha2)
-      .eq("trade_flow", "import")
-      .eq("hs_revision", hsRevision)
-      .eq("hs_code", hsCode)
-      .eq("frequency", "annual")
-      .not("partner_country", "is", null)
-      .order("period", { ascending: true })
-      .order("partner_country", { ascending: true });
-    if (error) throw error;
-    return (data ?? []).map(rowToMaterialObservation);
+    const rows = await collectAllMarketObservationPages<Record<string, unknown>>(
+      async (from, to) => {
+        const { data, error } = await this.supabase
+          .from("market_trade_observations")
+          .select(MATERIAL_OBSERVATION_COLS)
+          .eq("provider_id", providerId)
+          .eq("dataset_id", datasetId)
+          .eq("reporter_country", countryAlpha2)
+          .eq("trade_flow", "import")
+          .eq("hs_revision", hsRevision)
+          .eq("hs_code", hsCode)
+          .eq("frequency", "annual")
+          .not("partner_country", "is", null)
+          .order("period", { ascending: true })
+          .order("partner_country", { ascending: true })
+          .order("id", { ascending: true })
+          .range(from, to);
+        if (error) throw error;
+        return (data ?? []) as Record<string, unknown>[];
+      },
+    );
+    return rows.map(rowToMaterialObservation);
   }
 
   async listCurrentMetrics(

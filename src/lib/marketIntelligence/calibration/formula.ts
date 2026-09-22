@@ -24,6 +24,7 @@
  */
 
 import { buildMarketRecommendation } from "../recommendation";
+import { MARKET_FIT_MIN_SUPPORTED_WEIGHT } from "../marketFit";
 import type { MarketFitScore } from "../types";
 import type { CandidateComponentScores } from "./normalize";
 import type { ConfidenceReport, MappingKind } from "./confidence";
@@ -111,9 +112,8 @@ export function composeCandidateFit(input: ComposeCandidateFitInput): CandidateF
     weightedSum += value * weights[key];
     supportedWeight += weights[key];
   }
-  const unsupportedFraction = 1 - supportedWeight / totalWeight;
   const diagnosticFitScore =
-    supportedWeight > 0 && unsupportedFraction <= 0.30
+    supportedWeight >= MARKET_FIT_MIN_SUPPORTED_WEIGHT
       ? Math.round(weightedSum / supportedWeight)
       : null;
 

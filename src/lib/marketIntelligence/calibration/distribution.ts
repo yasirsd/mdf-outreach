@@ -7,15 +7,22 @@
  */
 
 export interface DistributionSummary {
+  /** Number of finite observations included in the distribution. */
+  count: number;
+  /** Number of null, undefined, or non-finite observations excluded. */
+  missingCount: number;
+  /** Backward-compatible alias for count. */
   n: number;
   min: number | null;
   max: number | null;
   mean: number | null;
   median: number | null;
+  p10: number | null;
   p25: number | null;
   p50: number | null;
   p75: number | null;
   p90: number | null;
+  percentileMethod: "nearest_rank_type_1";
 }
 
 /** Type-1 percentile (nearest rank) so a small cohort produces stable buckets. */
@@ -32,20 +39,38 @@ export function summarize(values: ReadonlyArray<number | null | undefined>): Dis
     (v): v is number => typeof v === "number" && Number.isFinite(v),
   );
   if (finite.length === 0) {
-    return { n: 0, min: null, max: null, mean: null, median: null, p25: null, p50: null, p75: null, p90: null };
+    return {
+      count: 0,
+      missingCount: values.length,
+      n: 0,
+      min: null,
+      max: null,
+      mean: null,
+      median: null,
+      p10: null,
+      p25: null,
+      p50: null,
+      p75: null,
+      p90: null,
+      percentileMethod: "nearest_rank_type_1",
+    };
   }
   const sorted = [...finite].sort((a, b) => a - b);
   const mean = finite.reduce((a, b) => a + b, 0) / finite.length;
   return {
+    count: finite.length,
+    missingCount: values.length - finite.length,
     n: finite.length,
     min: sorted[0] ?? null,
     max: sorted[sorted.length - 1] ?? null,
     mean,
     median: percentile(sorted, 50),
+    p10: percentile(sorted, 10),
     p25: percentile(sorted, 25),
     p50: percentile(sorted, 50),
     p75: percentile(sorted, 75),
     p90: percentile(sorted, 90),
+    percentileMethod: "nearest_rank_type_1",
   };
 }
 

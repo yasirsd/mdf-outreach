@@ -28,6 +28,8 @@ export interface CountryPrimitives {
   /** 1-indexed rank of India among latest-year origins; `null` unless proven. */
   indiaRank: number | null;
   originCount: number | null;
+  topOriginCountry: string | null;
+  topOriginValueUsd: number | null;
   top1OriginShare: number | null;
   top3OriginShare: number | null;
   /** Herfindahl-Hirschman Index on latest-year origin shares (0..1). */
@@ -38,6 +40,7 @@ export interface CountryPrimitives {
   /** Coefficient of variation on 5-year annual totals (SD / mean). */
   volatilityCv: number | null;
   validAnnualPeriods: number;
+  observedYears: number[];
   /**
    * Coverage% of the ANALYTICAL window (provider-supported years within
    * the requested range), NOT the raw requested range. Malaysia proof:
@@ -62,6 +65,7 @@ interface AnnualBucket {
   totalUsd: number;
   totalKg: number;
   hasQuantity: boolean;
+  quantityComplete: boolean;
   origins: Map<string, number>;
 }
 
@@ -80,7 +84,14 @@ function bucketByYear(context: CalibrationEvidenceContext): Map<number, AnnualBu
     if (!Number.isInteger(year)) continue;
     let bucket = byYear.get(year);
     if (!bucket) {
-      bucket = { year, totalUsd: 0, totalKg: 0, hasQuantity: false, origins: new Map() };
+      bucket = {
+        year,
+        totalUsd: 0,
+        totalKg: 0,
+        hasQuantity: false,
+        quantityComplete: true,
+        origins: new Map(),
+      };
       byYear.set(year, bucket);
     }
     if (typeof row.tradeValueUsd === "number" && row.tradeValueUsd >= 0) {
@@ -94,6 +105,10 @@ function bucketByYear(context: CalibrationEvidenceContext): Map<number, AnnualBu
     if (kg !== null) {
       bucket.totalKg += kg;
       bucket.hasQuantity = true;
+    } else {
+      // A partial quantity denominator must never produce a unit value for
+      // the complete bilateral total.
+      bucket.quantityComplete = false;
     }
   }
   return byYear;
@@ -122,7 +137,8 @@ export function computeCountryPrimitives(
   const complete = context.completeBilateralCoverage;
 
   const latestImportsUsd = complete && latest ? latest.totalUsd : null;
-  const latestQuantityKg = complete && latest && latest.hasQuantity ? latest.totalKg : null;
+  const latestQuantityKg =
+    complete && latest && latest.hasQuantity && latest.quantityComplete ? latest.totalKg : null;
   const latestQuantityTonnes = latestQuantityKg !== null ? latestQuantityKg / 1000 : null;
   const latestDerivedUnitValueUsdPerKg =
     latestImportsUsd !== null && latestQuantityKg && latestQuantityKg > 0
@@ -131,6 +147,9 @@ export function computeCountryPrimitives(
 
   // India tri-state contract.
   const latestIndiaValue = latest ? latest.origins.get(INDIA_ALPHA2) ?? null : null;
+  const latestIndiaPresence: CalibrationEvidenceContext["indiaPresence"] = !complete
+    ? "unknown"
+    : latest?.origins.has(INDIA_ALPHA2) ? "present" : "absent";
   let indiaImportsUsd: number | null;
   let indiaShare: number | null;
   let indiaRank: number | null;
@@ -138,14 +157,16 @@ export function computeCountryPrimitives(
     indiaImportsUsd = null;
     indiaShare = null;
     indiaRank = null;
-  } else if (context.indiaPresence === "present") {
+  } else if (latestIndiaPresence === "present") {
     indiaImportsUsd = latestIndiaValue ?? 0;
     indiaShare =
       latestImportsUsd && latestImportsUsd > 0 && latestIndiaValue !== null
         ? latestIndiaValue / latestImportsUsd
         : 0;
     if (latest) {
-      const ranked = [...latest.origins.entries()].sort(([, a], [, b]) => b - a);
+      const ranked = [...latest.origins.entries()].sort(
+        ([codeA, a], [codeB, b]) => b - a || codeA.localeCompare(codeB),
+      );
       const idx = ranked.findIndex(([code]) => code === INDIA_ALPHA2);
       indiaRank = idx >= 0 ? idx + 1 : null;
     } else {
@@ -160,8 +181,12 @@ export function computeCountryPrimitives(
 
   const originCount = complete && latest ? latest.origins.size : null;
   const originsRanked = complete && latest
-    ? [...latest.origins.entries()].sort(([, a], [, b]) => b - a)
+    ? [...latest.origins.entries()].sort(
+        ([codeA, a], [codeB, b]) => b - a || codeA.localeCompare(codeB),
+      )
     : [];
+  const topOriginCountry = originsRanked[0]?.[0] ?? null;
+  const topOriginValueUsd = originsRanked[0]?.[1] ?? null;
   const top1OriginShare =
     complete && originsRanked.length > 0 && latestImportsUsd && latestImportsUsd > 0
       ? originsRanked[0]![1] / latestImportsUsd
@@ -216,6 +241,8 @@ export function computeCountryPrimitives(
     indiaShare,
     indiaRank,
     originCount,
+    topOriginCountry,
+    topOriginValueUsd,
     top1OriginShare,
     top3OriginShare,
     hhi,
@@ -224,6 +251,7 @@ export function computeCountryPrimitives(
     fiveYearCagrPct,
     volatilityCv,
     validAnnualPeriods: years.length,
+    observedYears: years,
     analyticalCoveragePct,
     completenessFlags: {
       hasQuantityLatest: latestQuantityKg !== null,
@@ -231,7 +259,7 @@ export function computeCountryPrimitives(
       hasAtLeast5Periods: years.length >= 5,
       latestYearHasOrigins: latest ? latest.origins.size > 0 : false,
       completeBilateralCoverage: complete,
-      indiaPresence: context.indiaPresence,
+      indiaPresence: latestIndiaPresence,
     },
   };
 }
