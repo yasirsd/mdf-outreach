@@ -62,6 +62,7 @@ function row(
       priceAttractiveness: 50,
       stability: 50,
     },
+    marketFitVersion: "mi-fit-v2",
     diagnosticFitScore: 50,
     recommendationStatus: "indicative",
     publicationReason: "development_only",
@@ -202,7 +203,9 @@ describe("MI1G.1 deterministic shadow comparison", () => {
     expect(Number.isFinite(first.diagnostics.candidateB.versusProvisional.spearmanCorrelation)).toBe(true);
     expect(Number.isFinite(first.diagnostics.candidateC.versusProvisional.spearmanCorrelation)).toBe(true);
     expect(first.scenarioTests.every((scenario) => scenario.passed)).toBe(true);
-    expect(first.productionNormalizationReplaced).toBe(false);
+    expect(first.productionNormalizationReplaced).toBe(true);
+    expect(first.isProvisional).toBe(false);
+    expect(first.marketFitVersion).toBe("mi-fit-v2");
   });
 
   it("uses the unchanged conceptual weights and explicit frozen anchors", () => {
@@ -217,6 +220,6 @@ describe("MI1G.1 deterministic shadow comparison", () => {
     expect(Object.values(SHADOW_WEIGHTS).reduce((sum, value) => sum + value, 0)).toBe(100);
     expect(CANDIDATE_B_ANCHORS.demandLog10Usd).toHaveLength(5);
     expect(CANDIDATE_C_ANCHORS.demandLog10Usd).toHaveLength(5);
-    expect(DEFAULT_NORMALIZATION.demandSizeBreaksLog10).toEqual([5, 6, 6.75, 7.5, 8.5]);
+    expect(DEFAULT_NORMALIZATION.demandLog10Usd).toEqual([6, 6.75, 7.25, 7.75, 8.5]);
   });
 });

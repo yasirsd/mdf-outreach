@@ -1,14 +1,13 @@
 /**
- * MI1E.1 — DEVELOPMENT-ONLY calibration report.
+ * MI1H — DEVELOPMENT-ONLY review of the calibrated production contract.
  *
  * Pure function. Consumes an already-built `CalibrationEvidenceContext`
  * per country — the caller reads observations + ledger via the existing
  * `MarketReadRepository`; the report itself makes no provider or DB
  * call.
  *
- * Every threshold is provisional. `PROVISIONAL_NORMALIZATION` is
- * explicitly marked and MUST NOT be treated as a calibrated production
- * threshold. Tests assert this.
+ * Candidate C is production normalization. The old MI1E provisional config
+ * is retained solely for reproducible historical/debug comparisons.
  */
 
 import type { CalibrationCohortEntry } from "./cohort";
@@ -17,6 +16,7 @@ import { computeCountryPrimitives, type CountryPrimitives } from "./primitives";
 import { summarize, type DistributionSummary } from "./distribution";
 import {
   DEFAULT_NORMALIZATION,
+  LEGACY_PROVISIONAL_NORMALIZATION,
   candidateComponentScores,
   type CandidateComponentScores,
   type NormalizationConfig,
@@ -29,15 +29,24 @@ import {
   type ExperimentalActionableFitGate,
 } from "./formula";
 
-export const CALIBRATION_REPORT_VERSION = "mi1e-calibration-dev-v2" as const;
+export const CALIBRATION_REPORT_VERSION = "mi1h-calibration-dev-v3" as const;
 
-/** Explicit provisional flag; the operator sets `false` only after locking bands. */
+/** Superseded MI1E config; development/history only. */
 export const PROVISIONAL_NORMALIZATION: {
-  config: NormalizationConfig;
+  config: typeof LEGACY_PROVISIONAL_NORMALIZATION;
   isProvisional: true;
 } = Object.freeze({
-  config: DEFAULT_NORMALIZATION,
+  config: LEGACY_PROVISIONAL_NORMALIZATION,
   isProvisional: true,
+});
+
+/** Authoritative MI1H production normalization. */
+export const PRODUCTION_NORMALIZATION: {
+  config: NormalizationConfig;
+  isProvisional: false;
+} = Object.freeze({
+  config: DEFAULT_NORMALIZATION,
+  isProvisional: false,
 });
 
 export interface CalibrationCountryReport {
@@ -80,7 +89,8 @@ export interface CalibrationReport {
   unavailableCountries: ReadonlyArray<string>;
   normalization: {
     config: NormalizationConfig;
-    isProvisional: boolean;
+    isProvisional: false;
+    marketFitVersion: "mi-fit-v2";
   };
   experimentalGate: ExperimentalActionableFitGate;
   isDevelopmentOnly: true;
@@ -101,7 +111,7 @@ export interface BuildCalibrationReportInput {
 }
 
 export function buildCalibrationReport(input: BuildCalibrationReportInput): CalibrationReport {
-  const config = input.normalization ?? PROVISIONAL_NORMALIZATION.config;
+  const config = input.normalization ?? PRODUCTION_NORMALIZATION.config;
   const experimentalGate = input.experimentalGate ?? UNCALIBRATED_EXPERIMENTAL_GATE;
   const now = (input.now ?? (() => new Date()))();
 
@@ -176,7 +186,8 @@ export function buildCalibrationReport(input: BuildCalibrationReportInput): Cali
     unavailableCountries: input.cohortUnavailable.map((c) => c.countryAlpha2),
     normalization: {
       config,
-      isProvisional: input.normalization === undefined,
+      isProvisional: false,
+      marketFitVersion: config.marketFitVersion,
     },
     experimentalGate,
     isDevelopmentOnly: true,

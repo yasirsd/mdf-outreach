@@ -146,15 +146,16 @@ describe("MI1G latest-year and primitive semantics", () => {
 });
 
 describe("MI1G review projection", () => {
-  it("includes exactly the canonical 18 countries with provisional proxy outputs", () => {
+  it("includes exactly the canonical 18 countries with calibrated proxy outputs", () => {
     const review = buildCalibrationReviewReport(cohortReport());
     expect(review.cohortSize).toBe(18);
     expect(review.rows.map((row) => row.countryAlpha2)).toEqual(
       calibrationCohort().map((entry) => entry.countryAlpha2),
     );
     expect(new Set(review.rows.map((row) => row.countryAlpha2)).size).toBe(18);
-    expect(review.normalization.isProvisional).toBe(true);
-    expect(review.label).toBe("PROVISIONAL — NOT CALIBRATED");
+    expect(review.normalization.isProvisional).toBe(false);
+    expect(review.normalization.marketFitVersion).toBe("mi-fit-v2");
+    expect(review.label).toBe("PRODUCTION CALIBRATED — CANDIDATE C");
     expect(review.rows.every((row) => row.mappingKind === "proxy")).toBe(true);
     expect(review.rows.every((row) => row.recommendationStatus !== "actionable")).toBe(true);
   });

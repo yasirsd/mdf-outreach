@@ -133,7 +133,8 @@ describe("MI1G server report builder", () => {
     expect(result.report?.rows.every((row) => row.recommendationStatus !== "actionable")).toBe(true);
     expect(result.report?.calibrationComparison.countries).toHaveLength(18);
     expect(result.report?.calibrationComparison.scenarioTests.every((scenario) => scenario.passed)).toBe(true);
-    expect(result.report?.calibrationComparison.productionNormalizationReplaced).toBe(false);
+    expect(result.report?.calibrationComparison.productionNormalizationReplaced).toBe(true);
+    expect(result.report?.calibrationComparison.marketFitVersion).toBe("mi-fit-v2");
   });
 
   it("rejects non-owners before loading the repository", async () => {

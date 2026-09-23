@@ -52,6 +52,7 @@ export interface CalibrationReviewCountryRow {
     priceAttractiveness: number | null;
     stability: number | null;
   };
+  marketFitVersion: string;
   diagnosticFitScore: number | null;
   recommendationStatus: "actionable" | "indicative" | "insufficient_evidence";
   publicationReason: string;
@@ -94,7 +95,7 @@ export interface CalibrationRankingEntry {
 
 export interface NormalizationAssessment {
   component: keyof CandidateComponentScores;
-  currentProvisionalRule: string;
+  currentRule: string;
   observedPrimitiveDistributions: Record<string, DistributionSummary>;
   observedScoreDistribution: DistributionSummary;
   compressesValues: boolean;
@@ -108,8 +109,12 @@ export interface CalibrationReviewReport {
   version: typeof MI1G_REPORT_VERSION;
   generatedAt: string;
   isDevelopmentOnly: true;
-  label: "PROVISIONAL — NOT CALIBRATED";
-  normalization: { isProvisional: true };
+  label: "PRODUCTION CALIBRATED — CANDIDATE C";
+  normalization: {
+    isProvisional: false;
+    methodology: "candidate-c-conservative-hybrid";
+    marketFitVersion: "mi-fit-v2";
+  };
   percentileMethod: "nearest_rank_type_1";
   hhiScale: "0_to_1";
   supportedWeightThreshold: number;
@@ -259,7 +264,7 @@ function assessment(
   const boundaryCount = finite.filter((value) => value === 0 || value === 100).length;
   return {
     component,
-    currentProvisionalRule: currentRule,
+    currentRule,
     observedPrimitiveDistributions,
     observedScoreDistribution: distribution,
     compressesValues: finite.length >= 2 && range < 25,
@@ -313,6 +318,7 @@ export function buildCalibrationReviewReport(base: CalibrationReport): Calibrati
         priceAttractiveness: c.priceAttractiveness,
         stability: c.demandStability,
       },
+      marketFitVersion: country.fit.calculationVersion,
       diagnosticFitScore: country.fit.diagnosticFitScore,
       recommendationStatus: country.fit.recommendationStatus,
       publicationReason: `development_only:${country.fit.publicationReason}`,
@@ -363,38 +369,38 @@ export function buildCalibrationReviewReport(base: CalibrationReport): Calibrati
     assessment(
       "demandSize",
       componentValues("demandSize"),
-      "Piecewise score over log10(latest import USD + 1).",
+      "mi-fit-v2 Candidate C: log10(latest import USD + 1) over frozen anchors 6, 6.75, 7.25, 7.75, 8.5.",
       {
         rawUsd: distributions.latestImportValueUsd,
         log10ValuePlusOne: logSummary,
       },
-      "Retain a monotonic log transform; review cohort percentile anchors after inspecting raw and log distributions.",
+      "Locked by MI1H; monitor future cohort drift without dynamically recomputing anchors.",
       hasOutlier("latestImportValueUsd"),
     ),
     assessment(
       "demandGrowth",
       componentValues("demandGrowth"),
-      "Prefer 3-year CAGR, then 5-year CAGR, then YoY; apply provisional growth bands.",
+      "mi-fit-v2 Candidate C: prefer 3-year CAGR, then 5-year CAGR, then YoY; anchors -10, -5, 2.5, 10, 20.",
       {
         yoy: distributions.yoy,
         cagr3Year: distributions.cagr3Year,
         cagr5Year: distributions.cagr5Year,
       },
-      "Use robust cohort anchors with symmetric caps; keep calendar elapsed-year and missing-period rules unchanged.",
+      "Locked by MI1H; retain calendar elapsed-year and missing-period rules.",
       hasOutlier("cagr3Year") || hasOutlier("cagr5Year") || hasOutlier("yoy"),
     ),
     assessment(
       "indiaPosition",
       componentValues("indiaPosition"),
-      "Two-thirds India share score plus one-third rank score on complete bilateral evidence.",
+      "mi-fit-v2 Candidate C: two-thirds smooth India-share score plus one-third smooth rank score on complete bilateral evidence.",
       { indiaShare: distributions.indiaShare, indiaRank: distributions.indiaRank },
-      "Review share percentiles and rank buckets separately; retain absent versus unknown semantics.",
+      "Locked by MI1H; retain present, absent, and unknown semantics.",
       hasOutlier("indiaShare") || hasOutlier("indiaRank"),
     ),
     assessment(
       "competitiveOpportunity",
       componentValues("competitiveOpportunity"),
-      "Two-thirds inverse HHI plus one-third India-rank opportunity.",
+      "mi-fit-v2 Candidate C: India whitespace multiplied by contestability from HHI, top-1 share, and top-3 share.",
       {
         indiaShare: distributions.indiaShare,
         indiaRank: distributions.indiaRank,
@@ -402,26 +408,26 @@ export function buildCalibrationReviewReport(base: CalibrationReport): Calibrati
         top3OriginShare: distributions.top3OriginShare,
         hhi: distributions.hhi,
       },
-      "Add concentration safeguards using top-1/top-3 share so low India share cannot imply easy entry in a dominated market.",
+      "Locked by MI1H; keep the explicit concentration cap and descriptive warning separate.",
       hasOutlier("hhi") || hasOutlier("top1OriginShare") || hasOutlier("top3OriginShare"),
     ),
     assessment(
       "priceAttractiveness",
       componentValues("priceAttractiveness"),
-      "Piecewise derived unit value USD/kg; this is not a market or selling price.",
+      "mi-fit-v2 Candidate C: bounded derived unit value USD/kg scoring capped at 85, with a small-quantity safeguard.",
       {
         derivedUnitValueUsdPerKg: distributions.latestDerivedUnitValueUsdPerKg,
         quantityTonnes: distributions.latestImportQuantityTonnes,
       },
-      "Prefer bounded log/percentile treatment and consider quantity coverage; do not automatically reward the maximum value.",
+      "Locked by MI1H; never relabel derived unit value as market, selling, or wholesale price.",
       hasOutlier("latestDerivedUnitValueUsdPerKg"),
     ),
     assessment(
       "demandStability",
       componentValues("demandStability"),
-      "Inverse five-period coefficient of variation with provisional CV bands.",
+      "mi-fit-v2 Candidate C: inverse five-period CV over frozen anchors 0.50, 0.30, 0.20, 0.10, 0.05.",
       { volatilityCv: distributions.volatility },
-      "Retain the selected CV primitive; review robust cohort percentile anchors without introducing a second volatility definition.",
+      "Locked by MI1H; retain the existing CV primitive.",
       hasOutlier("volatility"),
     ),
   ];
@@ -450,8 +456,12 @@ export function buildCalibrationReviewReport(base: CalibrationReport): Calibrati
     version: MI1G_REPORT_VERSION,
     generatedAt: base.producedAt,
     isDevelopmentOnly: true,
-    label: "PROVISIONAL — NOT CALIBRATED",
-    normalization: { isProvisional: true },
+    label: "PRODUCTION CALIBRATED — CANDIDATE C",
+    normalization: {
+      isProvisional: false,
+      methodology: "candidate-c-conservative-hybrid",
+      marketFitVersion: "mi-fit-v2",
+    },
     percentileMethod: "nearest_rank_type_1",
     hhiScale: "0_to_1",
     supportedWeightThreshold: MARKET_FIT_MIN_SUPPORTED_WEIGHT,

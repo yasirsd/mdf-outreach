@@ -27,7 +27,7 @@ describe("MI0 Market Fit — weights and versioning", () => {
   });
 
   it("carries a stable weight version so future changes cannot silently rewrite history", () => {
-    expect(MARKET_FIT_WEIGHT_VERSION).toBe("mi-fit-v1");
+    expect(MARKET_FIT_WEIGHT_VERSION).toBe("mi-fit-v2");
   });
 });
 

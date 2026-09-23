@@ -24,19 +24,24 @@
  */
 
 import { buildMarketRecommendation } from "../recommendation";
-import { MARKET_FIT_MIN_SUPPORTED_WEIGHT } from "../marketFit";
+import {
+  DATA_CONFIDENCE_VERSION,
+  MARKET_FIT_MIN_SUPPORTED_WEIGHT,
+  MARKET_FIT_VERSION,
+  MARKET_FIT_WEIGHTS,
+} from "../marketFit";
 import type { MarketFitScore } from "../types";
 import type { CandidateComponentScores } from "./normalize";
 import type { ConfidenceReport, MappingKind } from "./confidence";
 
-export const DEFAULT_COMPONENT_WEIGHTS: Record<keyof CandidateComponentScores, number> = {
-  demandSize: 25,
-  demandGrowth: 20,
-  indiaPosition: 20,
-  competitiveOpportunity: 15,
-  priceAttractiveness: 10,
-  demandStability: 10,
-};
+export const DEFAULT_COMPONENT_WEIGHTS: Record<keyof CandidateComponentScores, number> = Object.freeze({
+  demandSize: MARKET_FIT_WEIGHTS.demand_size,
+  demandGrowth: MARKET_FIT_WEIGHTS.demand_growth,
+  indiaPosition: MARKET_FIT_WEIGHTS.india_position,
+  competitiveOpportunity: MARKET_FIT_WEIGHTS.competitive_opportunity,
+  priceAttractiveness: MARKET_FIT_WEIGHTS.price_attractiveness,
+  demandStability: MARKET_FIT_WEIGHTS.demand_stability,
+});
 
 /**
  * Experimental, UNCALIBRATED extra actionable-gate the operator may
@@ -60,6 +65,7 @@ export const UNCALIBRATED_EXPERIMENTAL_GATE: ExperimentalActionableFitGate = Obj
 export type RecommendationStatus = "actionable" | "indicative" | "insufficient_evidence";
 
 export interface CandidateFitResult {
+  calculationVersion: string;
   diagnosticFitScore: number | null;
   supportedWeight: number;
   totalWeight: number;
@@ -79,6 +85,7 @@ export interface ComposeCandidateFitInput {
   hasDemandSizeEvidence: boolean;
   hasHistoricalEvidence: boolean;
   weights?: Record<keyof CandidateComponentScores, number>;
+  calculationVersion?: string;
   /** Optional add-on gate; never loosens the central contract. */
   experimentalGate?: ExperimentalActionableFitGate;
 }
@@ -130,7 +137,7 @@ export function composeCandidateFit(input: ComposeCandidateFitInput): CandidateF
     components: [],
     positiveReasons: [],
     negativeReasons: componentReasons,
-    calculationVersion: "mi-fit-v1",
+    calculationVersion: input.calculationVersion ?? MARKET_FIT_VERSION,
     calculatedAt: new Date().toISOString(),
   };
 
@@ -140,7 +147,7 @@ export function composeCandidateFit(input: ComposeCandidateFitInput): CandidateF
       ? {
           score: input.confidence.score,
           components: [],
-          calculationVersion: "mi-conf-v1",
+          calculationVersion: DATA_CONFIDENCE_VERSION,
           calculatedAt: new Date().toISOString(),
         }
       : null,
@@ -166,6 +173,7 @@ export function composeCandidateFit(input: ComposeCandidateFitInput): CandidateF
   }
 
   return {
+    calculationVersion: input.calculationVersion ?? MARKET_FIT_VERSION,
     diagnosticFitScore,
     supportedWeight,
     totalWeight,

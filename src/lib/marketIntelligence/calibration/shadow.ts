@@ -1,19 +1,50 @@
 /**
  * MI1G.1 — deterministic SHADOW calibration candidates.
  *
- * Candidate B freezes the MI1G 18-country reference percentiles supplied by
- * the operator. Candidate C blends those observations with economically
- * interpretable absolute anchors. Neither config replaces DEFAULT_NORMALIZATION
- * and neither function performs I/O or persistence.
+ * Candidate B remains a frozen benchmark. Candidate C is now the MI1H
+ * production contract, but remains visible here for historical comparison.
+ * This module performs no I/O or persistence.
  */
 
-import type { CandidateComponentScores } from "./normalize";
+import {
+  CALIBRATED_NORMALIZATION,
+  calibratedComponentScores,
+  legacyProvisionalComponentScores,
+  type CandidateComponentScores,
+  type NormalizationPrimitiveInput,
+} from "./normalize";
 import { DEFAULT_COMPONENT_WEIGHTS, composeCandidateFit } from "./formula";
 import { log10p1, summarize, type DistributionSummary } from "./distribution";
 import type { CalibrationReviewCountryRow, CalibrationReviewReport } from "./review";
 import { COMPETITIVE_OPPORTUNITY_WARNING_THRESHOLDS } from "./review";
+import {
+  LEGACY_PROVISIONAL_MARKET_FIT_VERSION,
+  MARKET_FIT_VERSION,
+} from "../marketFit";
 
-export const SHADOW_COMPARISON_VERSION = "mi1g.1-shadow-v1" as const;
+export const SHADOW_COMPARISON_VERSION = "mi1h-calibration-comparison-v1" as const;
+
+/** Operator-approved MI1H regression reference; descriptive, never a recommendation. */
+export const MI1H_EXPECTED_CALIBRATED_FIT_SNAPSHOT = Object.freeze({
+  US: 66,
+  TH: 62,
+  MY: 57,
+  VN: 53,
+  LK: 53,
+  SG: 51,
+  NL: 52,
+  CA: 50,
+  QA: 46,
+  AU: 44,
+  DE: 44,
+  JP: 43,
+  KW: 40,
+  GB: 40,
+  AE: 36,
+  KR: 34,
+  SA: 33,
+  OM: 24,
+} as const);
 
 type ComponentKey = keyof CandidateComponentScores;
 type ShadowModel = "candidateB" | "candidateC";
@@ -67,18 +98,8 @@ export const CANDIDATE_B_ANCHORS = Object.freeze({
   boundedUnitValueScale: [10, 30, 50, 70, 85] as const,
 });
 
-export const CANDIDATE_C_ANCHORS = Object.freeze({
-  demandLog10Usd: [6.0, 6.75, 7.25, 7.75, 8.5] as const,
-  growthCagrPct: [-10, -5, 2.5, 10, 20] as const,
-  indiaShare: [0, 0.05, 0.20, 0.50, 0.90] as const,
-  hhiWorstToBest: [0.85, 0.60, 0.40, 0.25, 0.15] as const,
-  top1WorstToBest: [0.90, 0.75, 0.60, 0.45, 0.30] as const,
-  top3WorstToBest: [0.98, 0.90, 0.80, 0.65, 0.50] as const,
-  derivedUnitValueUsdPerKg: [2, 3, 5, 8, 12] as const,
-  volatilityWorstToBest: [0.50, 0.30, 0.20, 0.10, 0.05] as const,
-  scoreScale: [0, 25, 50, 75, 100] as const,
-  boundedUnitValueScale: [10, 35, 60, 75, 85] as const,
-});
+/** Alias only: Candidate C has one source of truth in normalize.ts. */
+export const CANDIDATE_C_ANCHORS = CALIBRATED_NORMALIZATION;
 
 export const SHADOW_WEIGHTS = Object.freeze({ ...DEFAULT_COMPONENT_WEIGHTS });
 
@@ -102,6 +123,7 @@ export const WEIGHT_SENSITIVITY_VARIANTS = Object.freeze({
 } satisfies Record<string, Record<ComponentKey, number>>);
 
 export interface ShadowScore {
+  calculationVersion: string;
   components: CandidateComponentScores;
   diagnosticFitScore: number | null;
   recommendationStatus: "actionable" | "indicative" | "insufficient_evidence";
@@ -151,12 +173,14 @@ export interface CountryShadowComparison {
 export interface CalibrationComparison {
   version: typeof SHADOW_COMPARISON_VERSION;
   isDevelopmentOnly: true;
-  label: "SHADOW — NOT CALIBRATED — DO NOT PUBLISH";
-  productionNormalizationReplaced: false;
+  label: "CALIBRATED PRODUCTION + SHADOW BENCHMARK";
+  productionNormalizationReplaced: true;
+  isProvisional: false;
+  marketFitVersion: typeof MARKET_FIT_VERSION;
   models: {
-    provisional: { label: "CURRENT PROVISIONAL"; methodology: string };
+    provisional: { label: "LEGACY PROVISIONAL — DEBUG ONLY"; methodology: string };
     candidateB: { label: "PERCENTILE-CALIBRATED SHADOW"; methodology: string };
-    candidateC: { label: "CONSERVATIVE HYBRID SHADOW"; methodology: string };
+    candidateC: { label: "PRODUCTION CALIBRATED — CANDIDATE C"; methodology: string };
   };
   anchors: {
     candidateB: typeof CANDIDATE_B_ANCHORS;
@@ -177,6 +201,12 @@ export interface CalibrationComparison {
   warningDiagnostics: {
     thresholds: typeof COMPETITIVE_OPPORTUNITY_WARNING_THRESHOLDS;
     warnings: CalibrationReviewReport["competitiveOpportunityWarnings"];
+  };
+  productionRegressionSnapshot: {
+    expected: typeof MI1H_EXPECTED_CALIBRATED_FIT_SNAPSHOT;
+    observed: Record<string, number | null>;
+    mismatches: Array<{ countryAlpha2: string; expected: number; observed: number | null }>;
+    allMatch: boolean;
   };
 }
 
@@ -242,11 +272,28 @@ function growthPrimitive(row: CalibrationReviewCountryRow): number | null {
   return row.cagr3Year ?? row.cagr5Year ?? row.yoy;
 }
 
-function scoreComponents(
-  row: CalibrationReviewCountryRow,
-  model: ShadowModel,
-): CandidateComponentScores {
-  const anchors = model === "candidateB" ? CANDIDATE_B_ANCHORS : CANDIDATE_C_ANCHORS;
+function normalizationInput(row: CalibrationReviewCountryRow): NormalizationPrimitiveInput {
+  return {
+    latestImportValueUsd: row.latestImportValueUsd,
+    latestImportQuantityTonnes: row.latestImportQuantityTonnes,
+    latestDerivedUnitValueUsdPerKg: row.latestDerivedUnitValueUsdPerKg,
+    indiaShare: row.indiaShare,
+    indiaRank: row.indiaRank,
+    indiaPresence: row.indiaPresence,
+    hhi: row.hhi,
+    top1OriginShare: row.top1OriginShare,
+    top3OriginShare: row.top3OriginShare,
+    yoy: row.yoy,
+    cagr3Year: row.cagr3Year,
+    cagr5Year: row.cagr5Year,
+    volatility: row.volatility,
+    hasAtLeast5Periods: row.validAnnualPeriods >= 5,
+    completeBilateralCoverage: row.completeBilateralCoverage,
+  };
+}
+
+function scoreCandidateBComponents(row: CalibrationReviewCountryRow): CandidateComponentScores {
+  const anchors = CANDIDATE_B_ANCHORS;
   const scoreScale = anchors.scoreScale;
   const demandSize = interpolate(log10p1(row.latestImportValueUsd), anchors.demandLog10Usd, scoreScale);
   const demandGrowth = interpolate(growthPrimitive(row), anchors.growthCagrPct, scoreScale);
@@ -269,15 +316,9 @@ function scoreComponents(
     interpolateInverse(row.top1OriginShare, anchors.top1WorstToBest, scoreScale),
     interpolateInverse(row.top3OriginShare, anchors.top3WorstToBest, scoreScale),
   ]);
-  let competitiveOpportunity = whitespace === null || contestability === null
+  const competitiveOpportunity = whitespace === null || contestability === null
     ? null
     : Math.round((whitespace * contestability) / 100);
-  if (
-    model === "candidateC" && competitiveOpportunity !== null &&
-    ((row.hhi ?? 0) >= 0.70 || (row.top1OriginShare ?? 0) >= 0.85)
-  ) {
-    competitiveOpportunity = Math.min(25, competitiveOpportunity);
-  }
 
   let priceAttractiveness = interpolate(
     row.latestDerivedUnitValueUsdPerKg,
@@ -286,7 +327,7 @@ function scoreComponents(
   );
   if (priceAttractiveness !== null && row.latestImportQuantityTonnes !== null &&
       row.latestImportQuantityTonnes < 10) {
-    priceAttractiveness = Math.min(model === "candidateB" ? 40 : 30, priceAttractiveness);
+    priceAttractiveness = Math.min(40, priceAttractiveness);
   }
 
   const demandStability = interpolateInverse(
@@ -305,17 +346,18 @@ function scoreComponents(
 }
 
 export function scoreCandidateB(row: CalibrationReviewCountryRow): CandidateComponentScores {
-  return scoreComponents(row, "candidateB");
+  return scoreCandidateBComponents(row);
 }
 
 export function scoreCandidateC(row: CalibrationReviewCountryRow): CandidateComponentScores {
-  return scoreComponents(row, "candidateC");
+  return calibratedComponentScores(normalizationInput(row));
 }
 
 function fit(
   row: CalibrationReviewCountryRow,
   components: CandidateComponentScores,
   weights: Record<ComponentKey, number> = SHADOW_WEIGHTS,
+  calculationVersion: string = MARKET_FIT_VERSION,
 ): ShadowScore {
   const result = composeCandidateFit({
     components,
@@ -329,8 +371,10 @@ function fit(
     hasDemandSizeEvidence: row.latestImportValueUsd !== null,
     hasHistoricalEvidence: row.validAnnualPeriods >= 3,
     weights,
+    calculationVersion,
   });
   return {
+    calculationVersion: result.calculationVersion,
     components,
     diagnosticFitScore: result.diagnosticFitScore,
     recommendationStatus: result.recommendationStatus,
@@ -340,8 +384,9 @@ function fit(
   };
 }
 
-function provisionalScore(row: CalibrationReviewCountryRow): ShadowScore {
+function productionScore(row: CalibrationReviewCountryRow): ShadowScore {
   return {
+    calculationVersion: row.marketFitVersion,
     components: {
       demandSize: row.candidateComponents.demandSize,
       demandGrowth: row.candidateComponents.growth,
@@ -489,6 +534,7 @@ function scenarioRow(
       priceAttractiveness: 50,
       stability: 50,
     },
+    marketFitVersion: MARKET_FIT_VERSION,
     diagnosticFitScore: 50,
     recommendationStatus: "indicative",
     publicationReason: "development_only",
@@ -551,12 +597,33 @@ function scenarioTests(): CalibrationComparison["scenarioTests"] {
 }
 
 export function buildCalibrationComparison(review: CalibrationReviewReport): CalibrationComparison {
-  const provisional = new Map(review.rows.map((row) => [row.countryAlpha2, provisionalScore(row)]));
-  const candidateB = new Map(review.rows.map((row) => [row.countryAlpha2, fit(row, scoreCandidateB(row))]));
-  const candidateC = new Map(review.rows.map((row) => [row.countryAlpha2, fit(row, scoreCandidateC(row))]));
+  const provisional = new Map(review.rows.map((row) => [
+    row.countryAlpha2,
+    fit(
+      row,
+      legacyProvisionalComponentScores(normalizationInput(row)),
+      SHADOW_WEIGHTS,
+      LEGACY_PROVISIONAL_MARKET_FIT_VERSION,
+    ),
+  ]));
+  const candidateB = new Map(review.rows.map((row) => [
+    row.countryAlpha2,
+    fit(row, scoreCandidateB(row), SHADOW_WEIGHTS, "mi1g.1-candidate-b-shadow-v1"),
+  ]));
+  const candidateC = new Map(review.rows.map((row) => [row.countryAlpha2, productionScore(row)]));
   const provisionalRanks = ranked(provisional);
   const candidateBRanks = ranked(candidateB);
   const candidateCRanks = ranked(candidateC);
+  const observedSnapshot = Object.fromEntries(
+    [...candidateC].map(([country, score]) => [country, score.diagnosticFitScore]),
+  );
+  const snapshotMismatches = Object.entries(MI1H_EXPECTED_CALIBRATED_FIT_SNAPSHOT)
+    .filter(([country, expected]) => observedSnapshot[country] !== expected)
+    .map(([countryAlpha2, expected]) => ({
+      countryAlpha2,
+      expected,
+      observed: observedSnapshot[countryAlpha2] ?? null,
+    }));
 
   const countries = review.rows.map((row) => {
     const p = provisional.get(row.countryAlpha2)!;
@@ -590,7 +657,12 @@ export function buildCalibrationComparison(review: CalibrationReviewReport): Cal
     Object.entries(WEIGHT_SENSITIVITY_VARIANTS).map(([name, weights]) => {
       const variant = new Map(review.rows.map((row) => [
         row.countryAlpha2,
-        fit(row, model === "candidateB" ? scoreCandidateB(row) : scoreCandidateC(row), weights),
+        fit(
+          row,
+          model === "candidateB" ? scoreCandidateB(row) : scoreCandidateC(row),
+          weights,
+          model === "candidateB" ? "mi1g.1-candidate-b-shadow-v1" : MARKET_FIT_VERSION,
+        ),
       ]));
       const diagnostics = rankDiagnostics(defaultRanks, ranked(variant));
       return [name, {
@@ -604,20 +676,22 @@ export function buildCalibrationComparison(review: CalibrationReviewReport): Cal
   return {
     version: SHADOW_COMPARISON_VERSION,
     isDevelopmentOnly: true,
-    label: "SHADOW — NOT CALIBRATED — DO NOT PUBLISH",
-    productionNormalizationReplaced: false,
+    label: "CALIBRATED PRODUCTION + SHADOW BENCHMARK",
+    productionNormalizationReplaced: true,
+    isProvisional: false,
+    marketFitVersion: MARKET_FIT_VERSION,
     models: {
       provisional: {
-        label: "CURRENT PROVISIONAL",
-        methodology: "Existing DEFAULT_NORMALIZATION output, unchanged.",
+        label: "LEGACY PROVISIONAL — DEBUG ONLY",
+        methodology: "Superseded MI1E normalization retained only for historical and regression comparison.",
       },
       candidateB: {
         label: "PERCENTILE-CALIBRATED SHADOW",
         methodology: "Frozen MI1G reference percentiles with smooth monotonic interpolation; whitespace multiplied by contestability.",
       },
       candidateC: {
-        label: "CONSERVATIVE HYBRID SHADOW",
-        methodology: "Economically interpretable absolute anchors informed by the MI1G ranges, with conservative concentration and derived-unit-value caps.",
+        label: "PRODUCTION CALIBRATED — CANDIDATE C",
+        methodology: "Authoritative mi-fit-v2 conservative hybrid normalization with concentration and derived-unit-value safeguards.",
       },
     },
     anchors: { candidateB: CANDIDATE_B_ANCHORS, candidateC: CANDIDATE_C_ANCHORS },
@@ -635,6 +709,12 @@ export function buildCalibrationComparison(review: CalibrationReviewReport): Cal
     warningDiagnostics: {
       thresholds: COMPETITIVE_OPPORTUNITY_WARNING_THRESHOLDS,
       warnings: review.competitiveOpportunityWarnings,
+    },
+    productionRegressionSnapshot: {
+      expected: MI1H_EXPECTED_CALIBRATED_FIT_SNAPSHOT,
+      observed: observedSnapshot,
+      mismatches: snapshotMismatches,
+      allMatch: snapshotMismatches.length === 0,
     },
   };
 }

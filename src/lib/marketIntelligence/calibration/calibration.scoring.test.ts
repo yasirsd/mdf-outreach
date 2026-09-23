@@ -8,6 +8,7 @@ import { buildCalibrationEvidenceContext } from "./evidence";
 import { computeCountryPrimitives } from "./primitives";
 import {
   DEFAULT_NORMALIZATION,
+  LEGACY_PROVISIONAL_NORMALIZATION,
   candidateComponentScores,
   piecewise,
   piecewiseInverse,
@@ -23,6 +24,7 @@ import {
 } from "./formula";
 import {
   CALIBRATION_REPORT_VERSION,
+  PRODUCTION_NORMALIZATION,
   PROVISIONAL_NORMALIZATION,
   buildCalibrationReport,
 } from "./report";
@@ -258,13 +260,16 @@ describe("MI1E.1 fit composer delegates to central buildMarketRecommendation", (
   });
 });
 
-describe("MI1E.1 provisional normalization + report", () => {
-  it("PROVISIONAL_NORMALIZATION is marked provisional and equal to DEFAULT_NORMALIZATION", () => {
+describe("MI1H calibrated production normalization + report", () => {
+  it("keeps the legacy provisional config identifiable but makes Candidate C the production default", () => {
     expect(PROVISIONAL_NORMALIZATION.isProvisional).toBe(true);
-    expect(PROVISIONAL_NORMALIZATION.config).toBe(DEFAULT_NORMALIZATION);
+    expect(PROVISIONAL_NORMALIZATION.config).toBe(LEGACY_PROVISIONAL_NORMALIZATION);
+    expect(PRODUCTION_NORMALIZATION.isProvisional).toBe(false);
+    expect(PRODUCTION_NORMALIZATION.config).toBe(DEFAULT_NORMALIZATION);
+    expect(DEFAULT_NORMALIZATION.marketFitVersion).toBe("mi-fit-v2");
   });
 
-  it("builds a report keyed off evidence contexts and marks itself development-only + provisional", () => {
+  it("builds a development report using the calibrated production contract", () => {
     const cohort = calibrationCohort();
     const evidence = new Map<string, ReturnType<typeof completeCtx>>();
     for (const entry of cohort) {
@@ -289,7 +294,8 @@ describe("MI1E.1 provisional normalization + report", () => {
     });
     expect(report.version).toBe(CALIBRATION_REPORT_VERSION);
     expect(report.isDevelopmentOnly).toBe(true);
-    expect(report.normalization.isProvisional).toBe(true);
+    expect(report.normalization.isProvisional).toBe(false);
+    expect(report.normalization.marketFitVersion).toBe("mi-fit-v2");
     expect(report.experimentalGate.IS_UNCALIBRATED).toBe(true);
     // Proxy mapping: no country may reach actionable.
     for (const c of report.countries) {

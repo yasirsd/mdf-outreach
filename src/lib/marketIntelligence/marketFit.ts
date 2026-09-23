@@ -20,11 +20,15 @@ import type {
   MdfProductId,
 } from "./types";
 
-export const MARKET_FIT_WEIGHT_VERSION = "mi-fit-v1";
+/** MI1H calibrated Candidate-C production methodology. */
+export const MARKET_FIT_VERSION = "mi-fit-v2" as const;
+/** Historical/debug identifier for the superseded provisional methodology. */
+export const LEGACY_PROVISIONAL_MARKET_FIT_VERSION = "mi-fit-v1" as const;
+/** Backwards-compatible name used by the generic weighted composer. */
+export const MARKET_FIT_WEIGHT_VERSION = MARKET_FIT_VERSION;
 
 /**
- * Proposed initial weighting. Not yet operator-approved for
- * production; MI1 must revisit after real ingestion is wired.
+ * Operator-approved MI1H production weighting.
  * Weights sum to 100.
  */
 export const MARKET_FIT_WEIGHTS: Record<MarketFitComponentKey, number> = Object.freeze({
@@ -44,8 +48,11 @@ export const MARKET_FIT_WEIGHTS: Record<MarketFitComponentKey, number> = Object.
 export const MARKET_FIT_MIN_SUPPORTED_WEIGHT = 55;
 
 // ---------------------------------------------------------------------------
-// Component normalization primitives
+// Legacy MI0 component normalization primitives
 // ---------------------------------------------------------------------------
+
+// These helpers remain for historical/debug compatibility. The authoritative
+// production normalizer is CALIBRATED_NORMALIZATION in calibration/normalize.ts.
 
 export function clamp01(value: number): number {
   if (!Number.isFinite(value)) return 0;
