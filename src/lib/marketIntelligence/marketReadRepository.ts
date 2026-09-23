@@ -99,6 +99,7 @@ export interface MarketReadRepositoryScoreComponent {
   weight: number;
   supported: boolean;
   reason: string | null;
+  metadata: Record<string, unknown>;
 }
 
 export interface MarketReadRepositoryScore {
@@ -121,6 +122,7 @@ export interface MarketReadRepositoryScore {
   negativeReasons: string[];
   sourceCoverage: Record<string, unknown>;
   calculatedAt: string;
+  supersededAt: string | null;
   components: MarketReadRepositoryScoreComponent[];
 }
 
@@ -170,6 +172,15 @@ export interface MarketReadRepository {
     countryAlpha2: CountryAlpha2,
     mdfProductId: string,
   ): Promise<MarketReadRepositoryScore | undefined>;
+  getCurrentMarketScore(
+    countryAlpha2: CountryAlpha2,
+    mdfProductId: string,
+  ): Promise<MarketReadRepositoryScore | undefined>;
+  getMarketScoreComponents(scoreId: string): Promise<MarketReadRepositoryScoreComponent[]>;
+  getMarketScoreHistory(
+    countryAlpha2: CountryAlpha2,
+    mdfProductId: string,
+  ): Promise<MarketReadRepositoryScore[]>;
   listRecentLedgerEntriesForFingerprint(
     providerId: string,
     datasetId: string,
@@ -200,9 +211,9 @@ const MATERIAL_OBSERVATION_COLS =
 const METRIC_COLS =
   "id, country_alpha2, mdf_product_id, metric_key, numeric_value, json_value, text_value, unit, calculation_window, support_count, observation_watermark, calculation_version, calculated_at";
 const SCORE_COLS =
-  "id, country_alpha2, mdf_product_id, diagnostic_fit_score, published_fit_score, data_confidence_score, recommendation_status, mapping_kind, mapping_confidence, fit_eligibility, is_trade_proxy, market_fit_version, confidence_version, provider_selection_version, recommendation_reason, positive_reasons, negative_reasons, source_coverage, calculated_at";
+  "id, country_alpha2, mdf_product_id, diagnostic_fit_score, published_fit_score, data_confidence_score, recommendation_status, mapping_kind, mapping_confidence, fit_eligibility, is_trade_proxy, market_fit_version, confidence_version, provider_selection_version, recommendation_reason, positive_reasons, negative_reasons, source_coverage, calculated_at, superseded_at";
 const COMPONENT_COLS =
-  "id, score_id, component_key, raw_metric_value, normalized_score, weight, supported, reason";
+  "id, score_id, component_key, raw_metric_value, normalized_score, weight, supported, reason, metadata";
 const LEDGER_COLS =
   "provider_id, dataset_id, query_fingerprint, reporter_country, partner_country, trade_flow, hs_revision, hs_codes, frequency, coverage_start, coverage_end, provider_selection_version, fetched_at, fresh_until, outcome, rows_received, safe_metadata";
 
@@ -398,6 +409,13 @@ class SupabaseMarketReadRepository implements MarketReadRepository {
     countryAlpha2: CountryAlpha2,
     mdfProductId: string,
   ): Promise<MarketReadRepositoryScore | undefined> {
+    return this.getCurrentMarketScore(countryAlpha2, mdfProductId);
+  }
+
+  async getCurrentMarketScore(
+    countryAlpha2: CountryAlpha2,
+    mdfProductId: string,
+  ): Promise<MarketReadRepositoryScore | undefined> {
     const { data: scoreRow, error } = await this.supabase
       .from("market_product_scores")
       .select(SCORE_COLS)
@@ -407,12 +425,34 @@ class SupabaseMarketReadRepository implements MarketReadRepository {
       .maybeSingle();
     if (error) throw error;
     if (!scoreRow) return undefined;
+    const components = await this.getMarketScoreComponents((scoreRow as { id: string }).id);
+    return rowToScore(scoreRow, components);
+  }
+
+  async getMarketScoreComponents(scoreId: string): Promise<MarketReadRepositoryScoreComponent[]> {
     const { data: components, error: componentError } = await this.supabase
       .from("market_product_score_components")
       .select(COMPONENT_COLS)
-      .eq("score_id", (scoreRow as { id: string }).id);
+      .eq("score_id", scoreId)
+      .order("component_key", { ascending: true });
     if (componentError) throw componentError;
-    return rowToScore(scoreRow, components ?? []);
+    return (components ?? []).map(rowToScoreComponent);
+  }
+
+  async getMarketScoreHistory(
+    countryAlpha2: CountryAlpha2,
+    mdfProductId: string,
+  ): Promise<MarketReadRepositoryScore[]> {
+    const { data, error } = await this.supabase
+      .from("market_product_scores")
+      .select(SCORE_COLS)
+      .eq("country_alpha2", countryAlpha2)
+      .eq("mdf_product_id", mdfProductId)
+      .order("calculated_at", { ascending: false });
+    if (error) throw error;
+    return Promise.all((data ?? []).map(async (row) =>
+      rowToScore(row, await this.getMarketScoreComponents((row as { id: string }).id))
+    ));
   }
 
   async listRecentLedgerEntriesForFingerprint(
@@ -554,7 +594,7 @@ function rowToMetric(r: Record<string, unknown>): MarketReadRepositoryMetric {
 
 function rowToScore(
   r: Record<string, unknown>,
-  components: Record<string, unknown>[],
+  components: MarketReadRepositoryScoreComponent[],
 ): MarketReadRepositoryScore {
   return {
     id: r.id as string,
@@ -576,15 +616,21 @@ function rowToScore(
     negativeReasons: Array.isArray(r.negative_reasons) ? (r.negative_reasons as string[]) : [],
     sourceCoverage: (r.source_coverage as Record<string, unknown>) ?? {},
     calculatedAt: r.calculated_at as string,
-    components: components.map((c) => ({
-      id: c.id as string,
-      componentKey: c.component_key as string,
-      rawMetricValue: c.raw_metric_value == null ? null : Number(c.raw_metric_value),
-      normalizedScore: c.normalized_score == null ? null : Number(c.normalized_score),
-      weight: Number(c.weight),
-      supported: Boolean(c.supported),
-      reason: (c.reason as string) ?? null,
-    })),
+    supersededAt: (r.superseded_at as string) ?? null,
+    components,
+  };
+}
+
+function rowToScoreComponent(c: Record<string, unknown>): MarketReadRepositoryScoreComponent {
+  return {
+    id: c.id as string,
+    componentKey: c.component_key as string,
+    rawMetricValue: c.raw_metric_value == null ? null : Number(c.raw_metric_value),
+    normalizedScore: c.normalized_score == null ? null : Number(c.normalized_score),
+    weight: Number(c.weight),
+    supported: Boolean(c.supported),
+    reason: (c.reason as string) ?? null,
+    metadata: (c.metadata as Record<string, unknown>) ?? {},
   };
 }
 
