@@ -86,6 +86,9 @@ export interface ScoreRefreshResult {
   mappingWatermark?: string;
   stale?: boolean;
   staleReasons?: string[];
+  preRefreshStale?: boolean;
+  preRefreshStaleReasons?: string[];
+  resultingScoreStale?: boolean | null;
   scoreId?: string | null;
   providerCalls: 0;
   databaseWrites: 0 | 1;
@@ -248,12 +251,17 @@ export async function refreshPersistedMarketScore(
         score: component.normalized_score,
         weight: component.weight,
         supported: component.supported,
-        rawMetricValue: component.raw_metric_value,
+        rawMetricValue: component.raw_metric_value === null
+          ? null
+          : Number(component.raw_metric_value),
       })),
       evidenceWatermark: plan.watermarks.evidenceWatermark,
       mappingWatermark: plan.watermarks.mappingWatermark,
       stale: staleState.stale,
       staleReasons: staleState.reasons,
+      preRefreshStale: staleState.stale,
+      preRefreshStaleReasons: staleState.reasons,
+      resultingScoreStale: input.dryRun ? (identical ? false : null) : false,
       scoreId: current?.id ?? null,
       providerCalls: 0,
     };

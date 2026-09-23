@@ -5,6 +5,8 @@ import type { MarketReadRepositoryScore } from "../marketReadRepository";
 import { MI1H_EXPECTED_CALIBRATED_FIT_SNAPSHOT } from "../calibration/shadow";
 import {
   assessMarketScoreStaleness,
+  canonicalScoreComponentOrder,
+  canonicalScoreRawMetric,
   deterministicMarketScoreHash,
 } from "./scorePersistence";
 
@@ -53,6 +55,54 @@ describe("MI1I fingerprints and stale-state contract", () => {
       .toBe(deterministicMarketScoreHash({ b: 2, a: 1 }));
   });
 
+  it("canonicalizes raw metrics to the exact numeric(24,6)::text representation", () => {
+    expect(canonicalScoreRawMetric(20_200_000)).toBe("20200000.000000");
+    expect(canonicalScoreRawMetric(0.25742574257425743)).toBe("0.257426");
+    expect(canonicalScoreRawMetric(-0)).toBe("0.000000");
+    expect(String(20_200_000)).not.toBe(canonicalScoreRawMetric(20_200_000));
+  });
+
+  it("canonicalizes JSON object keys and component order without changing the deployed component sequence", () => {
+    const a = {
+      source_coverage: { b: 2, a: 1 },
+      components: [
+        { component_key: "demand_size", weight: 25 },
+        { component_key: "demand_growth", weight: 20 },
+      ],
+    };
+    const b = {
+      components: [
+        { weight: 20, component_key: "demand_growth" },
+        { weight: 25, component_key: "demand_size" },
+      ],
+      source_coverage: { a: 1, b: 2 },
+    };
+    const orderedA = { ...a, components: canonicalScoreComponentOrder(a.components) };
+    const orderedB = { ...b, components: canonicalScoreComponentOrder(b.components) };
+    expect(orderedA.components.map((component) => component.component_key)).toEqual([
+      "demand_size", "demand_growth",
+    ]);
+    expect(deterministicMarketScoreHash(orderedA)).toBe(deterministicMarketScoreHash(orderedB));
+  });
+
+  it("keeps genuine evidence, mapping, version, recommendation, and component changes material", () => {
+    const base = {
+      market_fit_version: "mi-fit-v2",
+      recommendation_status: "indicative",
+      source_coverage: { evidence_watermark: "e1", mapping_watermark: "m1" },
+      components: [{ component_key: "demand_size", normalized_score: 50 }],
+    };
+    for (const changed of [
+      { ...base, source_coverage: { ...base.source_coverage, evidence_watermark: "e2" } },
+      { ...base, source_coverage: { ...base.source_coverage, mapping_watermark: "m2" } },
+      { ...base, market_fit_version: "mi-fit-v3" },
+      { ...base, recommendation_status: "actionable" },
+      { ...base, components: [{ component_key: "demand_size", normalized_score: 51 }] },
+    ]) {
+      expect(deterministicMarketScoreHash(changed)).not.toBe(deterministicMarketScoreHash(base));
+    }
+  });
+
   it("reports scoring-version, evidence, and mapping changes explicitly", () => {
     expect(assessMarketScoreStaleness(score(), expected)).toEqual({ stale: false, reasons: [] });
     expect(assessMarketScoreStaleness(score({ marketFitVersion: "mi-fit-v1" }), expected).reasons)
@@ -94,5 +144,26 @@ describe("MI1I fingerprints and stale-state contract", () => {
     expect(implementation).not.toMatch(/for\s*\([^)]*calibrationCohort|Promise\.all\([^)]*calibrationCohort/);
     expect(readFileSync(path.resolve(root, "src/lib/marketIntelligence/server/writer.ts"), "utf8"))
       .toContain('import "server-only"');
+  });
+
+  it("ships a SELECT/WITH-only production diagnostic for the two Malaysia score ids", () => {
+    const sql = readFileSync(path.resolve(
+      process.cwd(), "supabase/tests/diagnose_mi1i_malaysia_score_churn.sql",
+    ), "utf8");
+    const executable = sql.replace(/--.*$/gm, "");
+    expect(executable).toMatch(/^\s*with\b/i);
+    expect(executable).not.toMatch(/\b(insert|update|delete|merge|create|alter|drop|truncate|grant|revoke|call|do)\b/i);
+    expect(sql).toContain("f48ca616-c3c6-4468-82fb-1fd21dbe2ec4");
+    expect(sql).toContain("845451c6-3511-4101-ab56-d0f3d9be1d85");
+    for (const field of [
+      "source_coverage",
+      "evidence_watermark",
+      "mapping_watermark",
+      "canonical_component_set",
+      "raw_metric_value_text",
+      "calculation_version",
+      "superseded_at",
+      "calculated_at",
+    ]) expect(sql).toContain(field);
   });
 });

@@ -31,7 +31,8 @@ export interface MarketScoreWatermarks {
 
 export interface MarketScoreComponentWire {
   component_key: string;
-  raw_metric_value: number | null;
+  /** Canonical PostgreSQL numeric(24,6) wire representation. */
+  raw_metric_value: string | null;
   normalized_score: number | null;
   weight: number;
   supported: boolean;
@@ -73,6 +74,22 @@ function stableValue(value: unknown): unknown {
 
 export function deterministicMarketScoreHash(value: unknown): string {
   return `sha256:${createHash("sha256").update(JSON.stringify(stableValue(value))).digest("hex")}`;
+}
+
+/**
+ * PostgreSQL stores raw_metric_value as numeric(24,6). The 0022 equality
+ * contract compares stored `numeric::text` with incoming JSON text, so the
+ * wire payload must use the same fixed-six-decimal representation. Sending a
+ * JSON number (for example `1`) would compare unequal to stored `1.000000`.
+ */
+export function canonicalScoreRawMetric(value: number | null): string | null {
+  if (value === null) return null;
+  if (!Number.isFinite(value)) throw new Error("score raw metric must be finite");
+  if (Math.abs(value) >= 1_000_000_000_000_000_000) {
+    throw new Error("score raw metric exceeds numeric(24,6)");
+  }
+  const fixed = value.toFixed(6);
+  return fixed === "-0.000000" ? "0.000000" : fixed;
 }
 
 export function buildMarketScoreWatermarks(input: Omit<
@@ -163,6 +180,21 @@ const COMPONENT_KEYS = {
   demandStability: "demand_stability",
 } as const;
 
+const COMPONENT_FINGERPRINT_ORDER = Object.values(COMPONENT_KEYS);
+
+export function canonicalScoreComponentOrder<T extends { component_key: string }>(
+  components: readonly T[],
+): T[] {
+  const order = new Map<string, number>(
+    COMPONENT_FINGERPRINT_ORDER.map((key, index) => [key, index]),
+  );
+  return [...components].sort((a, b) =>
+    (order.get(a.component_key) ?? Number.MAX_SAFE_INTEGER) -
+      (order.get(b.component_key) ?? Number.MAX_SAFE_INTEGER) ||
+    a.component_key.localeCompare(b.component_key)
+  );
+}
+
 function rawComponentValues(calculation: CalibrationCountryReport): Record<
   keyof typeof COMPONENT_KEYS,
   { value: number | null; detail: Record<string, unknown> }
@@ -202,23 +234,30 @@ export function buildMarketScorePersistencePlan(
 ): MarketScorePersistencePlan {
   const watermarks = buildMarketScoreWatermarks(input);
   const raw = rawComponentValues(input.calculation);
-  const components = (Object.keys(COMPONENT_KEYS) as Array<keyof typeof COMPONENT_KEYS>)
-    .map((key): MarketScoreComponentWire => {
-      const score = input.calculation.components[key];
-      return {
-        component_key: COMPONENT_KEYS[key],
-        raw_metric_value: raw[key].value,
-        normalized_score: score,
-        weight: DEFAULT_COMPONENT_WEIGHTS[key],
-        supported: score !== null,
-        reason: score === null ? "required primitive unavailable" : "calibrated production normalization",
-        metadata: {
-          calculation_version: MARKET_FIT_VERSION,
-          methodology: "candidate-c-conservative-hybrid",
-          ...raw[key].detail,
-        },
-      };
-    });
+  const componentKeys = Object.keys(COMPONENT_KEYS) as Array<keyof typeof COMPONENT_KEYS>;
+  const components = componentKeys.map((key): MarketScoreComponentWire => {
+    const score = input.calculation.components[key];
+    return {
+      component_key: COMPONENT_KEYS[key],
+      raw_metric_value: canonicalScoreRawMetric(raw[key].value),
+      normalized_score: score,
+      weight: DEFAULT_COMPONENT_WEIGHTS[key],
+      supported: score !== null,
+      reason: score === null ? "required primitive unavailable" : "calibrated production normalization",
+      metadata: {
+        calculation_version: MARKET_FIT_VERSION,
+        methodology: "candidate-c-conservative-hybrid",
+        ...raw[key].detail,
+      },
+    };
+  });
+  // Preserve the original MI1I fingerprint representation (logical numbers)
+  // so the already-persisted current score remains reusable after this wire
+  // canonicalization fix. Only the RPC wire value needs numeric(24,6) text.
+  const fingerprintComponents = canonicalScoreComponentOrder(componentKeys.map((key) => ({
+    ...components.find((component) => component.component_key === COMPONENT_KEYS[key])!,
+    raw_metric_value: raw[key].value,
+  })));
 
   const fit = input.calculation.fit;
   const confidence = input.calculation.confidence;
@@ -248,10 +287,12 @@ export function buildMarketScorePersistencePlan(
     recommendation_reason: fit.publicationReason,
     positive_reasons: [],
     negative_reasons: fit.reasons,
-    source_coverage: sourceCoverage,
-    components,
   };
-  const persistenceFingerprint = deterministicMarketScoreHash(scoreMaterial);
+  const persistenceFingerprint = deterministicMarketScoreHash({
+    ...scoreMaterial,
+    source_coverage: sourceCoverage,
+    components: fingerprintComponents,
+  });
   return {
     components,
     watermarks,
@@ -264,6 +305,7 @@ export function buildMarketScorePersistencePlan(
           ...sourceCoverage,
           persistence_fingerprint: persistenceFingerprint,
         },
+        components,
       },
     },
   };

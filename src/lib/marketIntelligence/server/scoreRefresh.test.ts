@@ -7,6 +7,7 @@ import type {
 import type { MarketProviderFetchLedgerEntry } from "../types";
 import type { MarketIntelligenceWriter } from "./writer";
 import { refreshPersistedMarketScore } from "./scoreRefresh";
+import { deterministicMarketScoreHash } from "./scorePersistence";
 
 vi.mock("server-only", () => ({}));
 
@@ -105,7 +106,9 @@ function fakeCurrent(id: string, score: Record<string, unknown>): MarketReadRepo
     components: components.map((component, index) => ({
       id: `component-${index}`,
       componentKey: component.component_key as string,
-      rawMetricValue: component.raw_metric_value as number | null,
+      rawMetricValue: component.raw_metric_value == null
+        ? null
+        : Number(component.raw_metric_value),
       normalizedScore: component.normalized_score as number | null,
       weight: component.weight as number,
       supported: component.supported as boolean,
@@ -208,6 +211,9 @@ describe("MI1I controlled score refresh", () => {
       componentCount: 6,
       databaseWrites: 0,
       providerCalls: 0,
+      preRefreshStale: true,
+      preRefreshStaleReasons: ["evidence_watermark_missing"],
+      resultingScoreStale: null,
     });
     expect(result.fit).toEqual(expect.any(Number));
     expect(result.evidenceWatermark).toMatch(/^sha256:[a-f0-9]{64}$/);
@@ -225,9 +231,70 @@ describe("MI1I controlled score refresh", () => {
     expect(first.outcome).toBe("created");
     expect(replay.outcome).toBe("unchanged");
     expect(replay.scoreId).toBe(first.scoreId);
+    expect(replay.databaseWrites).toBe(0);
+    expect(first).toMatchObject({
+      preRefreshStale: true,
+      preRefreshStaleReasons: ["evidence_watermark_missing"],
+      resultingScoreStale: false,
+    });
+    expect(replay).toMatchObject({
+      preRefreshStale: false,
+      preRefreshStaleReasons: [],
+      resultingScoreStale: false,
+    });
     expect(changed.outcome).toBe("superseded_and_created");
     expect(changed.scoreId).not.toBe(first.scoreId);
     expect(h.created()).toBe(2);
+  });
+
+  it("reproduces no-current → dry-run → create → identical replay without score churn", async () => {
+    const h = harness();
+    const dryRun = await refreshPersistedMarketScore({ ...REQUEST, dryRun: true }, h.deps);
+    const created = await refreshPersistedMarketScore(REQUEST, h.deps);
+    const replay = await refreshPersistedMarketScore(REQUEST, h.deps);
+    expect(dryRun).toMatchObject({ outcome: "created", databaseWrites: 0, scoreId: null });
+    expect(created).toMatchObject({ outcome: "created", databaseWrites: 1 });
+    expect(replay).toMatchObject({
+      outcome: "unchanged",
+      databaseWrites: 0,
+      scoreId: created.scoreId,
+    });
+    expect(h.created()).toBe(1);
+  });
+
+  it("keeps pre-refresh stale diagnostics and timestamps out of material persistence", async () => {
+    const h = harness();
+    await refreshPersistedMarketScore(REQUEST, h.deps);
+    const score = h.refresh.mock.calls[0]![0].payload.score!;
+    const persisted = JSON.stringify(score);
+    expect(persisted).not.toMatch(/stale|staleReasons|preRefresh|resultingScore/);
+    expect(persisted).not.toMatch(/calculated_at|generated_at|current_score_id/);
+  });
+
+  it("uses fixed-six-decimal RPC values without changing the deployed logical fingerprint", async () => {
+    const h = harness();
+    await refreshPersistedMarketScore(REQUEST, h.deps);
+    const score = h.refresh.mock.calls[0]![0].payload.score!;
+    const components = score.components as Array<Record<string, unknown>>;
+    expect(components).toHaveLength(6);
+    for (const component of components) {
+      expect(component.raw_metric_value).toMatch(/^-?\d+\.\d{6}$/);
+    }
+    const coverage = { ...(score.source_coverage as Record<string, unknown>) };
+    const fingerprint = coverage.persistence_fingerprint;
+    delete coverage.persistence_fingerprint;
+    const { source_coverage: _coverage, components: _components, ...scoreFields } = score;
+    const roundedWireMaterial = {
+      ...scoreFields,
+      source_coverage: coverage,
+      components: components.map((component) => ({
+        ...component,
+        raw_metric_value: Number(component.raw_metric_value),
+      })),
+    };
+    // The persisted fingerprint deliberately remains based on the original
+    // full-precision logical values, not the new six-decimal wire strings.
+    expect(fingerprint).not.toBe(deterministicMarketScoreHash(roundedWireMaterial));
   });
 
   it("supersedes an mi-fit-v1 current row through the explicit refresh", async () => {
