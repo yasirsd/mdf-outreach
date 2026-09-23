@@ -138,7 +138,7 @@ export interface CalibrationReviewReport {
     indiaShare: number;
     hhi: number;
     top1OriginShare: number | null;
-    provisionalScore: number;
+    provisionalScore: number | null;
     reason: string;
   }>;
   derivedUnitValueWarnings: Array<{
@@ -147,6 +147,36 @@ export interface CalibrationReviewReport {
     latestQuantityTonnes: number | null;
     reason: string;
   }>;
+}
+
+export const COMPETITIVE_OPPORTUNITY_WARNING_THRESHOLDS = Object.freeze({
+  maximumIndiaShare: 0.01,
+  minimumHhi: 0.65,
+  minimumTop1OriginShare: 0.80,
+});
+
+/**
+ * Descriptive diagnostic only. Deliberately independent of the provisional
+ * competitive-opportunity score so scoring cannot suppress a warning.
+ */
+export function buildCompetitiveOpportunityWarnings(
+  rows: readonly CalibrationReviewCountryRow[],
+): CalibrationReviewReport["competitiveOpportunityWarnings"] {
+  const thresholds = COMPETITIVE_OPPORTUNITY_WARNING_THRESHOLDS;
+  return rows
+    .filter((row) =>
+      row.indiaShare !== null && row.indiaShare <= thresholds.maximumIndiaShare &&
+      row.hhi !== null && row.hhi >= thresholds.minimumHhi &&
+      row.top1OriginShare !== null && row.top1OriginShare >= thresholds.minimumTop1OriginShare
+    )
+    .map((row) => ({
+      countryAlpha2: row.countryAlpha2,
+      indiaShare: row.indiaShare!,
+      hhi: row.hhi!,
+      top1OriginShare: row.top1OriginShare,
+      provisionalScore: row.candidateComponents.competitiveOpportunity,
+      reason: "Low India presence (share <= 1%) coincides with high incumbent concentration (HHI >= 0.65 and top-1 share >= 80%).",
+    }));
 }
 
 const PRIMITIVE_KEYS: readonly CalibrationPrimitiveKey[] = [
@@ -396,21 +426,7 @@ export function buildCalibrationReviewReport(base: CalibrationReport): Calibrati
     ),
   ];
 
-  const competitiveOpportunityWarnings = rows
-    .filter((row) =>
-      row.indiaShare !== null && row.indiaShare <= 0.05 &&
-      row.hhi !== null && row.hhi >= 0.50 &&
-      row.candidateComponents.competitiveOpportunity !== null &&
-      row.candidateComponents.competitiveOpportunity >= 60
-    )
-    .map((row) => ({
-      countryAlpha2: row.countryAlpha2,
-      indiaShare: row.indiaShare!,
-      hhi: row.hhi!,
-      top1OriginShare: row.top1OriginShare,
-      provisionalScore: row.candidateComponents.competitiveOpportunity!,
-      reason: "Low India share coincides with high concentration; provisional opportunity may overstate ease of entry.",
-    }));
+  const competitiveOpportunityWarnings = buildCompetitiveOpportunityWarnings(rows);
 
   const unitOutlierCountries = new Set(
     primitiveOutliers

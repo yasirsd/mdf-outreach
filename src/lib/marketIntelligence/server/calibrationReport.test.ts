@@ -131,6 +131,9 @@ describe("MI1G server report builder", () => {
     expect(result.report?.rows.every((row) => row.completeBilateralCoverage)).toBe(true);
     expect(result.report?.rows.every((row) => row.indiaPresence === "present")).toBe(true);
     expect(result.report?.rows.every((row) => row.recommendationStatus !== "actionable")).toBe(true);
+    expect(result.report?.calibrationComparison.countries).toHaveLength(18);
+    expect(result.report?.calibrationComparison.scenarioTests.every((scenario) => scenario.passed)).toBe(true);
+    expect(result.report?.calibrationComparison.productionNormalizationReplaced).toBe(false);
   });
 
   it("rejects non-owners before loading the repository", async () => {

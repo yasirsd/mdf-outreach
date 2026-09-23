@@ -189,6 +189,7 @@ describe("MI1G review projection", () => {
 describe("MI1G static safety boundary", () => {
   const files = [
     "src/lib/marketIntelligence/calibration/review.ts",
+    "src/lib/marketIntelligence/calibration/shadow.ts",
     "src/lib/marketIntelligence/server/calibrationReport.ts",
     "src/app/api/internal/market-intelligence/calibration/report/route.ts",
   ];
@@ -204,8 +205,14 @@ describe("MI1G static safety boundary", () => {
   });
 
   it("keeps the route POST-only, bodyless, same-origin, and owner-gated by the runner", () => {
-    const route = readFileSync(path.resolve(process.cwd(), files[2]!), "utf8");
-    const runner = readFileSync(path.resolve(process.cwd(), files[1]!), "utf8");
+    const route = readFileSync(path.resolve(
+      process.cwd(),
+      "src/app/api/internal/market-intelligence/calibration/report/route.ts",
+    ), "utf8");
+    const runner = readFileSync(path.resolve(
+      process.cwd(),
+      "src/lib/marketIntelligence/server/calibrationReport.ts",
+    ), "utf8");
     expect(route).toContain("export async function POST");
     expect(route).not.toMatch(/export async function GET/);
     expect(route).not.toMatch(/request\.(json|text|formData|arrayBuffer)\(/);

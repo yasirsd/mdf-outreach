@@ -9,6 +9,10 @@ import {
   buildCalibrationReviewReport,
   type CalibrationReviewReport,
 } from "../calibration/review";
+import {
+  buildCalibrationComparison,
+  type CalibrationComparison,
+} from "../calibration/shadow";
 import type {
   MarketReadRepository,
   MarketReadRepositoryObservation,
@@ -46,7 +50,7 @@ export type CalibrationReportOutcome =
 
 export interface CalibrationReportResult {
   outcome: CalibrationReportOutcome;
-  report?: CalibrationReviewReport;
+  report?: CalibrationReviewReport & { calibrationComparison: CalibrationComparison };
   message?: string;
   providerCalls: 0;
   databaseWrites: 0;
@@ -252,9 +256,13 @@ export async function runCalibrationDistributionReport(
       currentYear: now.getUTCFullYear(),
       now: () => now,
     });
+    const review = buildCalibrationReviewReport(base);
     return {
       outcome: "report_ready",
-      report: buildCalibrationReviewReport(base),
+      report: {
+        ...review,
+        calibrationComparison: buildCalibrationComparison(review),
+      },
       providerCalls: 0,
       databaseWrites: 0,
     };
