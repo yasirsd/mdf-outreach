@@ -134,6 +134,28 @@ export function createMemorySearchRunRepository(
       store.rows.set(id, next);
       return clone(next);
     },
+
+    async finalizeInterruptedIfStale(input) {
+      const cur = scoped(input.id);
+      if (
+        !cur ||
+        (cur.status !== "queued" && cur.status !== "running") ||
+        cur.updatedAt > input.staleBefore
+      ) {
+        return undefined;
+      }
+      const next: BuyerFinderSearchRun = {
+        ...cur,
+        status: "failed",
+        stage: "complete",
+        errorCode: input.errorCode,
+        errorMessage: input.errorMessage,
+        completedAt: input.completedAt,
+        updatedAt: now(),
+      };
+      store.rows.set(input.id, next);
+      return clone(next);
+    },
   };
 
   return repo;

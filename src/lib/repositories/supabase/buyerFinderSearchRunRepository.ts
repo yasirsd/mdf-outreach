@@ -96,6 +96,32 @@ export class SupabaseBuyerFinderSearchRunRepository implements BuyerFinderSearch
     return data ? searchRunFromRow(data as BuyerFinderSearchRunRow) : undefined;
   }
 
+  async finalizeInterruptedIfStale(input: {
+    id: string;
+    staleBefore: string;
+    completedAt: string;
+    errorCode: string;
+    errorMessage: string;
+  }): Promise<BuyerFinderSearchRun | undefined> {
+    if (!isEntityUuid(input.id)) return undefined;
+    const { data, error } = await this.supabase
+      .from("buyer_finder_search_runs")
+      .update({
+        status: "failed",
+        stage: "complete",
+        error_code: input.errorCode,
+        error_message: input.errorMessage,
+        completed_at: input.completedAt,
+      })
+      .eq("id", input.id)
+      .in("status", ["queued", "running"])
+      .lte("updated_at", input.staleBefore)
+      .select("*")
+      .maybeSingle();
+    if (error) throw error;
+    return data ? searchRunFromRow(data as BuyerFinderSearchRunRow) : undefined;
+  }
+
   private async guardStage(id: string, patch: SearchRunPatch): Promise<SearchRunPatch> {
     if (!patch.stage) return patch;
     const current = await this.get(id);

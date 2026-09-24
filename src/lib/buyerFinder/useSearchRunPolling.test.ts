@@ -110,4 +110,31 @@ describe("useSearchRunPolling", () => {
       get: () => "visible",
     });
   });
+
+  it("retries after a transient polling read failure", async () => {
+    vi.useFakeTimers();
+    const fetchRun = vi.fn()
+      .mockRejectedValueOnce(new Error("transient read failure"))
+      .mockResolvedValueOnce(snap({ status: "completed", stage: "complete" }));
+    const onSnapshot = vi.fn();
+    renderHook(() =>
+      useSearchRunPolling({
+        runId: "00000000-0000-4000-8000-000000000001",
+        enabled: true,
+        fetchRun,
+        onSnapshot,
+      }),
+    );
+
+    await act(async () => {
+      await vi.runOnlyPendingTimersAsync();
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+
+    expect(fetchRun).toHaveBeenCalledTimes(2);
+    expect(onSnapshot).toHaveBeenCalledWith(expect.objectContaining({ status: "completed" }));
+    vi.useRealTimers();
+  });
 });

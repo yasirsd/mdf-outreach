@@ -23,6 +23,10 @@ function chain(capture: Record<string, unknown>[], result: { data: unknown; erro
     (state.filters as unknown[]).push(["in", k, v]);
     return api;
   };
+  api.lte = (k: string, v: unknown) => {
+    (state.filters as unknown[]).push(["lte", k, v]);
+    return api;
+  };
   api.order = () => api;
   api.limit = () => api;
   api.maybeSingle = async () => {
@@ -64,5 +68,26 @@ describe("Supabase Search Run claim SQL shape", () => {
     const repo = createBuyerFinderSearchRunRepository(supabase as never, "ws-a");
     await repo.getLatestActive();
     expect(capture[0]?.filters).toContainEqual(["in", "status", ["queued", "running"]]);
+  });
+
+  it("finalizes interruption with active-status and heartbeat preconditions", async () => {
+    const capture: Record<string, unknown>[] = [];
+    const supabase = {
+      from: () => chain(capture, { data: null, error: null }),
+    };
+    const repo = createBuyerFinderSearchRunRepository(supabase as never, "ws-a");
+    await repo.finalizeInterruptedIfStale({
+      id: "00000000-0000-4000-8000-000000000001",
+      staleBefore: "2026-08-28T00:00:00.000Z",
+      completedAt: "2026-08-28T00:02:00.000Z",
+      errorCode: "interrupted",
+      errorMessage: "The previous search stopped updating.",
+    });
+    expect(capture[0]?.payload).toMatchObject({ status: "failed", stage: "complete" });
+    expect(capture[0]?.filters).toEqual([
+      ["eq", "id", "00000000-0000-4000-8000-000000000001"],
+      ["in", "status", ["queued", "running"]],
+      ["lte", "updated_at", "2026-08-28T00:00:00.000Z"],
+    ]);
   });
 });

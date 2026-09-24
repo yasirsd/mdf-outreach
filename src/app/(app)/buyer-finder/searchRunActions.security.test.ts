@@ -60,6 +60,13 @@ describe("BF2.2 search-run security guardrails", () => {
     expect(ROUTE).toContain("executeSearchRun");
     expect(ROUTE).toContain("requireMdfSession");
     expect(ROUTE).toContain("maxDuration");
+    expect(ROUTE).toContain("export const maxDuration = 120");
+  });
+
+  it("runtime logs only sanitized lifecycle metadata", () => {
+    expect(ROUTE).toContain('event: "execution_started"');
+    expect(ROUTE).toContain('event: "execution_finished"');
+    expect(ROUTE).not.toMatch(/console\.(info|error)\([^\n]*(apiKey|authorization|cookie|email)/i);
   });
 
   it("no Gmail / Buyer Send / campaign / Buyer creation / LinkedIn scraping", () => {

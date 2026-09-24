@@ -130,6 +130,28 @@ describe("executeSearchRun", () => {
     expect(JSON.stringify(result)).not.toMatch(/hunter-api/);
   });
 
+  it("Hunter timeout terminates as a controlled failed run", async () => {
+    const provider: CompanyDiscoveryProvider = {
+      async discover() {
+        throw new HunterDiscoveryError("timeout", "request timed out");
+      },
+    };
+    const ctx = setup(provider);
+    const run = await ctx.seed();
+    const result = await executeSearchRun({
+      runId: run.id,
+      searchRuns: ctx.searchRuns,
+      ingestionRepos: ctx.ingestionRepos,
+      createCompanyProvider: ctx.createCompanyProvider,
+      isProviderConfigured: ctx.isProviderConfigured,
+    });
+    expect(result.outcome).toBe("failed");
+    expect(result.run?.status).toBe("failed");
+    expect(result.run?.providerStatus).toBe("temporarily_unavailable");
+    expect(result.run?.errorCode).toBe("timeout");
+    expect(result.run?.errorMessage).not.toContain("request timed out");
+  });
+
   it("Hunter no-result completes with providerStatus no_result, not a crash", async () => {
     const provider: CompanyDiscoveryProvider = { async discover() { return []; } };
     const ctx = setup(provider);
@@ -412,5 +434,51 @@ describe("finalizeStaleSearchRun", () => {
     expect(result.run?.status).toBe("failed");
     expect(result.run?.errorCode).toBe("interrupted");
     expect(result.run?.errorMessage).toMatch(/stopped updating/i);
+  });
+
+  it("cannot interrupt a run whose heartbeat advances during stale finalization", async () => {
+    const t0 = new Date("2026-08-28T00:00:00.000Z");
+    let clock = t0;
+    const searchRuns = createMemorySearchRunRepository(
+      "ws-a",
+      undefined,
+      () => clock.toISOString(),
+    );
+    const run = await searchRuns.create({ ...QUERY, desiredBuyerTypes: [], contactPriorities: [] });
+    const originalFinalize = searchRuns.finalizeInterruptedIfStale.bind(searchRuns);
+    const later = new Date(t0.getTime() + STALE_THRESHOLD_MS + 1);
+    searchRuns.finalizeInterruptedIfStale = async (input) => {
+      clock = later;
+      await searchRuns.update(run.id, { status: "running", stage: "discovering" });
+      return originalFinalize(input);
+    };
+
+    const result = await finalizeStaleSearchRun({
+      runId: run.id,
+      searchRuns,
+      now: () => later,
+    });
+
+    expect(result.outcome).toBe("not_stale");
+    expect(result.run?.status).toBe("running");
+    expect(result.run?.errorCode).not.toBe("interrupted");
+  });
+
+  it("never changes a terminal completed run to interrupted", async () => {
+    const t0 = new Date("2026-08-28T00:00:00.000Z");
+    const searchRuns = createMemorySearchRunRepository("ws-a", undefined, () => t0.toISOString());
+    const run = await searchRuns.create({ ...QUERY, desiredBuyerTypes: [], contactPriorities: [] });
+    await searchRuns.update(run.id, {
+      status: "completed",
+      stage: "complete",
+      completedAt: t0.toISOString(),
+    });
+    const result = await finalizeStaleSearchRun({
+      runId: run.id,
+      searchRuns,
+      now: () => new Date(t0.getTime() + STALE_THRESHOLD_MS * 2),
+    });
+    expect(result.outcome).toBe("not_stale");
+    expect(result.run?.status).toBe("completed");
   });
 });

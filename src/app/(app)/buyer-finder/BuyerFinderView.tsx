@@ -218,6 +218,21 @@ export function BuyerFinderView({
   }
 
   function clearRun() {
+    if (activeRun && !isTerminal(activeRun.status) && isRunStale(activeRun)) {
+      startTransition(async () => {
+        try {
+          const result = await finalizeStaleBuyerFinderSearchRunAction(activeRun.id);
+          if (result.outcome === "finalized" || result.outcome === "not_found") {
+            setActiveRun(null);
+          } else if (result.run) {
+            setActiveRun(result.run);
+          }
+        } catch {
+          toast.error("Could not reconcile the interrupted search. Please try again.");
+        }
+      });
+      return;
+    }
     setActiveRun(null);
   }
 

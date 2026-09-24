@@ -24,7 +24,10 @@ import { executeSearchRun } from "@/lib/buyerFinder/executeSearchRun";
  * Search Run row is the authority. The browser supplies only the run id
  * in the URL.
  */
-export const maxDuration = 60;
+// The work is bounded to one Hunter request (15s provider timeout) and at
+// most 20 locally processed companies. This headroom protects p95 database
+// latency; it is not a substitute for the application-level bounds.
+export const maxDuration = 120;
 export const dynamic = "force-dynamic";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -43,21 +46,47 @@ export async function POST(
   }
 
   const { repos } = await serverRepositories();
-  const result = await executeSearchRun({
+  const startedAt = Date.now();
+  console.info("[buyer-finder-search]", { event: "execution_started", runId: id });
+  let result: Awaited<ReturnType<typeof executeSearchRun>>;
+  try {
+    result = await executeSearchRun({
+      runId: id,
+      searchRuns: repos.buyerFinderSearchRuns,
+      ingestionRepos: {
+        candidates: repos.buyerCandidates,
+        contacts: repos.buyerCandidateContacts,
+        productMatches: repos.buyerCandidateProductMatches,
+      },
+      freeEnrichmentJobs: repos.buyerFinderFreeEnrichmentJobs,
+      isProviderConfigured: isBuyerFinderHunterReady,
+      providerUnavailableMessage: HUNTER_NOT_CONFIGURED_MESSAGE,
+      createCompanyProvider: () =>
+        createHunterCompanyDiscoveryProvider({
+          apiKey: requireBuyerFinderHunterApiKey(),
+        }),
+    });
+  } catch (error) {
+    console.error("[buyer-finder-search]", {
+      event: "execution_failed",
+      runId: id,
+      durationMs: Date.now() - startedAt,
+      errorClass: error instanceof Error ? error.name : "UnknownError",
+    });
+    throw error;
+  }
+  console.info("[buyer-finder-search]", {
+    event: "execution_finished",
     runId: id,
-    searchRuns: repos.buyerFinderSearchRuns,
-    ingestionRepos: {
-      candidates: repos.buyerCandidates,
-      contacts: repos.buyerCandidateContacts,
-      productMatches: repos.buyerCandidateProductMatches,
-    },
-    freeEnrichmentJobs: repos.buyerFinderFreeEnrichmentJobs,
-    isProviderConfigured: isBuyerFinderHunterReady,
-    providerUnavailableMessage: HUNTER_NOT_CONFIGURED_MESSAGE,
-    createCompanyProvider: () =>
-      createHunterCompanyDiscoveryProvider({
-        apiKey: requireBuyerFinderHunterApiKey(),
-      }),
+    durationMs: Date.now() - startedAt,
+    outcome: result.outcome,
+    status: result.run?.status ?? null,
+    stage: result.run?.stage ?? null,
+    providerStatus: result.run?.providerStatus ?? null,
+    discoveredCount: result.run?.discoveredCount ?? 0,
+    processedCount: result.run?.processedCount ?? 0,
+    createdCount: result.run?.createdCount ?? 0,
+    failureCount: result.run?.failureCount ?? 0,
   });
 
   if (result.outcome === "completed" || result.outcome === "partial" || result.outcome === "failed") {

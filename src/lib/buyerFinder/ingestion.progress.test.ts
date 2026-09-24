@@ -155,4 +155,37 @@ describe("ingestion progress reporter wiring (BF2.2)", () => {
     expect(result.failures[0]?.code).toBe("rate_limited");
     expect(result.usable).toBe(0);
   });
+
+  it("loads the existing duplicate-detection snapshot once for a full 20-company run", async () => {
+    const repos = createMemoryBuyerFinderRepos();
+    for (let i = 0; i < 40; i += 1) {
+      await repos.candidates.create({
+        id: `00000000-0000-4000-8000-${String(i + 1).padStart(12, "0")}`,
+        companyName: `Existing ${i}`,
+        domain: `existing-${i}.example`,
+        country: "Thailand",
+        discoveryStatus: "ready",
+        reviewStatus: "pending",
+      });
+    }
+    const candidateList = vi.spyOn(repos.candidates, "list");
+    const contactBatch = vi.spyOn(repos.contacts, "listByCandidateIds");
+    const matchBatch = vi.spyOn(repos.productMatches, "listByCandidateIds");
+    const hits = Array.from({ length: 20 }, (_, i) => hit({
+      providerRecordId: `new-${i}`,
+      companyName: `New ${i}`,
+      domain: `new-${i}.example`,
+    }));
+
+    const result = await discoverAndIngestCandidates({
+      query: { country: "Thailand", productId: "guntur-dry-red-chilli" },
+      companyProvider: provider(hits),
+      repositories: repos,
+    });
+
+    expect(result.created).toBe(20);
+    expect(candidateList).toHaveBeenCalledTimes(1);
+    expect(contactBatch).toHaveBeenCalledTimes(1);
+    expect(matchBatch).toHaveBeenCalledTimes(1);
+  });
 });

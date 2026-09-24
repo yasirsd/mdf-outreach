@@ -77,6 +77,13 @@ export function createMemoryBuyerFinderRepos() {
         .map(clone)
         .sort((a, b) => a.id.localeCompare(b.id));
     },
+    async listByCandidateIds(candidateIds) {
+      const ids = new Set(candidateIds);
+      return [...contacts.values()]
+        .filter((c) => ids.has(c.candidateId))
+        .map(clone)
+        .sort((a, b) => a.id.localeCompare(b.id));
+    },
     async get(id) {
       const row = contacts.get(id);
       return row ? clone(row) : undefined;
@@ -115,6 +122,13 @@ export function createMemoryBuyerFinderRepos() {
     async listByCandidate(candidateId) {
       return [...matches.values()]
         .filter((m) => m.candidateId === candidateId)
+        .map(clone)
+        .sort((a, b) => a.id.localeCompare(b.id));
+    },
+    async listByCandidateIds(candidateIds) {
+      const ids = new Set(candidateIds);
+      return [...matches.values()]
+        .filter((m) => ids.has(m.candidateId))
         .map(clone)
         .sort((a, b) => a.id.localeCompare(b.id));
     },

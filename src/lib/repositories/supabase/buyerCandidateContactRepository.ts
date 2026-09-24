@@ -32,6 +32,22 @@ export class SupabaseBuyerCandidateContactRepository implements BuyerCandidateCo
     return (data ?? []).map(contactFromRow);
   }
 
+  async listByCandidateIds(candidateIds: readonly string[]): Promise<BuyerCandidateContact[]> {
+    const ids = [...new Set(candidateIds.filter(isEntityUuid))];
+    if (ids.length === 0) return [];
+    const rows: BuyerCandidateContact[] = [];
+    for (let offset = 0; offset < ids.length; offset += 200) {
+      const { data, error } = await this.supabase
+        .from("buyer_candidate_contacts")
+        .select("*")
+        .in("candidate_id", ids.slice(offset, offset + 200))
+        .order("is_primary", { ascending: false });
+      if (error) throw error;
+      rows.push(...(data ?? []).map(contactFromRow));
+    }
+    return rows;
+  }
+
   async get(id: string): Promise<BuyerCandidateContact | undefined> {
     if (!isEntityUuid(id)) return undefined;
     const { data, error } = await this.supabase

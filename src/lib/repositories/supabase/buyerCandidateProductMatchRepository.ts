@@ -41,6 +41,22 @@ export class SupabaseBuyerCandidateProductMatchRepository
     return (data ?? []).map(productMatchFromRow);
   }
 
+  async listByCandidateIds(candidateIds: readonly string[]): Promise<BuyerCandidateProductMatch[]> {
+    const ids = [...new Set(candidateIds.filter(isEntityUuid))];
+    if (ids.length === 0) return [];
+    const rows: BuyerCandidateProductMatch[] = [];
+    for (let offset = 0; offset < ids.length; offset += 200) {
+      const { data, error } = await this.supabase
+        .from("buyer_candidate_product_matches")
+        .select("*")
+        .in("candidate_id", ids.slice(offset, offset + 200))
+        .order("relevance", { ascending: false });
+      if (error) throw error;
+      rows.push(...(data ?? []).map(productMatchFromRow));
+    }
+    return rows;
+  }
+
   async create(input: BuyerCandidateProductMatch): Promise<BuyerCandidateProductMatch> {
     const row = productMatchToRow({ ...input, id: idFor(input.id) }, this.workspaceId);
     const { data, error } = await this.supabase

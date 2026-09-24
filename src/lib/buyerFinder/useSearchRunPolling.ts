@@ -49,6 +49,9 @@ export function useSearchRunPolling(options: {
         onSnapshotRef.current(snap);
         if (shouldStopPolling(snap.status)) return;
         if (isStaleRef.current?.(snap)) return;
+      } catch {
+        // A transient poll/read failure must not permanently detach the UI
+        // from a healthy server-side execution. The next bounded poll retries.
       } finally {
         inFlight = false;
       }

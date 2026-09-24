@@ -205,6 +205,31 @@ describe("BuyerFinderView search-run UX", () => {
     expect(createRun).not.toHaveBeenCalled();
   });
 
+  it("reconciles a stale handoff run only after the operator chooses Start a new search", async () => {
+    const stale = snap({
+      status: "running",
+      updatedAt: "2020-01-01T00:00:00.000Z",
+      createdAt: "2020-01-01T00:00:00.000Z",
+    });
+    finalizeStale.mockResolvedValue({
+      outcome: "finalized",
+      run: snap({
+        ...stale,
+        status: "failed",
+        stage: "complete",
+        errorCode: "interrupted",
+      }),
+    });
+    renderView({ marketHandoff, marketContext, initialActiveRun: stale });
+
+    expect(finalizeStale).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Start a new search" }));
+
+    await waitFor(() => expect(finalizeStale).toHaveBeenCalledWith(stale.id));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Find buyers" })).toBeTruthy());
+    expect(createRun).not.toHaveBeenCalled();
+  });
+
   it("resumes observing an initial active run without executing Hunter", () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);

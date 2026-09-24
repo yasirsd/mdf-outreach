@@ -186,6 +186,8 @@ export interface BuyerCandidateRepository {
 
 export interface BuyerCandidateContactRepository {
   listByCandidate(candidateId: string): Promise<BuyerCandidateContact[]>;
+  /** Batch read used by bounded discovery to avoid one request per existing candidate. */
+  listByCandidateIds?(candidateIds: readonly string[]): Promise<BuyerCandidateContact[]>;
   get(id: string): Promise<BuyerCandidateContact | undefined>;
   create(input: BuyerCandidateContact): Promise<BuyerCandidateContact>;
   update(id: string, patch: Partial<BuyerCandidateContact>): Promise<BuyerCandidateContact>;
@@ -204,6 +206,8 @@ export interface BuyerCandidatePublicEmailRepository {
 
 export interface BuyerCandidateProductMatchRepository {
   listByCandidate(candidateId: string): Promise<BuyerCandidateProductMatch[]>;
+  /** Batch read used by bounded discovery to avoid one request per existing candidate. */
+  listByCandidateIds?(candidateIds: readonly string[]): Promise<BuyerCandidateProductMatch[]>;
   create(input: BuyerCandidateProductMatch): Promise<BuyerCandidateProductMatch>;
   update(id: string, patch: Partial<BuyerCandidateProductMatch>): Promise<BuyerCandidateProductMatch>;
   delete(id: string): Promise<void>;
@@ -247,6 +251,18 @@ export interface BuyerFinderSearchRunRepository {
    * Exactly one concurrent caller can succeed.
    */
   claimQueued(id: string): Promise<BuyerFinderSearchRun | undefined>;
+  /**
+   * Atomically fail a non-terminal run only when its persisted heartbeat is
+   * still at or before the supplied cutoff. A concurrent progress write or
+   * terminal transition makes this a no-op.
+   */
+  finalizeInterruptedIfStale(input: {
+    id: string;
+    staleBefore: string;
+    completedAt: string;
+    errorCode: string;
+    errorMessage: string;
+  }): Promise<BuyerFinderSearchRun | undefined>;
 }
 
 export class RevealEventActiveExistsError extends Error {

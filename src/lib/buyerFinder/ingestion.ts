@@ -357,16 +357,48 @@ function fillMissingCandidate(existing: BuyerCandidate, incoming: NormalizedHit)
 }
 
 async function loadRecords(repos: BuyerFinderIngestionRepos): Promise<BuyerCandidateRecord[]> {
-  const list = await repos.candidates.list();
-  const records: BuyerCandidateRecord[] = [];
-  for (const candidate of list) {
-    records.push({
+  const candidates = await repos.candidates.list();
+  const ids = candidates.map((candidate) => candidate.id);
+  if (repos.contacts.listByCandidateIds && repos.productMatches.listByCandidateIds) {
+    const [contacts, productMatches] = await Promise.all([
+      repos.contacts.listByCandidateIds(ids),
+      repos.productMatches.listByCandidateIds(ids),
+    ]);
+    const contactsByCandidate = new Map<string, BuyerCandidateContact[]>();
+    const matchesByCandidate = new Map<string, BuyerCandidateProductMatch[]>();
+    for (const contact of contacts) {
+      const rows = contactsByCandidate.get(contact.candidateId) ?? [];
+      rows.push(contact);
+      contactsByCandidate.set(contact.candidateId, rows);
+    }
+    for (const match of productMatches) {
+      const rows = matchesByCandidate.get(match.candidateId) ?? [];
+      rows.push(match);
+      matchesByCandidate.set(match.candidateId, rows);
+    }
+    return candidates.map((candidate) => ({
       candidate,
-      contacts: await repos.contacts.listByCandidate(candidate.id),
-      productMatches: await repos.productMatches.listByCandidate(candidate.id),
-    });
+      contacts: contactsByCandidate.get(candidate.id) ?? [],
+      productMatches: matchesByCandidate.get(candidate.id) ?? [],
+    }));
   }
-  return records;
+  return Promise.all(candidates.map(async (candidate) => {
+    const [contacts, productMatches] = await Promise.all([
+      repos.contacts.listByCandidate(candidate.id),
+      repos.productMatches.listByCandidate(candidate.id),
+    ]);
+    return { candidate, contacts, productMatches };
+  }));
+}
+
+function replaceRecord(
+  records: BuyerCandidateRecord[],
+  replacement: BuyerCandidateRecord | undefined,
+): void {
+  if (!replacement) return;
+  const index = records.findIndex((record) => record.candidate.id === replacement.candidate.id);
+  if (index >= 0) records[index] = replacement;
+  else records.push(replacement);
 }
 
 async function applyPrimary(repos: BuyerFinderIngestionRepos, candidateId: string): Promise<void> {
@@ -386,11 +418,13 @@ async function rescore(
   candidateId: string,
   productId: BusinessProductId,
   country: string,
-): Promise<void> {
+): Promise<BuyerCandidateRecord | undefined> {
   const candidate = await repos.candidates.get(candidateId);
-  if (!candidate) return;
-  const contacts = await repos.contacts.listByCandidate(candidateId);
-  const productMatches = await repos.productMatches.listByCandidate(candidateId);
+  if (!candidate) return undefined;
+  const [contacts, productMatches] = await Promise.all([
+    repos.contacts.listByCandidate(candidateId),
+    repos.productMatches.listByCandidate(candidateId),
+  ]);
   const score = scoreBuyerCandidate({
     candidate,
     contacts,
@@ -398,10 +432,11 @@ async function rescore(
     targetProductId: productId,
     targetCountry: country,
   });
-  await repos.candidates.update(candidateId, {
+  const updated = await repos.candidates.update(candidateId, {
     companyScore: score.total,
     discoveryStatus: candidate.discoveryStatus === "archived" ? "archived" : "ready",
   });
+  return { candidate: updated, contacts, productMatches };
 }
 
 async function addProductMatch(
@@ -549,6 +584,11 @@ export async function discoverAndIngestCandidates(
     }),
   );
 
+  // Duplicate detection needs the workspace candidate snapshot, but it
+  // must be loaded once per bounded run—not once for every provider hit.
+  // The in-memory snapshot is refreshed after each processed hit so
+  // duplicates within the same batch are still detected truthfully.
+  const existingRecords = usableHits.length > 0 ? await loadRecords(repos) : [];
   let processed = 0;
   for (const { raw, normalized } of usableHits) {
     let people: DiscoveredContact[] = [];
@@ -580,7 +620,6 @@ export async function discoverAndIngestCandidates(
     }
 
     try {
-      const existingRecords = await loadRecords(repos);
       const dup = findCandidateDuplicates(probeRecord(normalized, people), existingRecords);
       const strong = dup.matches.find((m) => m.confidence === "exact" || m.confidence === "high");
       const possibles = dup.matches.filter((m) => m.confidence === "possible");
@@ -607,7 +646,8 @@ export async function discoverAndIngestCandidates(
             query.country,
             normalized,
           );
-          await rescore(repos, existing.id, productId, query.country);
+          const refreshed = await rescore(repos, existing.id, productId, query.country);
+          replaceRecord(existingRecords, refreshed);
 
           if (hadPatch || contactsAdded > 0 || productAdded) {
             result.enrichedExisting += 1;
@@ -616,8 +656,10 @@ export async function discoverAndIngestCandidates(
           } else {
             result.skippedExactDuplicates += 1;
           }
-          const latest = await repos.candidates.get(existing.id);
-          await enqueueAfterPersist(input.enqueueFreeEnrichment, latest ?? existing);
+          await enqueueAfterPersist(
+            input.enqueueFreeEnrichment,
+            refreshed?.candidate ?? existing,
+          );
         }
         processed += 1;
         await emitProgress(() =>
@@ -673,9 +715,10 @@ export async function discoverAndIngestCandidates(
       if (await addProductMatch(repos, id, productId, query.country, normalized)) {
         result.productMatchesAdded += 1;
       }
-      await rescore(repos, id, productId, query.country);
+      const refreshed = await rescore(repos, id, productId, query.country);
+      replaceRecord(existingRecords, refreshed);
       result.created += 1;
-      await enqueueAfterPersist(input.enqueueFreeEnrichment, candidate);
+      await enqueueAfterPersist(input.enqueueFreeEnrichment, refreshed?.candidate ?? candidate);
     } catch (err) {
       result.failures.push({
         providerRecordId: normalized.providerRecordId,

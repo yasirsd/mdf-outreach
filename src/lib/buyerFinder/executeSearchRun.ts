@@ -10,6 +10,7 @@ import {
   INTERRUPTED_ERROR_CODE,
   isRunStale,
   isTerminal,
+  STALE_THRESHOLD_MS,
   toSnapshot,
   BUYER_FINDER_PROCESS_CAP,
   type BuyerFinderSearchRun,
@@ -263,15 +264,22 @@ export async function finalizeStaleSearchRun(input: {
   const now = input.now ?? (() => new Date());
   const run = await input.searchRuns.get(input.runId);
   if (!run) return { outcome: "not_found", run: null };
-  if (!isRunStale(run, now())) {
+  const evaluatedAt = now();
+  if (!isRunStale(run, evaluatedAt)) {
     return { outcome: "not_stale", run: toSnapshot(run) };
   }
-  const failed = await input.searchRuns.update(run.id, {
-    status: "failed",
-    stage: "complete",
+  const failed = await input.searchRuns.finalizeInterruptedIfStale({
+    id: run.id,
+    staleBefore: new Date(evaluatedAt.getTime() - STALE_THRESHOLD_MS).toISOString(),
     errorCode: INTERRUPTED_ERROR_CODE,
     errorMessage: INTERRUPTED_MESSAGE,
-    completedAt: now().toISOString(),
+    completedAt: evaluatedAt.toISOString(),
   });
+  if (!failed) {
+    const current = await input.searchRuns.get(run.id);
+    return current
+      ? { outcome: "not_stale", run: toSnapshot(current) }
+      : { outcome: "not_found", run: null };
+  }
   return { outcome: "finalized", run: toSnapshot(failed) };
 }
