@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Info, LoaderCircle } from "lucide-react";
+import { Info, LoaderCircle, Scale, X } from "lucide-react";
 import { PageContainer } from "@/components/ui/Page";
 import { cn } from "@/lib/utils";
 import {
@@ -18,6 +18,7 @@ import {
 } from "@/lib/marketIntelligence/format";
 import type {
   CountryOverviewRow,
+  MarketIntelligenceComparison,
   MarketIntelligenceDetail,
   MarketIntelligenceOverview,
 } from "@/lib/marketIntelligence/read/overview";
@@ -26,12 +27,14 @@ import {
   IndiaShareChart,
   OriginCompetitionChart,
 } from "./MarketIntelligenceCharts";
+import { MarketComparisonView } from "./MarketComparisonView";
 
 interface Props {
   products: Array<{ id: string; displayName: string; shortName: string }>;
   selectedProductId: string | null;
   overview: MarketIntelligenceOverview | undefined;
   selectedDetail: MarketIntelligenceDetail | undefined;
+  comparison: MarketIntelligenceComparison | undefined;
   /** MI2A.1 — explicit invalid ?product=… supplied by the URL. */
   invalidProduct?: boolean;
   requestedProductId?: string | null;
@@ -68,29 +71,48 @@ const COMPONENT_LABELS: Record<string, string> = {
   demand_stability: "Demand stability",
 };
 
+function marketIntelligenceHref(params: URLSearchParams): string {
+  return `/market-intelligence?${params.toString().replace(/%2C/gi, ",")}`;
+}
+
 export function MarketIntelligenceView({
-  products, selectedProductId, overview, selectedDetail,
+  products, selectedProductId, overview, selectedDetail, comparison,
   invalidProduct = false, requestedProductId = null,
 }: Props) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [isTransitionPending, startTransition] = useTransition();
   const [pendingNavigation, setPendingNavigation] = useState<
-    { kind: "product"; value: string } | { kind: "country"; value: string } | null
+    | { kind: "product"; value: string }
+    | { kind: "country"; value: string }
+    | { kind: "comparison"; value: string }
+    | null
   >(null);
   const pendingNavigationRef = useRef<typeof pendingNavigation>(null);
+  const comparisonKey = comparison?.countryAlpha2s.join(",") ?? "";
+  const [comparisonOpen, setComparisonOpen] = useState(
+    () => (comparison?.countryAlpha2s.length ?? 0) >= 2,
+  );
   const selectedCountry = selectedDetail?.country.alpha2 ?? overview?.markets[0]?.countryAlpha2 ?? null;
   const displayedCountry = pendingNavigation?.kind === "country"
     ? pendingNavigation.value
     : selectedCountry;
   const productPending = pendingNavigation?.kind === "product";
   const countryPending = pendingNavigation?.kind === "country";
+  const comparisonPending = pendingNavigation?.kind === "comparison";
+  const displayedComparison = comparisonPending
+    ? pendingNavigation.value.split(",").filter(Boolean)
+    : (comparison?.countryAlpha2s ?? []);
   const navigationPending = isTransitionPending || pendingNavigation !== null;
 
   useEffect(() => {
     pendingNavigationRef.current = null;
     setPendingNavigation(null);
-  }, [selectedProductId, selectedCountry]);
+  }, [selectedProductId, selectedCountry, comparisonKey]);
+
+  useEffect(() => {
+    if ((comparison?.countryAlpha2s.length ?? 0) < 2) setComparisonOpen(false);
+  }, [comparisonKey, comparison?.countryAlpha2s.length]);
 
   const fitValues = useMemo(
     () => (overview?.markets ?? [])
@@ -106,11 +128,35 @@ export function MarketIntelligenceView({
     const params = new URLSearchParams(searchParams?.toString() ?? "");
     params.set("product", productId);
     params.delete("country");
+    params.delete("compare");
+    setComparisonOpen(false);
     const pending = { kind: "product" as const, value: productId };
     pendingNavigationRef.current = pending;
     setPendingNavigation(pending);
     startTransition(() => {
-      router.push(`/market-intelligence?${params.toString()}`, { scroll: false });
+      router.push(marketIntelligenceHref(params), { scroll: false });
+    });
+  };
+  const onComparisonToggle = (countryAlpha2: string) => {
+    if (pendingNavigationRef.current) return;
+    const current = new Set(displayedComparison);
+    if (current.has(countryAlpha2)) current.delete(countryAlpha2);
+    else {
+      if (current.size >= 4) return;
+      current.add(countryAlpha2);
+    }
+    const rankingOrder = overview?.markets.map((row) => row.countryAlpha2) ?? [];
+    const next = rankingOrder.filter((country) => current.has(country)).slice(0, 4);
+    const nextValue = next.join(",");
+    const params = new URLSearchParams(searchParams?.toString() ?? "");
+    if (selectedProductId) params.set("product", selectedProductId);
+    if (nextValue) params.set("compare", nextValue);
+    else params.delete("compare");
+    const pending = { kind: "comparison" as const, value: nextValue };
+    pendingNavigationRef.current = pending;
+    setPendingNavigation(pending);
+    startTransition(() => {
+      router.push(marketIntelligenceHref(params), { scroll: false });
     });
   };
   const onCountrySelect = (countryAlpha2: string) => {
@@ -122,12 +168,12 @@ export function MarketIntelligenceView({
     pendingNavigationRef.current = pending;
     setPendingNavigation(pending);
     startTransition(() => {
-      router.push(`/market-intelligence?${params.toString()}`, { scroll: false });
+      router.push(marketIntelligenceHref(params), { scroll: false });
     });
   };
 
   return (
-    <PageContainer size="wide">
+    <PageContainer size="full" className="max-w-[1800px]">
       <header className="mb-5">
         <div className="text-[10.5px] tracking-[0.16em] uppercase text-brand-orange mb-2 font-medium">
           Market Intelligence
@@ -166,22 +212,39 @@ export function MarketIntelligenceView({
       ) : !overview || !overview.productSupported ? (
         <UnavailableState overview={overview} />
       ) : (
-        <div
-          className="grid grid-cols-1 xl:grid-cols-[minmax(0,1.55fr)_minmax(0,1fr)] gap-4 items-start"
-          aria-busy={navigationPending || undefined}
-        >
-          <RankingTable
+        <>
+          <ComparisonControls
             rows={overview.markets}
-            selectedCountry={displayedCountry}
-            pendingCountry={countryPending ? pendingNavigation.value : null}
-            onSelect={onCountrySelect}
-            hsRevision={overview.hsRevision}
-            hsCode={overview.hsCode}
-            isTradeProxy={overview.isTradeProxyOnly}
-            navigationPending={navigationPending}
+            selectedCountries={displayedComparison}
+            pending={comparisonPending}
+            onRemove={onComparisonToggle}
+            onCompare={() => setComparisonOpen(true)}
           />
-          <DetailPanel detail={selectedDetail} updating={countryPending} />
-        </div>
+          <div aria-busy={comparisonPending || undefined}>
+            {comparisonOpen && comparison && comparison.countries.length >= 2 && (
+              <MarketComparisonView comparison={comparison} />
+            )}
+          </div>
+          <div
+            className="grid grid-cols-1 2xl:grid-cols-[minmax(0,1.7fr)_minmax(390px,1fr)] gap-4 items-start"
+            aria-busy={navigationPending || undefined}
+          >
+            <RankingTable
+              rows={overview.markets}
+              selectedCountry={displayedCountry}
+              pendingCountry={countryPending ? pendingNavigation.value : null}
+              onSelect={onCountrySelect}
+              comparedCountries={displayedComparison}
+              onToggleCompare={onComparisonToggle}
+              comparisonPending={comparisonPending}
+              hsRevision={overview.hsRevision}
+              hsCode={overview.hsCode}
+              isTradeProxy={overview.isTradeProxyOnly}
+              navigationPending={navigationPending}
+            />
+            <DetailPanel detail={selectedDetail} updating={countryPending} />
+          </div>
+        </>
       )}
 
       {overview?.isTradeProxyOnly && (
@@ -298,10 +361,8 @@ function UnavailableState({ overview }: { overview: MarketIntelligenceOverview |
             : "No Market Intelligence data is available."}
         </h2>
         <p className="mt-2 text-[13px] text-text-secondary leading-relaxed">
-          Only products whose calibration cohort has been materialised appear here with real
-          numbers. Guntur Dry Red Chilli is the first product with production Market Fit.
-          Additional products will show up here once their calibration completes — nothing is
-          fabricated in the meantime.
+          Verified trade evidence and Market Fit are not available for this product yet.
+          Choose another product to explore markets with completed evidence coverage.
         </p>
       </div>
     </div>
@@ -333,14 +394,81 @@ function InvalidProductState({ requestedProductId }: { requestedProductId: strin
   );
 }
 
+function ComparisonControls({
+  rows,
+  selectedCountries,
+  pending,
+  onRemove,
+  onCompare,
+}: {
+  rows: CountryOverviewRow[];
+  selectedCountries: string[];
+  pending: boolean;
+  onRemove: (countryAlpha2: string) => void;
+  onCompare: () => void;
+}) {
+  const selectedRows = selectedCountries
+    .map((country) => rows.find((row) => row.countryAlpha2 === country))
+    .filter((row): row is CountryOverviewRow => Boolean(row));
+  const count = selectedRows.length;
+  const buttonLabel = count === 1
+    ? "Select 1 more market"
+    : count >= 2
+      ? `Compare ${count} markets`
+      : "Select 2–4 markets";
+  return (
+    <section
+      aria-label="Market comparison selection"
+      aria-busy={pending || undefined}
+      className="mb-4 flex min-h-[58px] flex-col gap-3 rounded-[12px] p-3.5 sm:flex-row sm:items-center sm:justify-between"
+      style={{ backgroundColor: "var(--app-surface)", border: "1px solid var(--app-border)" }}
+    >
+      <div className="min-w-0">
+        <div className="flex items-center gap-2 text-[12px] font-medium text-text-primary">
+          <Scale size={14} aria-hidden className="text-brand-orange" />
+          Compare markets
+          <span className="text-[10.5px] font-normal text-text-muted" role="status" aria-live="polite">{count}/4 selected</span>
+          {pending && <LoaderCircle size={11} aria-hidden className="animate-spin text-brand-orange motion-reduce:animate-none" />}
+        </div>
+        {selectedRows.length === 0 ? (
+          <p className="mt-1 text-[10.5px] text-text-muted">Use the comparison checkboxes in the ranking table.</p>
+        ) : (
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {selectedRows.map((row) => (
+              <span key={row.countryAlpha2} className="inline-flex items-center gap-1 rounded-full px-2 py-1 text-[10.5px] text-text-secondary" style={{ backgroundColor: "var(--app-elevated)", border: "1px solid var(--app-border)" }}>
+                {row.countryName} <span className="text-text-muted">{row.countryAlpha2}</span>
+                <button type="button" onClick={() => onRemove(row.countryAlpha2)} disabled={pending} className="ml-0.5 rounded-full text-text-muted hover:text-text-primary focus-ring-quiet disabled:cursor-wait" aria-label={`Remove ${row.countryName} from comparison`}>
+                  <X size={11} aria-hidden />
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+      <button
+        type="button"
+        onClick={onCompare}
+        disabled={count < 2 || count > 4 || pending}
+        className="focus-ring inline-flex min-h-9 shrink-0 items-center justify-center rounded-[8px] px-3.5 text-[11.5px] font-medium disabled:cursor-not-allowed disabled:opacity-50"
+        style={{ backgroundColor: "var(--brand-orange)", color: "var(--app-bg)" }}
+      >
+        {buttonLabel}
+      </button>
+    </section>
+  );
+}
+
 function RankingTable({
-  rows, selectedCountry, pendingCountry, onSelect, hsRevision, hsCode, isTradeProxy,
-  navigationPending,
+  rows, selectedCountry, pendingCountry, onSelect, comparedCountries, onToggleCompare,
+  comparisonPending, hsRevision, hsCode, isTradeProxy, navigationPending,
 }: {
   rows: CountryOverviewRow[];
   selectedCountry: string | null;
   pendingCountry: string | null;
   onSelect: (countryAlpha2: string) => void;
+  comparedCountries: string[];
+  onToggleCompare: (countryAlpha2: string) => void;
+  comparisonPending: boolean;
   hsRevision: string | null;
   hsCode: string | null;
   isTradeProxy: boolean;
@@ -367,6 +495,7 @@ function RankingTable({
         <table className="w-full text-[12.5px] text-text-secondary" style={{ borderCollapse: "collapse" }}>
           <thead className="sticky top-0 z-10" style={{ backgroundColor: "var(--app-surface)" }}>
             <tr className="text-[10.5px] tracking-[0.14em] uppercase text-text-muted">
+              <th scope="col" className="text-center font-medium py-2 pl-4 pr-1"><span className="sr-only">Add to comparison</span></th>
               <th scope="col" className="text-left font-medium py-2 pl-5 pr-2">Rank</th>
               <th scope="col" className="text-left font-medium py-2 px-2">Market</th>
               <th scope="col" className="text-right font-medium py-2 px-2">Fit</th>
@@ -382,6 +511,8 @@ function RankingTable({
             {rows.map((row, index) => {
               const active = row.countryAlpha2 === selectedCountry;
               const pending = row.countryAlpha2 === pendingCountry;
+              const compared = comparedCountries.includes(row.countryAlpha2);
+              const comparisonFull = comparedCountries.length >= 4 && !compared;
               return (
                 <tr
                   key={row.countryAlpha2}
@@ -394,6 +525,16 @@ function RankingTable({
                     boxShadow: active ? "3px 0 0 var(--brand-orange) inset" : undefined,
                   }}
                 >
+                  <td className="pl-4 pr-1 py-2 text-center">
+                    <input
+                      type="checkbox"
+                      checked={compared}
+                      onChange={() => onToggleCompare(row.countryAlpha2)}
+                      disabled={comparisonPending || comparisonFull || (navigationPending && !comparisonPending)}
+                      aria-label={`${compared ? "Remove" : "Add"} ${row.countryName} ${compared ? "from" : "to"} comparison`}
+                      className="h-3.5 w-3.5 cursor-pointer rounded accent-brand-orange focus-ring disabled:cursor-not-allowed disabled:opacity-40"
+                    />
+                  </td>
                   <td className="pl-5 pr-2 py-2 tabular-nums text-text-muted">{index + 1}</td>
                   <td className="px-2 py-2">
                     <button
@@ -423,7 +564,7 @@ function RankingTable({
                       </span>
                     </button>
                   </td>
-                  <td className="px-2 py-2 tabular-nums text-right text-text-primary font-medium">
+                  <td className="px-2 py-2 tabular-nums text-right text-text-primary font-medium whitespace-nowrap">
                     {formatScoreOutOf100(row.marketFit)}
                   </td>
                   <td className="px-2 py-2 tabular-nums text-right">

@@ -172,20 +172,20 @@ function ChartFrame({
                 />
               );
             })}
-            <text x="0" y={PADDING.top + 4} fill="var(--text-muted)" fontSize="10">
+            <text x="0" y={PADDING.top + 4} fill="var(--text-secondary)" fontSize="11">
               {formatValue(geometry.maxValue)}
             </text>
-            <text x="0" y={HEIGHT - PADDING.bottom + 4} fill="var(--text-muted)" fontSize="10">
+            <text x="0" y={HEIGHT - PADDING.bottom + 4} fill="var(--text-secondary)" fontSize="11">
               {formatValue(0)}
             </text>
-            <text x={PADDING.left} y={HEIGHT - 7} fill="var(--text-muted)" fontSize="10">
+            <text x={PADDING.left} y={HEIGHT - 7} fill="var(--text-secondary)" fontSize="11">
               {geometry.minYear}
             </text>
             <text
               x={WIDTH - PADDING.right}
               y={HEIGHT - 7}
-              fill="var(--text-muted)"
-              fontSize="10"
+              fill="var(--text-secondary)"
+              fontSize="11"
               textAnchor="end"
             >
               {geometry.maxYear}

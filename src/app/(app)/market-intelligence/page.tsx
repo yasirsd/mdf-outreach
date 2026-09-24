@@ -3,8 +3,7 @@ import { createClient } from "@/utils/supabase/server";
 import { requireMdfSession } from "@/lib/auth/require";
 import { createMarketReadRepository } from "@/lib/marketIntelligence/marketReadRepository";
 import {
-  getMarketIntelligenceDetail,
-  getMarketIntelligenceOverview,
+  getMarketIntelligenceWorkspace,
   marketIntelligenceProducts,
   resolveMarketIntelligenceProductRouting,
 } from "@/lib/marketIntelligence/read/overview";
@@ -17,7 +16,7 @@ const DEFAULT_PRODUCT_ID = "guntur-dry-red-chilli";
 export default async function MarketIntelligencePage({
   searchParams,
 }: {
-  searchParams?: { product?: string; country?: string };
+  searchParams?: { product?: string; country?: string; compare?: string };
 }) {
   // Auth boundary: `requireMdfSession()` enforces the same authenticated
   // (app) shell/session gate every other /(app) page inherits — see
@@ -54,6 +53,7 @@ export default async function MarketIntelligencePage({
         selectedProductId={null}
         overview={undefined}
         selectedDetail={undefined}
+        comparison={undefined}
         invalidProduct
         requestedProductId={routing.requestedProductId}
       />
@@ -66,34 +66,35 @@ export default async function MarketIntelligencePage({
         selectedProductId={null}
         overview={undefined}
         selectedDetail={undefined}
+        comparison={undefined}
       />
     );
   }
 
   const supabase = createClient(cookies());
   const repository = createMarketReadRepository(supabase);
-  const overview = await getMarketIntelligenceOverview(product.id, repository);
-
   const requestedCountryRaw = searchParams?.country;
   const requestedCountry =
     typeof requestedCountryRaw === "string" && /^[A-Za-z]{2}$/.test(requestedCountryRaw.trim())
       ? requestedCountryRaw.trim().toUpperCase()
       : undefined;
-  const defaultCountry = overview?.markets[0]?.countryAlpha2;
-  const detailCountry = requestedCountry &&
-      overview?.markets.some((row) => row.countryAlpha2 === requestedCountry)
-    ? requestedCountry
-    : defaultCountry;
-  const selectedDetail = detailCountry
-    ? await getMarketIntelligenceDetail(product.id, detailCountry, repository)
+  const requestedComparison = typeof searchParams?.compare === "string"
+    ? searchParams.compare
     : undefined;
+  const workspace = await getMarketIntelligenceWorkspace(
+    product.id,
+    requestedCountry,
+    requestedComparison,
+    repository,
+  );
 
   return (
     <MarketIntelligenceView
       products={productList}
       selectedProductId={product.id}
-      overview={overview}
-      selectedDetail={selectedDetail}
+      overview={workspace?.overview}
+      selectedDetail={workspace?.selectedDetail}
+      comparison={workspace?.comparison}
     />
   );
 }

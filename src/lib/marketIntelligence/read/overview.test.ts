@@ -11,9 +11,12 @@ import type {
   MarketReadRepositoryScoreComponent,
 } from "../marketReadRepository";
 import {
+  canonicalizeComparisonCountries,
   compareOverviewRows,
+  getMarketIntelligenceComparison,
   getMarketIntelligenceDetail,
   getMarketIntelligenceOverview,
+  getMarketIntelligenceWorkspace,
   marketIntelligenceProducts,
   resolveMarketIntelligenceProductRouting,
   summarizeCountryAnalytics,
@@ -422,6 +425,91 @@ describe("MI2A read-side product surface", () => {
   });
 });
 
+describe("MI3 comparison routing and read model", () => {
+  const rankingOrder = ["US", "TH", "MY", "VN", "LK", "AE"];
+
+  it("canonicalizes alpha-2 input, removes duplicates/invalids, uses ranking order, and caps at four", () => {
+    expect(canonicalizeComparisonCountries("my,US,us,??,TH,AE,VN", rankingOrder))
+      .toEqual(["US", "TH", "MY", "VN"]);
+    expect(canonicalizeComparisonCountries("zz,1,", rankingOrder)).toEqual([]);
+    expect(canonicalizeComparisonCountries(undefined, rankingOrder)).toEqual([]);
+  });
+
+  it("reads up to four countries with exactly one batched score call and one batched observation call", async () => {
+    const r = repo();
+    const comparison = await getMarketIntelligenceComparison(
+      CHILLI,
+      ["US", "TH", "MY", "AE", "JP"],
+      r,
+    );
+    expect(comparison?.countries).toHaveLength(4);
+    expect(comparison?.countryAlpha2s).toEqual(["AE", "JP", "MY", "TH"]);
+    expect(r.listCurrentMarketScoresForProduct).toHaveBeenCalledTimes(1);
+    expect(r.listBilateralAnnualObservationsForCountries).toHaveBeenCalledTimes(1);
+    expect(r.getCurrentMarketScore).not.toHaveBeenCalled();
+    expect(r.listBilateralAnnualObservations).not.toHaveBeenCalled();
+    expect(r.listCurrentMarketScoresForProduct.mock.calls[0]![1]).toHaveLength(4);
+  });
+
+  it("returns persisted full metrics, history, origins, provenance, and six components", async () => {
+    const comparison = await getMarketIntelligenceComparison(CHILLI, ["US", "TH"], repo());
+    expect(comparison?.marketFitVersion).toBe(MARKET_FIT_VERSION);
+    expect(comparison?.dataConfidenceVersion).toBe(DATA_CONFIDENCE_VERSION);
+    for (const country of comparison!.countries) {
+      expect(country.overview.marketFit).toBe(MI1H_FIT[country.country.alpha2]);
+      expect(country.overview.components).toHaveLength(6);
+      expect(country.overview.components.map((component) => component.weight)).toEqual([25, 20, 20, 15, 10, 10]);
+      expect(country.history).toHaveLength(7);
+      expect(country.originsLatestYear.length).toBeGreaterThan(0);
+      expect(country.overview.indiaShare).not.toBeNull();
+      expect(country.overview.indiaRank).toBe(2);
+      expect(country.overview.hhi).not.toBeNull();
+      expect(country.overview.top1Share).not.toBeNull();
+      expect(country.overview.top3Share).not.toBeNull();
+      expect(country.provenance.datasetId).toBe("baci-hs17");
+    }
+  });
+
+  it("keeps missing primitives and quantities null in comparison records", async () => {
+    const comparison = await getMarketIntelligenceComparison(CHILLI, ["US", "TH"], repo({
+      observationsFor: (country) => observations(country).map((row) => ({
+        ...row,
+        quantity: null,
+        quantityUnit: null,
+      })),
+    }));
+    for (const country of comparison!.countries) {
+      expect(country.overview.latestImportQuantityTonnes).toBeNull();
+      expect(country.overview.derivedUnitValueUsdPerKg).toBeNull();
+      expect(country.history.every((point) => point.totalTonnes === null)).toBe(true);
+    }
+  });
+
+  it("shares the overview evidence batch with focused detail and comparison", async () => {
+    const r = repo();
+    const workspace = await getMarketIntelligenceWorkspace(
+      CHILLI,
+      "MY",
+      "AE,MY,US,TH,US,invalid",
+      r,
+    );
+    expect(workspace?.selectedDetail?.country.alpha2).toBe("MY");
+    expect(workspace?.comparison.countryAlpha2s).toEqual(["US", "TH", "MY", "AE"]);
+    expect(r.listCurrentMarketScoresForProduct).toHaveBeenCalledTimes(1);
+    expect(r.listBilateralAnnualObservationsForCountries).toHaveBeenCalledTimes(1);
+    expect(r.getCurrentMarketScore).not.toHaveBeenCalled();
+    expect(r.listBilateralAnnualObservations).not.toHaveBeenCalled();
+  });
+
+  it("handles zero and one comparison selections without fabricating a comparison", async () => {
+    const empty = await getMarketIntelligenceWorkspace(CHILLI, "US", "??", repo());
+    expect(empty?.comparison.countries).toEqual([]);
+    const one = await getMarketIntelligenceWorkspace(CHILLI, "US", "th", repo());
+    expect(one?.comparison.countryAlpha2s).toEqual(["TH"]);
+    expect(one?.comparison.countries[0]?.overview.marketFit).toBe(62);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Source-code safety (regression scan)
 // ---------------------------------------------------------------------------
@@ -434,6 +522,8 @@ describe("MI2A source-code safety", () => {
     "src/app/(app)/market-intelligence/page.tsx",
     "src/app/(app)/market-intelligence/MarketIntelligenceView.tsx",
     "src/app/(app)/market-intelligence/MarketIntelligenceCharts.tsx",
+    "src/app/(app)/market-intelligence/MarketComparisonView.tsx",
+    "src/app/(app)/market-intelligence/MarketComparisonCharts.tsx",
     "src/app/(app)/market-intelligence/loading.tsx",
   ];
   const bodies = files.map((f) => readFileSync(path.resolve(HERE, f), "utf8"));
@@ -488,12 +578,12 @@ describe("MI2A source-code safety", () => {
     expect(view).not.toMatch(/These companies imported from India/);
   });
 
-  it("page.tsx uses resolveMarketIntelligenceProductRouting and short-circuits invalid before overview reads", () => {
+  it("page.tsx uses canonical product routing and short-circuits invalid before workspace reads", () => {
     const pageBody = bodies[2]!;
     expect(pageBody).toContain("resolveMarketIntelligenceProductRouting");
     // The `invalidProduct` branch MUST return BEFORE the overview read.
     const invalidIdx = pageBody.indexOf("if (invalidProduct)");
-    const overviewIdx = pageBody.indexOf("getMarketIntelligenceOverview(product.id");
+    const overviewIdx = pageBody.indexOf("getMarketIntelligenceWorkspace(");
     expect(invalidIdx).toBeGreaterThan(-1);
     expect(overviewIdx).toBeGreaterThan(-1);
     expect(invalidIdx).toBeLessThan(overviewIdx);

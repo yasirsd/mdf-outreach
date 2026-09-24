@@ -124,6 +124,93 @@ export interface MarketIntelligenceOverview {
   markets: CountryOverviewRow[];
 }
 
+type BatchedMarketReadRepository = Pick<
+  MarketReadRepository,
+  "listCurrentMarketScoresForProduct" | "listBilateralAnnualObservationsForCountries"
+>;
+
+type BatchedObservations = Awaited<
+  ReturnType<MarketReadRepository["listBilateralAnnualObservationsForCountries"]>
+>;
+
+interface LoadedMarketEvidence {
+  product: CatalogueProduct;
+  isChilli: boolean;
+  scoresByCountry: Map<string, MarketReadRepositoryScore>;
+  observationsByCountry: Map<string, BatchedObservations>;
+}
+
+async function loadMarketEvidence(
+  product: CatalogueProduct,
+  countryAlpha2s: readonly string[],
+  repository: BatchedMarketReadRepository,
+): Promise<LoadedMarketEvidence> {
+  const isChilli = product.id === MALAYSIA_CHILLI_PRODUCT_ID;
+  const scores = await repository.listCurrentMarketScoresForProduct(product.id, countryAlpha2s);
+  const scoresByCountry = new Map<string, MarketReadRepositoryScore>();
+  for (const score of scores) scoresByCountry.set(score.countryAlpha2, score);
+
+  const observations = isChilli
+    ? await repository.listBilateralAnnualObservationsForCountries(
+        countryAlpha2s,
+        "HS17",
+        MALAYSIA_CHILLI_HS17_CODE,
+        "baci_oec",
+        BACI_OEC_DATASET_ID,
+      )
+    : [];
+  const observationsByCountry = new Map<string, BatchedObservations>();
+  for (const row of observations) {
+    let bucket = observationsByCountry.get(row.reporterCountry);
+    if (!bucket) {
+      bucket = [];
+      observationsByCountry.set(row.reporterCountry, bucket);
+    }
+    bucket.push(row);
+  }
+
+  return { product, isChilli, scoresByCountry, observationsByCountry };
+}
+
+function buildOverviewFromEvidence(
+  evidence: LoadedMarketEvidence,
+): MarketIntelligenceOverview {
+  const rows: CountryOverviewRow[] = [];
+  let latestEvidenceYear: number | null = null;
+  let latestScoreCalculatedAt: string | null = null;
+
+  for (const entry of calibrationCohort()) {
+    const score = evidence.scoresByCountry.get(entry.countryAlpha2);
+    if (!score) continue;
+    const countryObservations = evidence.observationsByCountry.get(entry.countryAlpha2) ?? [];
+    const analytics = summarizeCountryAnalytics(countryObservations);
+    latestEvidenceYear = maxYear(latestEvidenceYear, analytics.latestYear);
+    latestScoreCalculatedAt = maxIso(latestScoreCalculatedAt, score.calculatedAt);
+    rows.push(toOverviewRow(entry.countryAlpha2, entry.displayName, score, analytics));
+  }
+
+  rows.sort(compareOverviewRows);
+
+  return {
+    version: MI2A_OVERVIEW_VERSION,
+    product: {
+      id: evidence.product.id,
+      displayName: evidence.product.displayName,
+      shortName: evidence.product.shortName,
+    },
+    productSupported: evidence.isChilli && rows.length > 0,
+    isTradeProxyOnly: evidence.isChilli,
+    hsRevision: evidence.isChilli ? "HS17" : null,
+    hsCode: evidence.isChilli ? MALAYSIA_CHILLI_HS17_CODE : null,
+    marketFitVersion: MARKET_FIT_VERSION,
+    dataConfidenceVersion: DATA_CONFIDENCE_VERSION,
+    totalMarkets: rows.length,
+    latestEvidenceYear,
+    latestScoreCalculatedAt,
+    markets: rows,
+  };
+}
+
 /**
  * Read the current persisted overview for a product. Every row is a
  * `market_product_scores` CURRENT row; nothing is fabricated. Rows are
@@ -139,70 +226,14 @@ export interface MarketIntelligenceOverview {
  */
 export async function getMarketIntelligenceOverview(
   productId: string,
-  repository: Pick<
-    MarketReadRepository,
-    | "listCurrentMarketScoresForProduct"
-    | "listBilateralAnnualObservationsForCountries"
-  >,
+  repository: BatchedMarketReadRepository,
 ): Promise<MarketIntelligenceOverview | undefined> {
   const product = findMarketIntelligenceProduct(productId);
   if (!product) return undefined;
-
-  // Only the guntur-dry-red-chilli mapping is currently in production;
-  // other products return the shell with `productSupported: false`.
-  const isChilli = product.id === MALAYSIA_CHILLI_PRODUCT_ID;
-  const hsRevision = isChilli ? "HS17" : null;
-  const hsCode = isChilli ? MALAYSIA_CHILLI_HS17_CODE : null;
-
-  const cohort = calibrationCohort();
-  const cohortCountries = cohort.map((c) => c.countryAlpha2);
-
-  const scores = await repository.listCurrentMarketScoresForProduct(product.id, cohortCountries);
-  const scoresByCountry = new Map<string, typeof scores[number]>();
-  for (const score of scores) scoresByCountry.set(score.countryAlpha2, score);
-
-  const observations = isChilli
-    ? await repository.listBilateralAnnualObservationsForCountries(
-        cohortCountries, "HS17", MALAYSIA_CHILLI_HS17_CODE, "baci_oec", BACI_OEC_DATASET_ID,
-      )
-    : [];
-  const observationsByCountry = new Map<string, typeof observations>();
-  for (const row of observations) {
-    let bucket = observationsByCountry.get(row.reporterCountry);
-    if (!bucket) { bucket = []; observationsByCountry.set(row.reporterCountry, bucket); }
-    bucket.push(row);
-  }
-
-  const rows: CountryOverviewRow[] = [];
-  let latestEvidenceYear: number | null = null;
-  let latestScoreCalculatedAt: string | null = null;
-
-  for (const entry of cohort) {
-    const score = scoresByCountry.get(entry.countryAlpha2);
-    if (!score) continue;
-    const evidence = observationsByCountry.get(entry.countryAlpha2) ?? [];
-    const analytics = summarizeCountryAnalytics(evidence);
-    latestEvidenceYear = maxYear(latestEvidenceYear, analytics.latestYear);
-    latestScoreCalculatedAt = maxIso(latestScoreCalculatedAt, score.calculatedAt);
-    rows.push(toOverviewRow(entry.countryAlpha2, entry.displayName, score, analytics));
-  }
-
-  rows.sort(compareOverviewRows);
-
-  return {
-    version: MI2A_OVERVIEW_VERSION,
-    product: { id: product.id, displayName: product.displayName, shortName: product.shortName },
-    productSupported: isChilli && rows.length > 0,
-    isTradeProxyOnly: isChilli,
-    hsRevision,
-    hsCode,
-    marketFitVersion: MARKET_FIT_VERSION,
-    dataConfidenceVersion: DATA_CONFIDENCE_VERSION,
-    totalMarkets: rows.length,
-    latestEvidenceYear,
-    latestScoreCalculatedAt,
-    markets: rows,
-  };
+  const countryAlpha2s = calibrationCohort().map((entry) => entry.countryAlpha2);
+  return buildOverviewFromEvidence(
+    await loadMarketEvidence(product, countryAlpha2s, repository),
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -456,25 +487,13 @@ export interface MarketIntelligenceDetail {
   };
 }
 
-export async function getMarketIntelligenceDetail(
-  productId: string,
-  countryAlpha2: string,
-  repository: Pick<MarketReadRepository, "getCurrentMarketScore" | "listBilateralAnnualObservations">,
-): Promise<MarketIntelligenceDetail | undefined> {
-  const product = findMarketIntelligenceProduct(productId);
-  if (!product) return undefined;
-  const country = countryAlpha2?.toUpperCase();
-  if (!country || !/^[A-Z]{2}$/.test(country)) return undefined;
-
-  const score = await repository.getCurrentMarketScore(country, product.id);
-  if (!score) return undefined;
-
+function buildDetailFromEvidence(
+  product: CatalogueProduct,
+  country: string,
+  score: MarketReadRepositoryScore,
+  observations: BatchedObservations,
+): MarketIntelligenceDetail {
   const isChilli = product.id === MALAYSIA_CHILLI_PRODUCT_ID;
-  const observations = isChilli
-    ? await repository.listBilateralAnnualObservations(
-        country, "HS17", MALAYSIA_CHILLI_HS17_CODE, "baci_oec", BACI_OEC_DATASET_ID,
-      )
-    : [];
   const analytics = summarizeCountryAnalytics(observations);
 
   const byYear = new Map<number, { total: number; india: number; tonnes: number; hasQuantity: boolean }>();
@@ -519,13 +538,12 @@ export async function getMarketIntelligenceDetail(
         : null,
   }));
 
-  const overview: CountryOverviewRow = toOverviewRow(
+  const overview = toOverviewRow(
     country,
     countryDisplayName(country) ?? country,
     score,
     analytics,
   );
-
   const evidenceWatermark = score.sourceCoverage.evidence_watermark;
   const mappingWatermark = score.sourceCoverage.mapping_watermark;
 
@@ -553,5 +571,168 @@ export async function getMarketIntelligenceDetail(
       hasEvidenceWatermark: typeof evidenceWatermark === "string" && evidenceWatermark.length > 0,
       hasMappingWatermark: typeof mappingWatermark === "string" && mappingWatermark.length > 0,
     },
+  };
+}
+
+export async function getMarketIntelligenceDetail(
+  productId: string,
+  countryAlpha2: string,
+  repository: Pick<MarketReadRepository, "getCurrentMarketScore" | "listBilateralAnnualObservations">,
+): Promise<MarketIntelligenceDetail | undefined> {
+  const product = findMarketIntelligenceProduct(productId);
+  if (!product) return undefined;
+  const country = countryAlpha2?.toUpperCase();
+  if (!country || !/^[A-Z]{2}$/.test(country)) return undefined;
+
+  const score = await repository.getCurrentMarketScore(country, product.id);
+  if (!score) return undefined;
+
+  const isChilli = product.id === MALAYSIA_CHILLI_PRODUCT_ID;
+  const observations = isChilli
+    ? await repository.listBilateralAnnualObservations(
+        country, "HS17", MALAYSIA_CHILLI_HS17_CODE, "baci_oec", BACI_OEC_DATASET_ID,
+      )
+    : [];
+  return buildDetailFromEvidence(product, country, score, observations);
+}
+
+// ---------------------------------------------------------------------------
+// Comparison and page workspace read models
+// ---------------------------------------------------------------------------
+
+export const MARKET_COMPARISON_LIMIT = 4;
+
+export interface MarketIntelligenceComparison {
+  product: { id: string; displayName: string; shortName: string };
+  marketFitVersion: string;
+  dataConfidenceVersion: string;
+  countryAlpha2s: string[];
+  countries: MarketIntelligenceDetail[];
+}
+
+export interface MarketIntelligenceWorkspace {
+  overview: MarketIntelligenceOverview;
+  selectedDetail: MarketIntelligenceDetail | undefined;
+  comparison: MarketIntelligenceComparison;
+}
+
+/**
+ * Parses comparison state as canonical alpha-2 values, removes duplicates and
+ * invalid values, orders by the supplied canonical registry, and caps at four.
+ */
+export function canonicalizeComparisonCountries(
+  input: string | readonly string[] | undefined | null,
+  canonicalCountryOrder: readonly string[],
+): string[] {
+  const inputValues: readonly string[] = typeof input === "string"
+    ? input.split(",")
+    : (input ?? []);
+  const requested = inputValues
+    .map((value) => value.trim().toUpperCase())
+    .filter((value) => /^[A-Z]{2}$/.test(value));
+  const requestedSet = new Set(requested);
+  return canonicalCountryOrder
+    .map((value) => value.toUpperCase())
+    .filter((value, index, all) => all.indexOf(value) === index && requestedSet.has(value))
+    .slice(0, MARKET_COMPARISON_LIMIT);
+}
+
+function buildComparisonFromEvidence(
+  evidence: LoadedMarketEvidence,
+  countryAlpha2s: readonly string[],
+): MarketIntelligenceComparison {
+  const countries: MarketIntelligenceDetail[] = [];
+  for (const country of countryAlpha2s) {
+    const score = evidence.scoresByCountry.get(country);
+    if (!score) continue;
+    countries.push(
+      buildDetailFromEvidence(
+        evidence.product,
+        country,
+        score,
+        evidence.observationsByCountry.get(country) ?? [],
+      ),
+    );
+  }
+  return {
+    product: {
+      id: evidence.product.id,
+      displayName: evidence.product.displayName,
+      shortName: evidence.product.shortName,
+    },
+    marketFitVersion: MARKET_FIT_VERSION,
+    dataConfidenceVersion: DATA_CONFIDENCE_VERSION,
+    countryAlpha2s: countries.map((country) => country.country.alpha2),
+    countries,
+  };
+}
+
+/**
+ * Standalone MI3 comparison reader. It performs one batched score read
+ * (repository-internal score + component queries) and one batched observation
+ * read, then groups every country in memory.
+ */
+export async function getMarketIntelligenceComparison(
+  productId: string,
+  countryAlpha2s: readonly string[],
+  repository: BatchedMarketReadRepository,
+): Promise<MarketIntelligenceComparison | undefined> {
+  const product = findMarketIntelligenceProduct(productId);
+  if (!product) return undefined;
+  const canonicalRegistry = calibrationCohort()
+    .map((entry) => entry.countryAlpha2)
+    .sort((a, b) => a.localeCompare(b));
+  const countries = canonicalizeComparisonCountries(countryAlpha2s, canonicalRegistry);
+  if (countries.length === 0) {
+    return {
+      product: { id: product.id, displayName: product.displayName, shortName: product.shortName },
+      marketFitVersion: MARKET_FIT_VERSION,
+      dataConfidenceVersion: DATA_CONFIDENCE_VERSION,
+      countryAlpha2s: [],
+      countries: [],
+    };
+  }
+  const evidence = await loadMarketEvidence(product, countries, repository);
+  return buildComparisonFromEvidence(evidence, countries);
+}
+
+/**
+ * The page-level reader shares the overview evidence batch with the focused
+ * country and comparison views. Its database query count is constant as the
+ * comparison grows from zero to four countries.
+ */
+export async function getMarketIntelligenceWorkspace(
+  productId: string,
+  requestedDetailCountry: string | undefined | null,
+  requestedComparison: string | readonly string[] | undefined | null,
+  repository: BatchedMarketReadRepository,
+): Promise<MarketIntelligenceWorkspace | undefined> {
+  const product = findMarketIntelligenceProduct(productId);
+  if (!product) return undefined;
+  const cohortCountries = calibrationCohort().map((entry) => entry.countryAlpha2);
+  const evidence = await loadMarketEvidence(product, cohortCountries, repository);
+  const overview = buildOverviewFromEvidence(evidence);
+  const canonicalCountryOrder = overview.markets.map((market) => market.countryAlpha2);
+  const requestedCountry = requestedDetailCountry?.trim().toUpperCase();
+  const detailCountry = requestedCountry && canonicalCountryOrder.includes(requestedCountry)
+    ? requestedCountry
+    : canonicalCountryOrder[0];
+  const detailScore = detailCountry ? evidence.scoresByCountry.get(detailCountry) : undefined;
+  const selectedDetail = detailCountry && detailScore
+    ? buildDetailFromEvidence(
+        product,
+        detailCountry,
+        detailScore,
+        evidence.observationsByCountry.get(detailCountry) ?? [],
+      )
+    : undefined;
+  const comparisonCountries = canonicalizeComparisonCountries(
+    requestedComparison,
+    canonicalCountryOrder,
+  );
+  return {
+    overview,
+    selectedDetail,
+    comparison: buildComparisonFromEvidence(evidence, comparisonCountries),
   };
 }
