@@ -1,7 +1,9 @@
 "use client";
 
 import { useEffect, useRef } from "react";
+import { usePathname, useSearchParams } from "next/navigation";
 import { nextDrainDelayMs } from "@/lib/buyerFinder/freeEnrichmentDrainSchedule";
+import { resolveMarketIntelligenceBuyerFinderHandoff } from "@/lib/marketIntelligence/buyerFinderHandoff";
 
 /**
  * App-shell autopump. The durable queue is the source of truth.
@@ -12,8 +14,20 @@ import { nextDrainDelayMs } from "@/lib/buyerFinder/freeEnrichmentDrainSchedule"
  */
 export function FreeEnrichmentAutopump() {
   const inFlight = useRef(false);
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const suppressForMarketIntelligenceHandoff = pathname === "/buyer-finder" && Boolean(
+    resolveMarketIntelligenceBuyerFinderHandoff({
+      source: searchParams.get("source") ?? undefined,
+      product: searchParams.get("product") ?? undefined,
+      country: searchParams.get("country") ?? undefined,
+    }),
+  );
 
   useEffect(() => {
+    // Opening a validated MI4 handoff is intentionally read-only. Free
+    // enrichment may resume after the operator leaves the handoff route.
+    if (suppressForMarketIntelligenceHandoff) return;
     let cancelled = false;
     let timeoutId = 0;
 
@@ -53,7 +67,7 @@ export function FreeEnrichmentAutopump() {
       window.clearTimeout(timeoutId);
       document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, []);
+  }, [suppressForMarketIntelligenceHandoff]);
 
   return null;
 }

@@ -138,6 +138,17 @@ const products = [
 ];
 
 describe("MI2B Market Intelligence view", () => {
+  it("exposes a canonical country-detail Buyer Finder handoff with identity only", () => {
+    render(
+      <MarketIntelligenceView products={products} selectedProductId="guntur-dry-red-chilli" overview={overview} selectedDetail={detail} comparison={undefined} />,
+    );
+    const link = screen.getByRole("link", { name: "Find buyers in United States" });
+    expect(link.getAttribute("href")).toBe(
+      "/buyer-finder?product=guntur-dry-red-chilli&country=US&source=market-intelligence",
+    );
+    expect(link.getAttribute("href")).not.toMatch(/provider|090421|fit=|confidence=/i);
+  });
+
   it("renders persisted charts, exactly six weighted components, and the proxy disclosure", () => {
     render(
       <MarketIntelligenceView
@@ -233,6 +244,12 @@ describe("MI2B Market Intelligence view", () => {
     expect(screen.getByLabelText("Import demand over time")).toBeTruthy();
     expect(screen.getByLabelText("India share over time")).toBeTruthy();
     expect(screen.queryByText(/winner|best market|excellent/i)).toBeNull();
+    const usLinks = screen.getAllByRole("link", { name: "Find buyers in United States" });
+    const thLink = screen.getByRole("link", { name: "Find buyers in Thailand" });
+    expect(usLinks.some((link) => link.getAttribute("href")?.includes("country=US"))).toBe(true);
+    expect(thLink.getAttribute("href")).toContain("country=TH");
+    expect(thLink.getAttribute("href")).toContain("returnCompare=US,TH");
+    expect(screen.queryByRole("link", { name: /all 2 markets/i })).toBeNull();
   });
 
   it("keeps one selected market out of comparison mode and exposes the select-one-more state", () => {
@@ -327,6 +344,7 @@ describe("MI2B Market Intelligence view", () => {
       />,
     );
     expect(screen.queryByLabelText("Market comparison selection")).toBeNull();
+    expect(screen.queryByRole("link", { name: /Find buyers in/i })).toBeNull();
     expect(screen.getByText(/Market Intelligence is not available for Banganapalli Mango yet/)).toBeTruthy();
     expect(screen.queryByText(/calibration cohort/i)).toBeNull();
   });

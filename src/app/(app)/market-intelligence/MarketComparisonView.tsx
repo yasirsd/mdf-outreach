@@ -17,6 +17,7 @@ import type {
   MarketIntelligenceDetail,
 } from "@/lib/marketIntelligence/read/overview";
 import { ComparisonTrendCharts } from "./MarketComparisonCharts";
+import { BuyerFinderHandoffLink } from "./BuyerFinderHandoffLink";
 
 const COMPONENT_LABELS: Record<ComponentSummary["key"], string> = {
   demand_size: "Demand size",
@@ -131,6 +132,15 @@ function CompetitiveStructure({ countries }: { countries: readonly MarketIntelli
             <div className="flex items-baseline justify-between gap-2">
               <h4 className="text-[12.5px] font-semibold text-text-primary">{country.country.name}</h4>
               <span className="text-[10.5px] text-text-muted">{country.latestPeriod ?? MI2A_EM_DASH}</span>
+            </div>
+            <div className="mt-2">
+              <BuyerFinderHandoffLink
+                productId={country.product.id}
+                countryAlpha2={country.country.alpha2}
+                countryName={country.country.name}
+                returnComparison={countries.map((item) => item.country.alpha2)}
+                compact
+              />
             </div>
             <dl className="mt-3 grid grid-cols-3 gap-2">
               <div><dt className="text-[10px] text-text-muted">Top-1</dt><dd className="mt-0.5 text-[11.5px] tabular-nums text-text-primary">{formatPercent(country.overview.top1Share)}</dd></div>

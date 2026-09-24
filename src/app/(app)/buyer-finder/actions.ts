@@ -235,7 +235,7 @@ export interface QueueSummary {
  * Loads a bounded list of candidates + contact counts + product matches
  * for the review queue. RLS scopes to the caller's workspace.
  */
-export async function loadBuyerCandidateQueueAction(): Promise<{
+async function loadBuyerCandidateQueue(input: { repairMissingJobs: boolean }): Promise<{
   rows: QueueRow[];
   summary: QueueSummary;
   limit: number;
@@ -244,10 +244,12 @@ export async function loadBuyerCandidateQueueAction(): Promise<{
   const { repos } = await serverRepositories();
   const all = await repos.buyerCandidates.list();
   const bounded = all.slice(0, QUEUE_LIMIT);
-  await repairMissingFreeEnrichmentJobs({
-    candidates: bounded,
-    jobs: repos.buyerFinderFreeEnrichmentJobs,
-  });
+  if (input.repairMissingJobs) {
+    await repairMissingFreeEnrichmentJobs({
+      candidates: bounded,
+      jobs: repos.buyerFinderFreeEnrichmentJobs,
+    });
+  }
   const conversionsByCandidate = new Map(
     (
       await repos.buyerFinderCandidateConversions.listByCandidateIds(bounded.map((c) => c.id))
@@ -295,6 +297,16 @@ export async function loadBuyerCandidateQueueAction(): Promise<{
     archived: all.filter((c) => c.discoveryStatus === "archived").length,
   };
   return { rows, summary, limit: QUEUE_LIMIT };
+}
+
+/** Normal Buyer Finder queue load retains the existing DB-only repair behavior. */
+export async function loadBuyerCandidateQueueAction() {
+  return loadBuyerCandidateQueue({ repairMissingJobs: true });
+}
+
+/** MI4 handoff load: queue visibility without any repair/write side effect. */
+export async function loadBuyerCandidateQueueReadOnlyAction() {
+  return loadBuyerCandidateQueue({ repairMissingJobs: false });
 }
 
 export type CandidateDetailRecord = BuyerCandidateRecord & {

@@ -1,10 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { SafeSearchRunSnapshot } from "@/lib/buyerFinder/searchRun";
+import type { MarketIntelligenceHandoffContext } from "@/lib/marketIntelligence/read/overview";
+import type { MarketIntelligenceBuyerFinderHandoff } from "@/lib/marketIntelligence/buyerFinderHandoff";
 
 const refresh = vi.fn();
+const replace = vi.fn();
 vi.mock("next/navigation", () => ({
-  useRouter: () => ({ refresh, push: vi.fn(), replace: vi.fn() }),
+  useRouter: () => ({ refresh, push: vi.fn(), replace }),
 }));
 
 const createRun = vi.fn();
@@ -28,6 +31,7 @@ import { BuyerFinderView } from "./BuyerFinderView";
 afterEach(() => {
   cleanup();
   refresh.mockReset();
+  replace.mockReset();
   createRun.mockReset();
   getRun.mockReset();
   finalizeStale.mockReset();
@@ -65,6 +69,8 @@ function snap(over: Partial<SafeSearchRunSnapshot> = {}): SafeSearchRunSnapshot 
 function renderView(over?: {
   initialActiveRun?: SafeSearchRunSnapshot | null;
   hunterDiscovery?: "not_configured" | "ready";
+  marketHandoff?: MarketIntelligenceBuyerFinderHandoff | null;
+  marketContext?: MarketIntelligenceHandoffContext;
 }) {
   return render(
     <BuyerFinderView
@@ -73,11 +79,132 @@ function renderView(over?: {
       queueLimit={100}
       hunterDiscovery={over?.hunterDiscovery ?? "ready"}
       initialActiveRun={over?.initialActiveRun ?? null}
+      initialQuery={over?.marketHandoff ? {
+        country: over.marketHandoff.countryName,
+        productId: over.marketHandoff.productId,
+      } : undefined}
+      marketHandoff={over?.marketHandoff}
+      marketContext={over?.marketContext}
     />,
   );
 }
 
+const marketHandoff: MarketIntelligenceBuyerFinderHandoff = {
+  source: "market-intelligence",
+  productId: "guntur-dry-red-chilli",
+  productName: "Guntur Dry Red Chilli",
+  countryAlpha2: "US",
+  countryName: "United States",
+  returnComparison: ["US", "TH"],
+};
+
+const marketContext: MarketIntelligenceHandoffContext = {
+  product: { id: "guntur-dry-red-chilli", displayName: "Guntur Dry Red Chilli" },
+  country: { alpha2: "US", name: "United States" },
+  marketFit: 66,
+  dataConfidence: 90,
+  recommendationStatus: "indicative",
+  mappingKind: "proxy",
+  mappingConfidence: 0.7,
+  fitEligibility: "proxy_allowed",
+  isTradeProxy: true,
+  hsRevision: "HS17",
+  hsCode: "090421",
+  marketFitVersion: "mi-fit-v2",
+  dataConfidenceVersion: "mi-conf-v1",
+  calculatedAt: "2026-09-23T00:00:00.000Z",
+};
+
 describe("BuyerFinderView search-run UX", () => {
+  it("prefills a valid Market Intelligence handoff without discovery, usage, or writes", () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    renderView({ marketHandoff, marketContext });
+    expect((screen.getByLabelText("Country") as HTMLSelectElement).value).toBe("United States");
+    expect((screen.getByLabelText("Product") as HTMLSelectElement).value).toBe("guntur-dry-red-chilli");
+    expect(createRun).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(getUsage).not.toHaveBeenCalled();
+    expect(finalizeStale).not.toHaveBeenCalled();
+  });
+
+  it("starts discovery only after the operator explicitly submits the prefilled search", async () => {
+    createRun.mockResolvedValue({ outcome: "invalid_input", message: "test stop" });
+    renderView({ marketHandoff, marketContext });
+    expect(createRun).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Find buyers" }));
+    await waitFor(() => expect(createRun).toHaveBeenCalledWith({
+      country: "United States",
+      productId: "guntur-dry-red-chilli",
+      buyerTypes: undefined,
+      contactPriorities: [],
+    }));
+  });
+
+  it("shows authoritative market-level context and the proxy evidence boundary", () => {
+    renderView({ marketHandoff, marketContext });
+    expect(screen.getByRole("heading", { name: "United States · Guntur Dry Red Chilli" })).toBeTruthy();
+    expect(screen.getByText("66 / 100")).toBeTruthy();
+    expect(screen.getByText("90 / 100")).toBeTruthy();
+    expect(screen.getByText("Indicative")).toBeTruthy();
+    expect(screen.getByText(/Trade proxy · HS17 090421/)).toBeTruthy();
+    expect(screen.getByText(/country-level market evidence/)).toBeTruthy();
+    expect(screen.getByText(/does not establish that any company/)).toBeTruthy();
+  });
+
+  it("shows no fabricated market card when the persisted score is missing", () => {
+    renderView({ marketHandoff });
+    expect(screen.queryByText("Market-level evidence")).toBeNull();
+    expect(screen.getByRole("link", { name: "Back to Market Intelligence" })).toBeTruthy();
+  });
+
+  it("updates the canonical handoff and hides stale context when country changes", () => {
+    renderView({ marketHandoff, marketContext });
+    fireEvent.change(screen.getByLabelText("Country"), { target: { value: "Thailand" } });
+    expect(replace).toHaveBeenCalledWith(
+      "/buyer-finder?product=guntur-dry-red-chilli&country=TH&source=market-intelligence",
+      { scroll: false },
+    );
+    expect(screen.queryByRole("heading", { name: "United States · Guntur Dry Red Chilli" })).toBeNull();
+    expect(screen.getByRole("link", { name: "Back to Market Intelligence" }).getAttribute("href")).toBe(
+      "/market-intelligence?product=guntur-dry-red-chilli&country=TH",
+    );
+  });
+
+  it("updates the canonical handoff and hides stale context when product changes", () => {
+    renderView({ marketHandoff, marketContext });
+    fireEvent.change(screen.getByLabelText("Product"), { target: { value: "banganapalli-mango" } });
+    expect(replace).toHaveBeenCalledWith(
+      "/buyer-finder?product=banganapalli-mango&country=US&source=market-intelligence",
+      { scroll: false },
+    );
+    expect(screen.queryByRole("heading", { name: "United States · Guntur Dry Red Chilli" })).toBeNull();
+    expect(screen.getByRole("link", { name: "Back to Market Intelligence" }).getAttribute("href")).toBe(
+      "/market-intelligence?product=banganapalli-mango&country=US",
+    );
+  });
+
+  it("returns only to a validated canonical Market Intelligence route", () => {
+    renderView({ marketHandoff, marketContext });
+    expect(screen.getByRole("link", { name: "Back to Market Intelligence" }).getAttribute("href")).toBe(
+      "/market-intelligence?product=guntur-dry-red-chilli&country=US&compare=US,TH",
+    );
+  });
+
+  it("does not finalize a stale prior run merely because a handoff URL was opened", () => {
+    renderView({
+      marketHandoff,
+      marketContext,
+      initialActiveRun: snap({
+        status: "running",
+        updatedAt: "2020-01-01T00:00:00.000Z",
+        createdAt: "2020-01-01T00:00:00.000Z",
+      }),
+    });
+    expect(finalizeStale).not.toHaveBeenCalled();
+    expect(createRun).not.toHaveBeenCalled();
+  });
+
   it("resumes observing an initial active run without executing Hunter", () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);

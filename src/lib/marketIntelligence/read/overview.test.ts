@@ -15,6 +15,7 @@ import {
   compareOverviewRows,
   getMarketIntelligenceComparison,
   getMarketIntelligenceDetail,
+  getMarketIntelligenceHandoffContext,
   getMarketIntelligenceOverview,
   getMarketIntelligenceWorkspace,
   marketIntelligenceProducts,
@@ -507,6 +508,41 @@ describe("MI3 comparison routing and read model", () => {
     const one = await getMarketIntelligenceWorkspace(CHILLI, "US", "th", repo());
     expect(one?.comparison.countryAlpha2s).toEqual(["TH"]);
     expect(one?.comparison.countries[0]?.overview.marketFit).toBe(62);
+  });
+});
+
+describe("MI4 persisted Buyer Finder handoff context", () => {
+  it("loads Fit, Confidence, recommendation, and proxy identity from the current persisted score", async () => {
+    const r = repo();
+    const context = await getMarketIntelligenceHandoffContext(CHILLI, "us", r);
+    expect(context).toMatchObject({
+      product: { id: CHILLI, displayName: "Guntur Dry Red Chilli" },
+      country: { alpha2: "US", name: "United States" },
+      marketFit: 66,
+      dataConfidence: 90,
+      recommendationStatus: "indicative",
+      mappingKind: "proxy",
+      isTradeProxy: true,
+      hsRevision: "HS17",
+      hsCode: "090421",
+    });
+    expect(r.getCurrentMarketScore).toHaveBeenCalledOnce();
+    expect(r.listBilateralAnnualObservations).not.toHaveBeenCalled();
+    expect(r.listBilateralAnnualObservationsForCountries).not.toHaveBeenCalled();
+  });
+
+  it("returns no context when no current score exists and never fabricates values", async () => {
+    const context = await getMarketIntelligenceHandoffContext(CHILLI, "US", repo({
+      scores: new Map(),
+    }));
+    expect(context).toBeUndefined();
+  });
+
+  it("rejects invalid product and country before any score read", async () => {
+    const r = repo();
+    expect(await getMarketIntelligenceHandoffContext("bad-product", "US", r)).toBeUndefined();
+    expect(await getMarketIntelligenceHandoffContext(CHILLI, "XX", r)).toBeUndefined();
+    expect(r.getCurrentMarketScore).not.toHaveBeenCalled();
   });
 });
 

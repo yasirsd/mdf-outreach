@@ -28,6 +28,7 @@ import {
   OriginCompetitionChart,
 } from "./MarketIntelligenceCharts";
 import { MarketComparisonView } from "./MarketComparisonView";
+import { BuyerFinderHandoffLink } from "./BuyerFinderHandoffLink";
 
 interface Props {
   products: Array<{ id: string; displayName: string; shortName: string }>;
@@ -242,7 +243,11 @@ export function MarketIntelligenceView({
               isTradeProxy={overview.isTradeProxyOnly}
               navigationPending={navigationPending}
             />
-            <DetailPanel detail={selectedDetail} updating={countryPending} />
+            <DetailPanel
+              detail={selectedDetail}
+              updating={countryPending}
+              returnComparison={comparison?.countryAlpha2s}
+            />
           </div>
         </>
       )}
@@ -607,9 +612,11 @@ function RankingTable({
 function DetailPanel({
   detail,
   updating,
+  returnComparison,
 }: {
   detail: MarketIntelligenceDetail | undefined;
   updating: boolean;
+  returnComparison?: readonly string[];
 }) {
   if (!detail) {
     return (
@@ -658,6 +665,14 @@ function DetailPanel({
           <h3 className="mt-1 text-[19px] font-semibold text-text-primary tracking-tight">
             {detail.country.name}
           </h3>
+          <div className="mt-3">
+            <BuyerFinderHandoffLink
+              productId={detail.product.id}
+              countryAlpha2={detail.country.alpha2}
+              countryName={detail.country.name}
+              returnComparison={returnComparison}
+            />
+          </div>
         </div>
 
         <div className="grid grid-cols-2 gap-3">

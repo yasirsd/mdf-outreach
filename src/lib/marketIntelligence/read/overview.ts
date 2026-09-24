@@ -13,7 +13,7 @@ import "server-only";
  */
 
 import { calibrationCohort } from "../calibration/cohort";
-import { countryDisplayName } from "../country";
+import { countryDisplayName, toCountryAlpha2 } from "../country";
 import { DATA_CONFIDENCE_VERSION, MARKET_FIT_VERSION } from "../marketFit";
 import type {
   MarketReadRepository,
@@ -614,6 +614,56 @@ export interface MarketIntelligenceWorkspace {
   overview: MarketIntelligenceOverview;
   selectedDetail: MarketIntelligenceDetail | undefined;
   comparison: MarketIntelligenceComparison;
+}
+
+export interface MarketIntelligenceHandoffContext {
+  product: { id: string; displayName: string };
+  country: { alpha2: string; name: string };
+  marketFit: number | null;
+  dataConfidence: number | null;
+  recommendationStatus: MarketRecommendationStatus;
+  mappingKind: MarketMappingKind;
+  mappingConfidence: number;
+  fitEligibility: MarketFitEligibility;
+  isTradeProxy: boolean;
+  hsRevision: string | null;
+  hsCode: string | null;
+  marketFitVersion: string;
+  dataConfidenceVersion: string;
+  calculatedAt: string;
+}
+
+/** Compact persisted market context for the MI → Buyer Finder handoff. */
+export async function getMarketIntelligenceHandoffContext(
+  productId: string,
+  countryInput: string,
+  repository: Pick<MarketReadRepository, "getCurrentMarketScore">,
+): Promise<MarketIntelligenceHandoffContext | undefined> {
+  const product = findMarketIntelligenceProduct(productId);
+  const countryAlpha2 = toCountryAlpha2(countryInput);
+  if (!product || !countryAlpha2) return undefined;
+  const score = await repository.getCurrentMarketScore(countryAlpha2, product.id);
+  if (!score) return undefined;
+  const isChilli = product.id === MALAYSIA_CHILLI_PRODUCT_ID;
+  return {
+    product: { id: product.id, displayName: product.displayName },
+    country: {
+      alpha2: countryAlpha2,
+      name: countryDisplayName(countryAlpha2) ?? countryAlpha2,
+    },
+    marketFit: score.publishedFitScore,
+    dataConfidence: score.dataConfidenceScore,
+    recommendationStatus: score.recommendationStatus,
+    mappingKind: score.mappingKind,
+    mappingConfidence: score.mappingConfidence,
+    fitEligibility: score.fitEligibility,
+    isTradeProxy: score.isTradeProxy,
+    hsRevision: isChilli ? "HS17" : null,
+    hsCode: isChilli ? MALAYSIA_CHILLI_HS17_CODE : null,
+    marketFitVersion: score.marketFitVersion,
+    dataConfidenceVersion: score.confidenceVersion,
+    calculatedAt: score.calculatedAt,
+  };
 }
 
 /**

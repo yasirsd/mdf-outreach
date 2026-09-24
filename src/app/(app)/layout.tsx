@@ -1,3 +1,4 @@
+import { Suspense } from "react";
 import { AppShell } from "@/components/AppShell";
 import { WorkspaceProvider } from "@/components/WorkspaceProvider";
 import { AppSessionMonitor } from "@/components/auth/AppSessionMonitor";
@@ -12,7 +13,9 @@ export default async function ProtectedLayout({ children }: { children: React.Re
   return (
     <WorkspaceProvider initialSettings={settings}>
       <AppSessionMonitor />
-      <FreeEnrichmentAutopump />
+      <Suspense fallback={null}>
+        <FreeEnrichmentAutopump />
+      </Suspense>
       <AppShell userEmail={session.email}>{children}</AppShell>
     </WorkspaceProvider>
   );

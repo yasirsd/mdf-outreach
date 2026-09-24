@@ -1,8 +1,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 
+const navigation = vi.hoisted(() => ({
+  pathname: "/",
+  searchParams: new URLSearchParams(),
+}));
+
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ refresh: vi.fn(), push: vi.fn(), replace: vi.fn() }),
+  usePathname: () => navigation.pathname,
+  useSearchParams: () => navigation.searchParams,
 }));
 
 vi.mock("@/app/(app)/buyer-finder/publicContactActions", () => ({
@@ -22,7 +29,12 @@ import { FreeEnrichmentSummaryPanel } from "./FreeEnrichmentSummaryPanel";
 import { FreeEnrichmentAutopump } from "./FreeEnrichmentAutopump";
 import { QueueView } from "@/app/(app)/buyer-finder/QueueView";
 
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  navigation.pathname = "/";
+  navigation.searchParams = new URLSearchParams();
+  vi.unstubAllGlobals();
+});
 
 const baseCandidate = {
   id: "00000000-0000-4000-8000-0000000000aa",
@@ -212,6 +224,20 @@ describe("BF4R review workspace", () => {
     render(<FreeEnrichmentAutopump />);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/buyer-finder/free-enrichment/drain");
-    vi.unstubAllGlobals();
+  });
+
+  it("does not drain free enrichment when opening a validated Market Intelligence handoff", () => {
+    navigation.pathname = "/buyer-finder";
+    navigation.searchParams = new URLSearchParams({
+      product: "guntur-dry-red-chilli",
+      country: "US",
+      source: "market-intelligence",
+    });
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<FreeEnrichmentAutopump />);
+
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
