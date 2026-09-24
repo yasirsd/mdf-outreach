@@ -176,6 +176,28 @@ export interface MarketReadRepository {
     countryAlpha2: CountryAlpha2,
     mdfProductId: string,
   ): Promise<MarketReadRepositoryScore | undefined>;
+  /**
+   * MI2A.1 — batched current-score fetch for the MI overview page.
+   * ONE SELECT on `market_product_scores` (`WHERE mdf_product_id = ? AND
+   * country_alpha2 IN (…) AND superseded_at IS NULL`) plus ONE grouped
+   * SELECT on `market_product_score_components` (`WHERE score_id IN
+   * (…)`). Total = 2 queries regardless of cohort size.
+   */
+  listCurrentMarketScoresForProduct(
+    mdfProductId: string,
+    countryAlpha2s: readonly CountryAlpha2[],
+  ): Promise<MarketReadRepositoryScore[]>;
+  /**
+   * MI2A.1 — batched bilateral-annual observation fetch. ONE paginated
+   * SELECT with `reporter_country IN (…)`; the caller groups by reporter.
+   */
+  listBilateralAnnualObservationsForCountries(
+    countryAlpha2s: readonly CountryAlpha2[],
+    hsRevision: HsRevision,
+    hsCode: string,
+    providerId: string,
+    datasetId: string,
+  ): Promise<MarketReadRepositoryObservation[]>;
   getMarketScoreComponents(scoreId: string): Promise<MarketReadRepositoryScoreComponent[]>;
   getMarketScoreHistory(
     countryAlpha2: CountryAlpha2,
@@ -427,6 +449,72 @@ class SupabaseMarketReadRepository implements MarketReadRepository {
     if (!scoreRow) return undefined;
     const components = await this.getMarketScoreComponents((scoreRow as { id: string }).id);
     return rowToScore(scoreRow, components);
+  }
+
+  async listCurrentMarketScoresForProduct(
+    mdfProductId: string,
+    countryAlpha2s: readonly CountryAlpha2[],
+  ): Promise<MarketReadRepositoryScore[]> {
+    if (countryAlpha2s.length === 0) return [];
+    const uniqueCountries = [...new Set(countryAlpha2s.map((c) => c.toUpperCase()))];
+    const { data: scoreRows, error: scoreErr } = await this.supabase
+      .from("market_product_scores")
+      .select(SCORE_COLS)
+      .eq("mdf_product_id", mdfProductId)
+      .is("superseded_at", null)
+      .in("country_alpha2", uniqueCountries);
+    if (scoreErr) throw scoreErr;
+    const rows = (scoreRows ?? []) as Record<string, unknown>[];
+    if (rows.length === 0) return [];
+    const ids = rows.map((row) => row.id as string);
+    const { data: componentRows, error: componentErr } = await this.supabase
+      .from("market_product_score_components")
+      .select(COMPONENT_COLS)
+      .in("score_id", ids)
+      .order("component_key", { ascending: true });
+    if (componentErr) throw componentErr;
+    const byScoreId = new Map<string, MarketReadRepositoryScoreComponent[]>();
+    for (const raw of (componentRows ?? []) as Record<string, unknown>[]) {
+      const scoreId = raw.score_id as string;
+      let bucket = byScoreId.get(scoreId);
+      if (!bucket) { bucket = []; byScoreId.set(scoreId, bucket); }
+      bucket.push(rowToScoreComponent(raw));
+    }
+    return rows.map((row) => rowToScore(row, byScoreId.get(row.id as string) ?? []));
+  }
+
+  async listBilateralAnnualObservationsForCountries(
+    countryAlpha2s: readonly CountryAlpha2[],
+    hsRevision: HsRevision,
+    hsCode: string,
+    providerId: string,
+    datasetId: string,
+  ): Promise<MarketReadRepositoryObservation[]> {
+    if (countryAlpha2s.length === 0) return [];
+    const uniqueCountries = [...new Set(countryAlpha2s.map((c) => c.toUpperCase()))];
+    const rows = await collectAllMarketObservationPages<Record<string, unknown>>(
+      async (from, to) => {
+        const { data, error } = await this.supabase
+          .from("market_trade_observations")
+          .select(OBSERVATION_COLS)
+          .eq("provider_id", providerId)
+          .eq("dataset_id", datasetId)
+          .in("reporter_country", uniqueCountries)
+          .eq("trade_flow", "import")
+          .eq("hs_revision", hsRevision)
+          .eq("hs_code", hsCode)
+          .eq("frequency", "annual")
+          .not("partner_country", "is", null)
+          .order("reporter_country", { ascending: true })
+          .order("period", { ascending: true })
+          .order("partner_country", { ascending: true })
+          .order("id", { ascending: true })
+          .range(from, to);
+        if (error) throw error;
+        return (data ?? []) as Record<string, unknown>[];
+      },
+    );
+    return rows.map(rowToObservation);
   }
 
   async getMarketScoreComponents(scoreId: string): Promise<MarketReadRepositoryScoreComponent[]> {

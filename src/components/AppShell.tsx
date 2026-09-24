@@ -9,6 +9,7 @@ import {
   Send,
   FileText,
   Activity,
+  Globe,
   Settings as SettingsIcon,
   Circle,
 } from "lucide-react";
@@ -21,6 +22,7 @@ const NAV = [
   { href: "/", label: "Overview", icon: LayoutDashboard },
   { href: "/buyers", label: "Buyers", icon: Users },
   { href: "/buyer-finder", label: "Buyer Finder", icon: Search },
+  { href: "/market-intelligence", label: "Market Intelligence", icon: Globe },
   { href: "/campaigns", label: "Campaigns", icon: Send },
   { href: "/templates", label: "Templates", icon: FileText },
   { href: "/activity", label: "Activity", icon: Activity },
