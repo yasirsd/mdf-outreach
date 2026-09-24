@@ -1,10 +1,11 @@
 "use client";
 
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Info } from "lucide-react";
+import { Info, LoaderCircle } from "lucide-react";
 import { PageContainer } from "@/components/ui/Page";
+import { cn } from "@/lib/utils";
 import {
   formatPercent,
   formatPercentValue,
@@ -20,6 +21,11 @@ import type {
   MarketIntelligenceDetail,
   MarketIntelligenceOverview,
 } from "@/lib/marketIntelligence/read/overview";
+import {
+  ImportDemandChart,
+  IndiaShareChart,
+  OriginCompetitionChart,
+} from "./MarketIntelligenceCharts";
 
 interface Props {
   products: Array<{ id: string; displayName: string; shortName: string }>;
@@ -68,7 +74,23 @@ export function MarketIntelligenceView({
 }: Props) {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const [isTransitionPending, startTransition] = useTransition();
+  const [pendingNavigation, setPendingNavigation] = useState<
+    { kind: "product"; value: string } | { kind: "country"; value: string } | null
+  >(null);
+  const pendingNavigationRef = useRef<typeof pendingNavigation>(null);
   const selectedCountry = selectedDetail?.country.alpha2 ?? overview?.markets[0]?.countryAlpha2 ?? null;
+  const displayedCountry = pendingNavigation?.kind === "country"
+    ? pendingNavigation.value
+    : selectedCountry;
+  const productPending = pendingNavigation?.kind === "product";
+  const countryPending = pendingNavigation?.kind === "country";
+  const navigationPending = isTransitionPending || pendingNavigation !== null;
+
+  useEffect(() => {
+    pendingNavigationRef.current = null;
+    setPendingNavigation(null);
+  }, [selectedProductId, selectedCountry]);
 
   const fitValues = useMemo(
     () => (overview?.markets ?? [])
@@ -80,16 +102,28 @@ export function MarketIntelligenceView({
   const medianFit = medianOf(fitValues);
 
   const onProductChange = (productId: string) => {
+    if (pendingNavigationRef.current || productId === selectedProductId) return;
     const params = new URLSearchParams(searchParams?.toString() ?? "");
     params.set("product", productId);
     params.delete("country");
-    router.push(`/market-intelligence?${params.toString()}`);
+    const pending = { kind: "product" as const, value: productId };
+    pendingNavigationRef.current = pending;
+    setPendingNavigation(pending);
+    startTransition(() => {
+      router.push(`/market-intelligence?${params.toString()}`, { scroll: false });
+    });
   };
   const onCountrySelect = (countryAlpha2: string) => {
+    if (pendingNavigationRef.current || countryAlpha2 === selectedCountry) return;
     const params = new URLSearchParams(searchParams?.toString() ?? "");
     if (selectedProductId) params.set("product", selectedProductId);
     params.set("country", countryAlpha2);
-    router.push(`/market-intelligence?${params.toString()}`);
+    const pending = { kind: "country" as const, value: countryAlpha2 };
+    pendingNavigationRef.current = pending;
+    setPendingNavigation(pending);
+    startTransition(() => {
+      router.push(`/market-intelligence?${params.toString()}`, { scroll: false });
+    });
   };
 
   return (
@@ -113,8 +147,10 @@ export function MarketIntelligenceView({
           </div>
           <ProductSelector
             products={products}
-            selectedProductId={selectedProductId}
+            selectedProductId={productPending ? pendingNavigation.value : selectedProductId}
             onChange={onProductChange}
+            pending={productPending}
+            disabled={navigationPending}
           />
         </div>
       </header>
@@ -130,16 +166,21 @@ export function MarketIntelligenceView({
       ) : !overview || !overview.productSupported ? (
         <UnavailableState overview={overview} />
       ) : (
-        <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1.55fr)_minmax(0,1fr)] gap-4 items-start">
+        <div
+          className="grid grid-cols-1 xl:grid-cols-[minmax(0,1.55fr)_minmax(0,1fr)] gap-4 items-start"
+          aria-busy={navigationPending || undefined}
+        >
           <RankingTable
             rows={overview.markets}
-            selectedCountry={selectedCountry}
+            selectedCountry={displayedCountry}
+            pendingCountry={countryPending ? pendingNavigation.value : null}
             onSelect={onCountrySelect}
             hsRevision={overview.hsRevision}
             hsCode={overview.hsCode}
             isTradeProxy={overview.isTradeProxyOnly}
+            navigationPending={navigationPending}
           />
-          <DetailPanel detail={selectedDetail} />
+          <DetailPanel detail={selectedDetail} updating={countryPending} />
         </div>
       )}
 
@@ -151,20 +192,23 @@ export function MarketIntelligenceView({
 }
 
 function ProductSelector({
-  products, selectedProductId, onChange,
+  products, selectedProductId, onChange, pending, disabled,
 }: {
   products: Array<{ id: string; displayName: string; shortName: string }>;
   selectedProductId: string | null;
   onChange: (productId: string) => void;
+  pending: boolean;
+  disabled: boolean;
 }) {
   if (products.length === 0) return null;
   return (
-    <div className="shrink-0">
+    <div className="shrink-0 flex items-center gap-2" aria-busy={pending || undefined}>
       <label htmlFor="mi-product-select" className="sr-only">Product</label>
       <select
         id="mi-product-select"
         value={selectedProductId ?? ""}
         onChange={(event) => onChange(event.target.value)}
+        disabled={disabled}
         className="min-w-[220px] text-[13px] py-1.5 px-2.5 rounded-[8px] focus-ring"
         style={{
           backgroundColor: "var(--app-surface)",
@@ -176,6 +220,12 @@ function ProductSelector({
           <option key={product.id} value={product.id}>{product.displayName}</option>
         ))}
       </select>
+      {pending && (
+        <span className="inline-flex items-center gap-1.5 text-[11px] text-text-muted" role="status">
+          <LoaderCircle size={12} aria-hidden className="animate-spin motion-reduce:animate-none" />
+          Loading product
+        </span>
+      )}
     </div>
   );
 }
@@ -189,7 +239,7 @@ function SummaryStrip({
 }) {
   return (
     <div
-      className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-4 rounded-[12px] p-3.5"
+      className="grid grid-cols-2 md:grid-cols-4 gap-x-2 gap-y-3 mb-4 rounded-[12px] p-3.5"
       style={{ backgroundColor: "var(--app-surface)", border: "1px solid var(--app-border)" }}
     >
       <SummaryStat label="Markets analysed" value={overview ? String(overview.totalMarkets) : MI2A_EM_DASH} />
@@ -206,24 +256,28 @@ function SummaryStrip({
         value={overview?.latestEvidenceYear !== null && overview?.latestEvidenceYear !== undefined
           ? String(overview.latestEvidenceYear)
           : MI2A_EM_DASH}
-        secondary={overview ? `${overview.marketFitVersion} · ${overview.dataConfidenceVersion}` : undefined}
       />
+      {overview && (
+        <div
+          className="col-span-2 md:col-span-4 pt-2.5 text-[10.5px] text-text-muted"
+          style={{ borderTop: "1px solid var(--app-border)" }}
+        >
+          Persisted models: <span className="text-text-secondary">{overview.marketFitVersion}</span>
+          {" · "}confidence <span className="text-text-secondary">{overview.dataConfidenceVersion}</span>
+          {overview.hsRevision && overview.hsCode ? ` · evidence ${overview.hsRevision} ${overview.hsCode}` : ""}
+        </div>
+      )}
     </div>
   );
 }
 
-function SummaryStat({
-  label, value, secondary,
-}: { label: string; value: string; secondary?: string }) {
+function SummaryStat({ label, value }: { label: string; value: string }) {
   return (
     <div>
       <div className="text-[10.5px] tracking-[0.14em] uppercase text-text-muted">{label}</div>
       <div className="mt-1 text-[18px] font-semibold text-text-primary tabular-nums leading-tight">
         {value}
       </div>
-      {secondary && (
-        <div className="mt-0.5 text-[10.5px] text-text-muted">{secondary}</div>
-      )}
     </div>
   );
 }
@@ -280,14 +334,17 @@ function InvalidProductState({ requestedProductId }: { requestedProductId: strin
 }
 
 function RankingTable({
-  rows, selectedCountry, onSelect, hsRevision, hsCode, isTradeProxy,
+  rows, selectedCountry, pendingCountry, onSelect, hsRevision, hsCode, isTradeProxy,
+  navigationPending,
 }: {
   rows: CountryOverviewRow[];
   selectedCountry: string | null;
+  pendingCountry: string | null;
   onSelect: (countryAlpha2: string) => void;
   hsRevision: string | null;
   hsCode: string | null;
   isTradeProxy: boolean;
+  navigationPending: boolean;
 }) {
   return (
     <section
@@ -308,7 +365,7 @@ function RankingTable({
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-[12.5px] text-text-secondary" style={{ borderCollapse: "collapse" }}>
-          <thead>
+          <thead className="sticky top-0 z-10" style={{ backgroundColor: "var(--app-surface)" }}>
             <tr className="text-[10.5px] tracking-[0.14em] uppercase text-text-muted">
               <th scope="col" className="text-left font-medium py-2 pl-5 pr-2">Rank</th>
               <th scope="col" className="text-left font-medium py-2 px-2">Market</th>
@@ -324,11 +381,18 @@ function RankingTable({
           <tbody>
             {rows.map((row, index) => {
               const active = row.countryAlpha2 === selectedCountry;
+              const pending = row.countryAlpha2 === pendingCountry;
               return (
                 <tr
                   key={row.countryAlpha2}
-                  className="border-t focus-within:bg-white/[0.04]"
-                  style={{ borderColor: "var(--app-border)" }}
+                  className={cn(
+                    "border-t transition-colors duration-180 motion-reduce:transition-none focus-within:bg-white/[0.04]",
+                    active ? "bg-white/[0.035]" : "hover:bg-white/[0.02]",
+                  )}
+                  style={{
+                    borderColor: "var(--app-border)",
+                    boxShadow: active ? "3px 0 0 var(--brand-orange) inset" : undefined,
+                  }}
                 >
                   <td className="pl-5 pr-2 py-2 tabular-nums text-text-muted">{index + 1}</td>
                   <td className="px-2 py-2">
@@ -336,13 +400,24 @@ function RankingTable({
                       type="button"
                       onClick={() => onSelect(row.countryAlpha2)}
                       aria-pressed={active}
-                      className="text-left focus-ring-quiet rounded-[6px] px-1 -mx-1"
+                      aria-busy={pending || undefined}
+                      disabled={navigationPending}
+                      className="text-left focus-ring-quiet rounded-[6px] px-1 -mx-1 disabled:cursor-wait"
                       style={{
                         color: active ? "var(--text-primary)" : "var(--text-secondary)",
                         fontWeight: active ? 600 : 500,
                       }}
                     >
-                      {row.countryName}{" "}
+                      <span className="inline-flex items-center gap-1.5">
+                        {row.countryName}
+                        {pending && (
+                          <LoaderCircle
+                            size={11}
+                            aria-hidden
+                            className="text-brand-orange animate-spin motion-reduce:animate-none"
+                          />
+                        )}
+                      </span>{" "}
                       <span className="text-text-muted text-[11px] font-normal">
                         {row.countryAlpha2}
                       </span>
@@ -388,12 +463,19 @@ function RankingTable({
   );
 }
 
-function DetailPanel({ detail }: { detail: MarketIntelligenceDetail | undefined }) {
+function DetailPanel({
+  detail,
+  updating,
+}: {
+  detail: MarketIntelligenceDetail | undefined;
+  updating: boolean;
+}) {
   if (!detail) {
     return (
       <aside
         className="rounded-[12px] p-5"
         style={{ backgroundColor: "var(--app-surface)", border: "1px solid var(--app-border)" }}
+        aria-busy={updating || undefined}
       >
         <div className="text-[10.5px] tracking-[0.14em] uppercase text-text-muted">
           Country detail
@@ -408,104 +490,144 @@ function DetailPanel({ detail }: { detail: MarketIntelligenceDetail | undefined 
   const recCopy = RECOMMENDATION_COPY[detail.overview.recommendationStatus];
   return (
     <aside
-      className="rounded-[12px] p-5 flex flex-col gap-4"
+      className="relative rounded-[12px] p-4 sm:p-5"
       style={{ backgroundColor: "var(--app-surface)", border: "1px solid var(--app-border)" }}
+      aria-busy={updating || undefined}
     >
-      <div>
-        <div className="text-[10.5px] tracking-[0.14em] uppercase text-text-muted">
-          {detail.country.alpha2}
-        </div>
-        <h3 className="mt-1 text-[18px] font-semibold text-text-primary tracking-tight">
-          {detail.country.name}
-        </h3>
-      </div>
-
-      <div className="grid grid-cols-2 gap-3">
-        <StatBlock
-          label="Market Fit"
-          value={formatScoreOutOf100(detail.overview.marketFit)}
-          help="Weighted 0..100 signal, mi-fit-v2."
-        />
-        <StatBlock
-          label="Data Confidence"
-          value={formatScoreOutOf100(detail.overview.dataConfidence)}
-          help="Coverage / recency / mapping specificity. mi-conf-v1."
-        />
-      </div>
-
-      <div
-        className="rounded-[8px] p-3 flex items-start gap-2"
-        style={{ backgroundColor: "var(--app-elevated)", border: "1px solid var(--app-border)" }}
-      >
-        <Info size={13} className="mt-[3px] text-text-muted shrink-0" aria-hidden />
-        <div className="text-[11.5px] text-text-secondary">
-          <span className="text-text-primary font-medium">Recommendation: {recCopy?.label ?? detail.overview.recommendationStatus}.</span>{" "}
-          {recCopy?.help}
-        </div>
-      </div>
-
-      <div>
-        <div className="text-[10.5px] tracking-[0.14em] uppercase text-text-muted mb-2">
-          Score components
-        </div>
-        <ul className="flex flex-col gap-1.5">
-          {detail.overview.components.map((component) => (
-            <li key={component.key} className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-baseline gap-3">
-              <span className="text-[12px] text-text-secondary truncate">
-                {COMPONENT_LABELS[component.key] ?? component.key}
-              </span>
-              <span className="text-[10.5px] text-text-muted tabular-nums">w {component.weight}</span>
-              <span className="text-[12px] tabular-nums text-text-primary">
-                {formatScoreOutOf100(component.normalizedScore)}
-              </span>
-            </li>
-          ))}
-        </ul>
-      </div>
-
-      <div>
-        <div className="text-[10.5px] tracking-[0.14em] uppercase text-text-muted mb-2">
-          Latest year — {detail.latestPeriod ?? MI2A_EM_DASH}
-        </div>
-        <dl className="grid grid-cols-2 gap-3 text-[12px]">
-          <DetailStat label="Total imports" value={formatUsdCompact(detail.overview.latestImportValueUsd)} />
-          <DetailStat label="Quantity" value={formatTonnes(detail.overview.latestImportQuantityTonnes)} />
-          <DetailStat label="India imports" value={formatUsdCompact(detail.overview.indiaImportValueUsd)} />
-          <DetailStat label="India share" value={formatPercent(detail.overview.indiaShare)} />
-          <DetailStat label="India rank" value={formatRank(detail.overview.indiaRank)} />
-          <DetailStat label="Top-1 share" value={formatPercent(detail.overview.top1Share)} />
-          <DetailStat label="Top-3 share" value={formatPercent(detail.overview.top3Share)} />
-          <DetailStat label="HHI" value={detail.overview.hhi === null ? MI2A_EM_DASH : detail.overview.hhi.toFixed(3)} />
-          <DetailStat label="Unit value" value={formatUsdPerKg(detail.overview.derivedUnitValueUsdPerKg)} />
-          <DetailStat label="3y CAGR" value={formatPercentValue(detail.overview.cagr3Pct)} />
-        </dl>
-      </div>
-
-      {detail.originsLatestYear.length > 0 && (
-        <div>
-          <div className="text-[10.5px] tracking-[0.14em] uppercase text-text-muted mb-2">
-            Top origin partners
-          </div>
-          <ol className="flex flex-col gap-1">
-            {detail.originsLatestYear.slice(0, 5).map((origin, idx) => (
-              <li key={origin.partnerCountry} className="flex items-baseline justify-between text-[12px]">
-                <span className="text-text-secondary">
-                  <span className="text-text-muted tabular-nums w-4 inline-block">{idx + 1}.</span>{" "}
-                  {origin.partnerCountryName ?? origin.partnerCountry}{" "}
-                  <span className="text-text-muted text-[11px]">{origin.partnerCountry}</span>
-                </span>
-                <span className="text-text-primary tabular-nums">
-                  {formatUsdCompact(origin.valueUsd)}{" "}
-                  <span className="text-text-muted text-[11px]">{formatPercent(origin.share)}</span>
-                </span>
-              </li>
-            ))}
-          </ol>
+      {updating && (
+        <div
+          className="absolute inset-x-0 top-0 z-10 flex items-center justify-center gap-1.5 rounded-t-[12px] py-1.5 text-[10.5px] text-text-secondary"
+          style={{ backgroundColor: "var(--app-elevated)", borderBottom: "1px solid var(--app-border)" }}
+          role="status"
+        >
+          <LoaderCircle size={11} aria-hidden className="text-brand-orange animate-spin motion-reduce:animate-none" />
+          Updating country detail
         </div>
       )}
+      <div
+        className={cn(
+          "flex flex-col gap-5 transition-opacity duration-180 motion-reduce:transition-none",
+          updating && "opacity-50",
+        )}
+      >
+        <div>
+          <div className="text-[10.5px] tracking-[0.14em] uppercase text-text-muted">
+            {detail.country.alpha2}
+          </div>
+          <h3 className="mt-1 text-[19px] font-semibold text-text-primary tracking-tight">
+            {detail.country.name}
+          </h3>
+        </div>
 
-      <ProvenanceBlock detail={detail} />
+        <div className="grid grid-cols-2 gap-3">
+          <StatBlock
+            label="Market Fit"
+            value={formatScoreOutOf100(detail.overview.marketFit)}
+            help="Weighted persisted signal · mi-fit-v2"
+          />
+          <StatBlock
+            label="Data Confidence"
+            value={formatScoreOutOf100(detail.overview.dataConfidence)}
+            help="Evidence support · mi-conf-v1"
+          />
+        </div>
+
+        <div
+          className="rounded-[8px] p-3 flex items-start gap-2"
+          style={{ backgroundColor: "var(--app-elevated)", border: "1px solid var(--app-border)" }}
+        >
+          <Info size={13} className="mt-[3px] text-text-muted shrink-0" aria-hidden />
+          <div className="text-[11.5px] text-text-secondary">
+            <span className="text-text-primary font-medium">Recommendation: {recCopy?.label ?? detail.overview.recommendationStatus}.</span>{" "}
+            {recCopy?.help}
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 gap-3">
+          <ImportDemandChart history={detail.history} />
+          <IndiaShareChart history={detail.history} />
+        </div>
+
+        <ScoreComponents components={detail.overview.components} />
+
+        <div>
+          <div className="text-[10.5px] tracking-[0.14em] uppercase text-text-muted mb-2.5">
+            Latest year — {detail.latestPeriod ?? MI2A_EM_DASH}
+          </div>
+          <dl className="grid grid-cols-2 sm:grid-cols-3 gap-x-3 gap-y-3 text-[12px]">
+            <DetailStat label="Total imports" value={formatUsdCompact(detail.overview.latestImportValueUsd)} />
+            <DetailStat label="Quantity" value={formatTonnes(detail.overview.latestImportQuantityTonnes)} />
+            <DetailStat label="India imports" value={formatUsdCompact(detail.overview.indiaImportValueUsd)} />
+            <DetailStat label="India share" value={formatPercent(detail.overview.indiaShare)} />
+            <DetailStat label="India rank" value={formatRank(detail.overview.indiaRank)} />
+            <DetailStat label="Top-1 share" value={formatPercent(detail.overview.top1Share)} />
+            <DetailStat label="Top-3 share" value={formatPercent(detail.overview.top3Share)} />
+            <DetailStat label="HHI" value={detail.overview.hhi === null ? MI2A_EM_DASH : detail.overview.hhi.toFixed(3)} />
+            <DetailStat label="Unit value" value={formatUsdPerKg(detail.overview.derivedUnitValueUsdPerKg)} />
+            <DetailStat label="3y CAGR" value={formatPercentValue(detail.overview.cagr3Pct)} />
+          </dl>
+          {detail.overview.derivedUnitValueUsdPerKg !== null && (
+            <p className="mt-2.5 text-[10.5px] leading-relaxed text-text-muted">
+              Derived unit value is import value divided by reported quantity. It is a trade-derived unit value, not a quoted market price.
+            </p>
+          )}
+        </div>
+
+        <OriginCompetitionChart
+          origins={detail.originsLatestYear}
+          latestPeriod={detail.latestPeriod}
+        />
+
+        <ProvenanceBlock detail={detail} />
+      </div>
     </aside>
+  );
+}
+
+function ScoreComponents({
+  components,
+}: {
+  components: MarketIntelligenceDetail["overview"]["components"];
+}) {
+  return (
+    <section aria-labelledby="score-components-heading">
+      <div className="flex items-baseline justify-between gap-3 mb-2.5">
+        <h4 id="score-components-heading" className="text-[12.5px] font-semibold text-text-primary">
+          Score components
+        </h4>
+        <span className="text-[10.5px] text-text-muted">Persisted mi-fit-v2 inputs</span>
+      </div>
+      <ul className="flex flex-col gap-3">
+        {components.map((component) => {
+          const width = typeof component.normalizedScore === "number"
+            ? `${Math.max(0, Math.min(component.normalizedScore, 100))}%`
+            : "0%";
+          return (
+            <li key={component.key}>
+              <div className="flex items-baseline justify-between gap-3">
+                <span className="text-[11.5px] text-text-secondary">
+                  {COMPONENT_LABELS[component.key] ?? component.key}
+                </span>
+                <span className="text-[11.5px] tabular-nums text-text-primary">
+                  {formatScoreOutOf100(component.normalizedScore)}
+                  <span className="ml-2 text-[10px] text-text-muted">weight {component.weight}</span>
+                </span>
+              </div>
+              <div
+                className="mt-1 h-1.5 overflow-hidden rounded-full"
+                style={{ backgroundColor: "var(--app-border)" }}
+                aria-hidden
+              >
+                <div
+                  className="h-full rounded-full transition-[width] duration-220 motion-reduce:transition-none"
+                  style={{ width, backgroundColor: "var(--brand-orange-muted)" }}
+                />
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
   );
 }
 
@@ -544,7 +666,7 @@ function ProvenanceBlock({ detail }: { detail: MarketIntelligenceDetail }) {
       </div>
       <dl className="text-[11.5px] text-text-secondary grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5">
         <dt className="text-text-muted">Source</dt>
-        <dd>CEPII BACI HS2017 · via OEC BotMarket</dd>
+        <dd>CEPII BACI HS2017 · via configured provider</dd>
         <dt className="text-text-muted">Trade code</dt>
         <dd>{detail.provenance.hsRevision ?? MI2A_EM_DASH} {detail.provenance.hsCode ?? ""}</dd>
         <dt className="text-text-muted">Mapping</dt>

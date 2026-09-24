@@ -433,6 +433,8 @@ describe("MI2A source-code safety", () => {
     "src/lib/marketIntelligence/format.ts",
     "src/app/(app)/market-intelligence/page.tsx",
     "src/app/(app)/market-intelligence/MarketIntelligenceView.tsx",
+    "src/app/(app)/market-intelligence/MarketIntelligenceCharts.tsx",
+    "src/app/(app)/market-intelligence/loading.tsx",
   ];
   const bodies = files.map((f) => readFileSync(path.resolve(HERE, f), "utf8"));
 
@@ -451,6 +453,21 @@ describe("MI2A source-code safety", () => {
       expect(body).not.toMatch(/\bXMLHttpRequest\b/);
       expect(body).not.toMatch(/buyer_trade_observations|buyer_intelligence|BUYER_SEND_ENABLED|gmail/i);
     }
+  });
+
+  it("MI2B charts consume the existing detail contract without scoring or additional reads", () => {
+    const chart = bodies[4]!;
+    expect(chart).toMatch(/AnnualImportPoint/);
+    expect(chart).toMatch(/OriginRankRow/);
+    expect(chart).not.toMatch(/marketFit|mi-fit|createClient|repository|\.from\(|fetch\(/i);
+  });
+
+  it("MI2B navigation uses transitions and exposes pending accessibility state", () => {
+    const view = bodies[3]!;
+    expect(view).toMatch(/useTransition/);
+    expect(view).toMatch(/aria-busy/);
+    expect(view).toMatch(/motion-reduce/);
+    expect(view).toMatch(/disabled=\{navigationPending\}/);
   });
 
   it("proxy disclosure is present in the UI (not hidden in metadata)", () => {
