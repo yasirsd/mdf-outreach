@@ -35,6 +35,15 @@ function redirectResponse(request: NextRequest, target: string, clearAppSession 
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
+  // This endpoint authenticates itself with either a timing-safe scheduler
+  // secret or a same-origin owner session.  Letting the global middleware
+  // resolve a Supabase session first makes scheduler calls depend on browser
+  // cookies and can turn an auth transport failure into an empty platform 500
+  // before the route can emit its guarded JSON response.
+  if (pathname === "/api/internal/trade-research/drain") {
+    return NextResponse.next();
+  }
+
   const { supabase, getResponse, setResponse } = createMiddlewareClient(request);
 
   const {

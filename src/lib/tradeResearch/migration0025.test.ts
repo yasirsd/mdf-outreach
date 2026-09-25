@@ -56,6 +56,32 @@ describe("BI4F Phase 2A migration 0025", () => {
     expect(sql).toContain("a.lease_expires_at >= p_now");
   });
 
+  it("makes a newly created job immediately claimable with the expected initial state", () => {
+    expect(sql).toMatch(/status text not null default 'queued'/);
+    expect(sql).toMatch(/stage text not null default 'preparing_identity'/);
+    expect(sql).toMatch(/revision bigint not null default 0/);
+    expect(sql).toMatch(/j\.status='queued' and coalesce\(j\.next_attempt_at,p_now\) <= p_now/);
+    expect(sql).toContain("b.cancel_requested_at is null");
+  });
+
+  it("matches the TypeScript RPC contract and returns the post-claim revision", () => {
+    expect(sql).toContain("claim_buyer_trade_research_job(p_worker text, p_now timestamptz default now())");
+    expect(sql).toContain("advance_buyer_trade_research_job(p_job_id uuid, p_worker text, p_revision bigint, p_stage text, p_now timestamptz default now())");
+    expect(sql).toMatch(/revision=revision\+1 where id=v\.id returning \* into v/);
+    expect(sql).toMatch(/where id=p_job_id and lease_owner=p_worker and revision=p_revision and status='running' returning \* into v/);
+  });
+
+  it("prevents another lease owner from advancing and permits stale recovery only after the full timeout", () => {
+    expect(sql).toContain("lease_owner=p_worker and revision=p_revision");
+    expect(sql).toContain("j.lease_expires_at < p_now and j.heartbeat_at < p_now - interval '60 seconds'");
+    expect(sql).toContain("not exists (select 1 from public.buyer_trade_research_attempts");
+  });
+
+  it("creates each provider plan once before worker execution", () => {
+    expect(sql).toContain("unique (job_id, provider_id, role)");
+    expect(sql).toMatch(/for plan in select value from jsonb_array_elements\(item->'plans'\) loop[\s\S]*?insert into public\.buyer_trade_research_provider_plans/);
+  });
+
   it("enforces terminal immutability, monotonic stages, and append-only events", () => {
     expect(sql).toContain("terminal trade research jobs are immutable");
     expect(sql).toContain("trade research stage cannot move backward");

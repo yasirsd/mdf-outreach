@@ -2,6 +2,9 @@
   "name": "mdf-outreach",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+    "node": "22.x"
+  },
   "scripts": {
     "dev": "cross-env NODE_EXTRA_CA_CERTS=\"C:\\ProgramData\\Avast Software\\Avast\\wscert.pem\" next dev",
     "dev:no-ca": "next dev",

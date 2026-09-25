@@ -90,9 +90,25 @@ describe("FDA FSVP format and conservative matching", () => {
     await expect(fetchFdaFsvpDataset({ etag: "abc", fetchImpl })).resolves.toMatchObject({ outcome: "not_modified" });
   });
 
+  it("hashes downloaded XLSX bytes with production-safe SHA-256", async () => {
+    const bytes = strToU8("bounded workbook bytes");
+    const fetchImpl = vi.fn(async () => new Response(bytes, {
+      status: 200,
+      headers: { "content-type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" },
+    })) as unknown as typeof fetch;
+    await expect(fetchFdaFsvpDataset({ fetchImpl })).resolves.toMatchObject({
+      outcome: "downloaded",
+      materialHash: "cd7ebc562eaf9086169b29941e842bab08fa15cfcb00fe714c614548314a576b",
+    });
+  });
+
+  it("classifies a non-retryable FDA HTTP response without exposing its body", async () => {
+    const fetchImpl = vi.fn(async () => new Response("private upstream body", { status: 404 })) as unknown as typeof fetch;
+    await expect(fetchFdaFsvpDataset({ fetchImpl })).rejects.toMatchObject({ status: 404, code: "HTTP_ERROR" });
+  });
+
   it("rejects HTML or other unexpected source formats", async () => {
     const fetchImpl = vi.fn(async () => new Response("<html/>", { status: 200, headers: { "content-type": "text/html" } })) as unknown as typeof fetch;
     await expect(fetchFdaFsvpDataset({ fetchImpl })).rejects.toBeInstanceOf(FdaFsvpParserError);
   });
 });
-

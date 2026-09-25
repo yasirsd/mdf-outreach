@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { strToU8, zipSync } from "fflate";
 import type { BuyerCandidate } from "@/lib/buyerFinder/types";
 import type { InternalJobRow, SnapshotRow, TradeResearchWriter } from "../repository";
-import { processTradeResearchJob } from "./worker";
+import { drainTradeResearch, processTradeResearchJob, TradeResearchDrainExecutionError } from "./worker";
 
 const NOW = new Date("2026-09-25T12:00:00Z");
 
@@ -40,6 +40,7 @@ function memoryWriter(over: Record<string, unknown> = {}) {
     fresh: snapshot() as SnapshotRow | undefined, latest: undefined as SnapshotRow | undefined,
     finalized: [] as Array<Record<string, unknown>>, released: [] as string[], attempts: [] as Array<Record<string, unknown>>,
     heartbeatCount: 0, saved: 0, refreshed: 0,
+    candidate: candidate(),
   };
   Object.assign(state, over);
   const writer = {
@@ -57,7 +58,7 @@ function memoryWriter(over: Record<string, unknown> = {}) {
     getLatestSnapshot: vi.fn(async () => state.latest),
     refreshSnapshotExpiry: vi.fn(async () => { state.refreshed += 1; return { ...state.latest!, expires_at: "2027-01-01T00:00:00Z" }; }),
     saveSnapshot: vi.fn(async (input: Record<string, unknown>) => { state.saved += 1; return { id: "new", ...input } as SnapshotRow; }),
-    getCandidate: vi.fn(async () => candidate()),
+    getCandidate: vi.fn(async () => state.candidate),
   };
   return { state, writer: writer as unknown as TradeResearchWriter };
 }
@@ -75,6 +76,7 @@ describe("bounded trade research worker", () => {
   it("finishes honestly when no eligible provider exists", async () => {
     const { state, writer } = memoryWriter({ plan: undefined });
     await processTradeResearchJob(writer, job(), "worker", () => NOW);
+    expect(writer.advance).toHaveBeenNthCalledWith(1, job(), "worker", "planning_sources");
     expect(state.finalized[0]).toMatchObject({ status: "completed", outcome: "unsupported_coverage", result: { sourcesChecked: 0 } });
   });
 
@@ -85,6 +87,22 @@ describe("bounded trade research worker", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(state.attempts[0]).toMatchObject({ state: "skipped_cached", record_count: 1 });
     expect(state.finalized[0]).toMatchObject({ status: "completed", outcome: "official_importer_program_corroboration", result: { officialProgramEvidence: "verified", shipmentEvidence: "not_verified", automaticSpendRupees: 0 } });
+  });
+
+  it("handles a Goya-equivalent candidate with optional geography omitted", async () => {
+    const { state, writer } = memoryWriter({
+      candidate: {
+        id: "candidate", companyName: "Goya Foods", country: "United States",
+        domain: "goya.com", industry: "Food", isImporter: true,
+        discoveryStatus: "ready", reviewStatus: "pending",
+      } satisfies BuyerCandidate,
+      fresh: snapshot({ normalized_rows: [{ companyName: "GOYA FOODS, INC.", stateCode: "NJ" }] }),
+    });
+    await expect(processTradeResearchJob(writer, job(), "worker", () => NOW)).resolves.toBe("completed");
+    expect(state.finalized[0]).toMatchObject({
+      status: "needs_review", outcome: "needs_review",
+      result: { officialProgramEvidence: "needs_review", automaticSpendRupees: 0 },
+    });
   });
 
   it("downloads and parses one cache miss, then saves a normalized snapshot", async () => {
@@ -112,6 +130,18 @@ describe("bounded trade research worker", () => {
     expect(state.finalized).toHaveLength(0);
   });
 
+  it("turns the bounded FDA fetch timeout into a safe retry", async () => {
+    vi.useFakeTimers();
+    const { state, writer } = memoryWriter({ fresh: undefined, latest: undefined });
+    const fetchImpl = vi.fn((_url: string | URL | Request, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+    })) as unknown as typeof fetch;
+    const running = processTradeResearchJob(writer, job(), "worker", () => NOW, fetchImpl);
+    await vi.advanceTimersByTimeAsync(25_000);
+    await expect(running).resolves.toBe("retry");
+    expect(state.attempts[0]).toMatchObject({ state: "retry_wait", safe_error_code: "NETWORK_TIMEOUT" });
+  });
+
   it("fails terminally on parser incompatibility without retry", async () => {
     const { state, writer } = memoryWriter({ fresh: undefined, latest: undefined });
     const fetchImpl = vi.fn(async () => new Response(strToU8("not an xlsx"), { status: 200, headers: { "content-type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" } })) as unknown as typeof fetch;
@@ -130,5 +160,59 @@ describe("bounded trade research worker", () => {
     expect(state.heartbeatCount).toBe(1);
     resolve(new Response(xlsx(), { status: 200, headers: { "content-type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" } }));
     await running;
+  });
+
+  it("distinguishes a successful no-work drain from productive execution", async () => {
+    const log = vi.fn();
+    const writer = { claim: vi.fn(async () => undefined) } as unknown as TradeResearchWriter;
+    const result = await drainTradeResearch({ writer, workerId: "worker-a", maxJobs: 2, log });
+    expect(result).toMatchObject({ jobsRequested: 2, claimed: 0, processed: 0, noWork: true, automaticSpendRupees: 0 });
+    expect(log).toHaveBeenCalledWith(expect.objectContaining({ event: "claim_no_work", jobsClaimed: 0 }));
+    expect(log).toHaveBeenCalledWith(expect.objectContaining({ event: "drain_finished", noWork: true }));
+  });
+
+  it("normalizes a claim RPC rejection into a safe database error", async () => {
+    const writer = {
+      claim: vi.fn(async () => { throw Object.assign(new Error("private database detail"), { code: "PGRST123" }); }),
+    } as unknown as TradeResearchWriter;
+    await expect(drainTradeResearch({ writer, workerId: "worker-a", maxJobs: 1 })).rejects.toMatchObject({
+      safeErrorCode: "DATABASE_PGRST123",
+      result: { claimed: 0, processed: 0, noWork: false },
+    });
+  });
+
+  it("requeues an owned job after an unexpected pre-provider exception and surfaces drain failure", async () => {
+    const recovery = vi.fn(async () => "requeued" as const);
+    const writer = {
+      claim: vi.fn().mockResolvedValueOnce(job()),
+      isCancellationRequested: vi.fn(async () => { throw new Error("unexpected repository failure"); }),
+      recoverClaimedJob: recovery,
+    } as unknown as TradeResearchWriter;
+    const run = drainTradeResearch({ writer, workerId: "worker-a", maxJobs: 1, now: () => NOW });
+    await expect(run).rejects.toBeInstanceOf(TradeResearchDrainExecutionError);
+    expect(recovery).toHaveBeenCalledWith(job().id, "worker-a", "2026-09-25T12:00:30.000Z", "WORKER_INTERNAL_ERROR");
+    await expect(run).rejects.toMatchObject({
+      safeErrorCode: "WORKER_INTERNAL_ERROR",
+      result: { claimed: 1, processed: 0, requeued: 1, noWork: false },
+    });
+  });
+
+  it("allows only one of two overlapping drains to claim a shared job", async () => {
+    let available = true;
+    const { writer } = memoryWriter({ plan: undefined });
+    Object.assign(writer as object, {
+      claim: vi.fn(async () => {
+        if (!available) return undefined;
+        available = false;
+        return job();
+      }),
+      recoverClaimedJob: vi.fn(),
+    });
+    const [first, second] = await Promise.all([
+      drainTradeResearch({ writer, workerId: "worker-a", maxJobs: 1 }),
+      drainTradeResearch({ writer, workerId: "worker-b", maxJobs: 1 }),
+    ]);
+    expect([first.claimed, second.claimed].sort()).toEqual([0, 1]);
+    expect(first.claimed + second.claimed).toBe(1);
   });
 });

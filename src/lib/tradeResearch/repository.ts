@@ -14,6 +14,11 @@ import {
 
 type Row = Record<string, unknown>;
 
+function singleRpcRow<T extends Row>(data: unknown): T | undefined {
+  if (Array.isArray(data)) return data.length ? data[0] as T : undefined;
+  return data && typeof data === "object" ? data as T : undefined;
+}
+
 const EMPTY_RESULT: TradeResearchResultSummary = {
   officialProgramEvidence: "not_checked",
   productEvidence: "not_available",
@@ -111,37 +116,66 @@ export class TradeResearchWriter {
 
   async createBatch(input: Row): Promise<TradeResearchBatchSnapshot> {
     const { data, error } = await this.client.rpc("create_buyer_trade_research_batch", { p_input: input });
-    if (error || !data) throw error ?? new Error("TRADE_RESEARCH_BATCH_CREATE_FAILED");
-    return mapTradeResearchBatch(data as Row);
+    const row = singleRpcRow<Row>(data);
+    if (error || !row) throw error ?? new Error("TRADE_RESEARCH_BATCH_CREATE_FAILED");
+    return mapTradeResearchBatch(row);
   }
   async cancelBatch(batchId: string, workspaceId: string): Promise<TradeResearchBatchSnapshot | undefined> {
     const { data, error } = await this.client.rpc("request_buyer_trade_research_batch_cancel", { p_batch_id: batchId, p_workspace_id: workspaceId });
     if (error) throw error;
-    return data ? mapTradeResearchBatch(data as Row) : undefined;
+    const row = singleRpcRow<Row>(data);
+    return row ? mapTradeResearchBatch(row) : undefined;
   }
   async claim(worker: string): Promise<InternalJobRow | undefined> {
     const { data, error } = await this.client.rpc("claim_buyer_trade_research_job", { p_worker: worker });
     if (error) throw error;
-    return data ? data as InternalJobRow : undefined;
+    return singleRpcRow<InternalJobRow>(data);
   }
   async advance(job: InternalJobRow, worker: string, stage: TradeResearchStage): Promise<InternalJobRow> {
-    const { data, error } = await this.client.rpc("advance_buyer_trade_research_job", { p_job_id: job.id, p_worker: worker, p_revision: job.revision, p_stage: stage });
-    if (error || !data) throw error ?? new Error("JOB_LEASE_LOST");
-    return data as InternalJobRow;
+    const { data, error } = await this.client.rpc("advance_buyer_trade_research_job", {
+      p_job_id: job.id, p_worker: worker, p_revision: job.revision, p_stage: stage,
+    });
+    const row = singleRpcRow<InternalJobRow>(data);
+    if (error || !row) throw error ?? new Error("JOB_LEASE_LOST");
+    return row;
   }
   async heartbeat(job: InternalJobRow, worker: string): Promise<InternalJobRow> {
-    const { data, error } = await this.client.rpc("heartbeat_buyer_trade_research_job", { p_job_id: job.id, p_worker: worker, p_revision: job.revision });
-    if (error || !data) throw error ?? new Error("JOB_LEASE_LOST");
-    return data as InternalJobRow;
+    const { data, error } = await this.client.rpc("heartbeat_buyer_trade_research_job", {
+      p_job_id: job.id, p_worker: worker, p_revision: job.revision,
+    });
+    const row = singleRpcRow<InternalJobRow>(data);
+    if (error || !row) throw error ?? new Error("JOB_LEASE_LOST");
+    return row;
   }
   async release(job: InternalJobRow, worker: string, nextAttemptAt: string): Promise<void> {
     const { data, error } = await this.client.rpc("release_buyer_trade_research_job", { p_job_id: job.id, p_worker: worker, p_revision: job.revision, p_next_attempt_at: nextAttemptAt });
-    if (error || !data) throw error ?? new Error("JOB_LEASE_LOST");
+    if (error || !singleRpcRow<InternalJobRow>(data)) throw error ?? new Error("JOB_LEASE_LOST");
   }
   async finalize(job: InternalJobRow, worker: string, status: TradeResearchStatus, outcome: TradeResearchOutcome, result: TradeResearchResultSummary): Promise<void> {
     if (result.automaticSpendRupees !== 0) throw new Error("AUTOMATIC_SPEND_MUST_REMAIN_ZERO");
-    const { data, error } = await this.client.rpc("finalize_buyer_trade_research_job", { p_job_id: job.id, p_worker: worker, p_status: status, p_outcome: outcome, p_result: result });
-    if (error || !data) throw error ?? new Error("JOB_LEASE_LOST");
+    const { data, error } = await this.client.rpc("finalize_buyer_trade_research_job", {
+      p_job_id: job.id, p_worker: worker, p_status: status, p_outcome: outcome, p_result: result,
+    });
+    if (error || !singleRpcRow<InternalJobRow>(data)) throw error ?? new Error("JOB_LEASE_LOST");
+  }
+  async recoverClaimedJob(jobId: string, worker: string, nextAttemptAt: string, safeErrorCode: string): Promise<"requeued" | "cancelled" | "lease_lost"> {
+    const { data, error } = await this.client.from("buyer_trade_research_jobs").select("*")
+      .eq("id", jobId).eq("lease_owner", worker).in("status", ["running", "cancel_requested"]).maybeSingle();
+    if (error) throw error;
+    const job = data as InternalJobRow | null;
+    if (!job) return "lease_lost";
+    const { data: attempt, error: attemptError } = await this.client.from("buyer_trade_research_attempts").select("id")
+      .eq("job_id", jobId).eq("lease_owner", worker).eq("state", "running").maybeSingle();
+    if (attemptError) throw attemptError;
+    if (attempt) {
+      await this.finishAttempt(String(attempt.id), { state: "failed_retryable", safe_error_code: safeErrorCode });
+    }
+    if (job.status === "cancel_requested") {
+      await this.finalize(job, worker, "cancelled", "cancelled", EMPTY_RESULT);
+      return "cancelled";
+    }
+    await this.release(job, worker, nextAttemptAt);
+    return "requeued";
   }
   async isCancellationRequested(batchId: string): Promise<boolean> {
     const { data, error } = await this.client.from("buyer_trade_research_batches").select("cancel_requested_at").eq("id", batchId).single();
