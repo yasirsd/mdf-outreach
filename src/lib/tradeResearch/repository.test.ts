@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { TradeResearchWriter, type InternalJobRow } from "./repository";
+import { TradeResearchContractError, TradeResearchWriter, type InternalJobRow } from "./repository";
+import { safeTradeResearchErrorCode, safeTradeResearchErrorMetadata } from "./server/diagnostics";
 
 const claimed: InternalJobRow = {
   id: "00000000-0000-4000-8000-000000000001",
@@ -12,6 +13,7 @@ const claimed: InternalJobRow = {
   status: "running",
   stage: "preparing_identity",
   revision: 1,
+  lease_owner: "worker-a",
 };
 
 function clientWithRpc(rpc: ReturnType<typeof vi.fn>): SupabaseClient {
@@ -19,6 +21,32 @@ function clientWithRpc(rpc: ReturnType<typeof vi.fn>): SupabaseClient {
 }
 
 describe("TradeResearchWriter RPC contract", () => {
+  it("keeps a catalogue product slug in text while validating create-time UUID fields", async () => {
+    const batch = {
+      id: "00000000-0000-4000-8000-000000000010", status: "queued", requested_goal: "screen_trade_activity",
+      total_jobs: 1, queued_count: 1, running_count: 0, completed_count: 0, partial_count: 0,
+      needs_review_count: 0, failed_count: 0, cancelled_count: 0, corroborated_count: 0,
+      automatic_spend_rupees: 0, created_at: "2026-09-25T12:00:00Z",
+    };
+    const input = {
+      workspaceId: claimed.workspace_id, createdBy: "00000000-0000-4000-8000-000000000005",
+      requestedGoal: "screen_trade_activity", productId: "", countryCode: "", plannerVersion: "trade-planner-v1",
+      jobs: [{
+        candidateId: claimed.candidate_id, productId: "guntur-dry-red-chilli", countryCode: "US", supersedesJobId: "",
+        plans: [{ providerId: "fda-fsvp", eligibility: "eligible", costClass: "free", sequence: 1 }],
+      }],
+    };
+    const rpc = vi.fn(async () => ({ data: batch, error: null }));
+    await expect(new TradeResearchWriter(clientWithRpc(rpc)).createBatch(input)).resolves.toMatchObject({ id: batch.id });
+    expect(rpc).toHaveBeenCalledWith("create_buyer_trade_research_batch", { p_input: input });
+
+    const invalid = { ...input, jobs: [{ ...input.jobs[0], candidateId: "guntur-dry-red-chilli" }] };
+    const rejectedRpc = vi.fn();
+    await expect(new TradeResearchWriter(clientWithRpc(rejectedRpc)).createBatch(invalid))
+      .rejects.toMatchObject({ expectedSqlType: "uuid", fieldName: "p_input.jobs[0].candidateId" });
+    expect(rejectedRpc).not.toHaveBeenCalled();
+  });
+
   it("calls the live 0025 claim signature and leaves p_now to the database default", async () => {
     const rpc = vi.fn(async (_name: string, _args: Record<string, unknown>) => ({ data: claimed, error: null }));
     const result = await new TradeResearchWriter(clientWithRpc(rpc)).claim("worker-a");
@@ -33,6 +61,34 @@ describe("TradeResearchWriter RPC contract", () => {
     const writer = new TradeResearchWriter(clientWithRpc(rpc));
     expect(await writer.claim("worker-a")).toBeUndefined();
     expect(await writer.claim("worker-a")).toEqual(claimed);
+  });
+
+  it("treats PostgREST's all-null scalar-composite claim as no work", async () => {
+    const nullComposite = Object.fromEntries(Object.keys(claimed).map((key) => [key, null]));
+    const rpc = vi.fn(async () => ({ data: nullComposite, error: null }));
+    const from = vi.fn();
+    const client = { rpc, from } as unknown as SupabaseClient;
+    expect(await new TradeResearchWriter(client).claim("worker-a")).toBeUndefined();
+    expect(from).not.toHaveBeenCalled();
+  });
+
+  it("accepts catalogue product slugs and nullable product identity because product_id is SQL text", async () => {
+    const rpc = vi.fn()
+      .mockResolvedValueOnce({ data: claimed, error: null })
+      .mockResolvedValueOnce({ data: { ...claimed, product_id: null }, error: null });
+    const writer = new TradeResearchWriter(clientWithRpc(rpc));
+    expect((await writer.claim("worker-a"))?.product_id).toBe("guntur-dry-red-chilli");
+    expect((await writer.claim("worker-a"))?.product_id).toBeNull();
+  });
+
+  it("rejects an invalid UUID claim identity before any post-claim query", async () => {
+    const rpc = vi.fn(async () => ({ data: { ...claimed, batch_id: "guntur-dry-red-chilli" }, error: null }));
+    const from = vi.fn();
+    const writer = new TradeResearchWriter({ rpc, from } as unknown as SupabaseClient);
+    const failure = writer.claim("worker-a");
+    await expect(failure).rejects.toBeInstanceOf(TradeResearchContractError);
+    await expect(failure).rejects.toMatchObject({ fieldName: "job.batch_id", expectedSqlType: "uuid", suppliedCategory: "string" });
+    expect(from).not.toHaveBeenCalled();
   });
 
   it("advances with the revision returned by claim and adopts the returned revision", async () => {
@@ -56,6 +112,37 @@ describe("TradeResearchWriter RPC contract", () => {
     const rpc = vi.fn(async () => ({ data: null, error: null }));
     await expect(new TradeResearchWriter(clientWithRpc(rpc)).advance(claimed, "worker-b", "planning_sources"))
       .rejects.toThrow("JOB_LEASE_LOST");
+  });
+
+  it("blocks invalid revision, stage, timestamp, and JSON before an RPC", async () => {
+    const rpc = vi.fn();
+    const writer = new TradeResearchWriter(clientWithRpc(rpc));
+    await expect(writer.advance({ ...claimed, revision: "1" as unknown as number }, "worker-a", "planning_sources"))
+      .rejects.toMatchObject({ expectedSqlType: "bigint", fieldName: "job.revision" });
+    await expect(writer.advance(claimed, "worker-a", "not_a_stage" as InternalJobRow["stage"]))
+      .rejects.toMatchObject({ expectedSqlType: "constrained_text", fieldName: "p_stage" });
+    await expect(writer.release(claimed, "worker-a", "not-a-timestamp"))
+      .rejects.toMatchObject({ expectedSqlType: "timestamptz", fieldName: "p_next_attempt_at" });
+    await expect(writer.finalize(claimed, "worker-a", "completed", "no_verified_evidence", {
+      automaticSpendRupees: 0, officialProgramEvidence: "not_checked", productEvidence: "not_available",
+      indiaOrigin: "not_verified", shipmentEvidence: "not_verified", sourcesChecked: BigInt(1) as unknown as number,
+    })).rejects.toMatchObject({ expectedSqlType: "jsonb", fieldName: "p_result" });
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it("uses provider and dataset identifiers as text filters, never UUID arguments", async () => {
+    const query = {
+      select: vi.fn(function (this: typeof query) { return this; }),
+      eq: vi.fn(function (this: typeof query) { return this; }),
+      gte: vi.fn(function (this: typeof query) { return this; }),
+      order: vi.fn(function (this: typeof query) { return this; }),
+      limit: vi.fn(function (this: typeof query) { return this; }),
+      maybeSingle: vi.fn(async () => ({ data: null, error: null })),
+    };
+    const client = { from: vi.fn(() => query) } as unknown as SupabaseClient;
+    await expect(new TradeResearchWriter(client).getFreshSnapshot(new Date("2026-09-25T12:00:00Z"))).resolves.toBeNull();
+    expect(query.eq).toHaveBeenCalledWith("provider_id", "fda-fsvp");
+    expect(query.eq).toHaveBeenCalledWith("dataset_id", "fsvp-participant-list");
   });
 
   it("releases the currently owned revision for a safe retry after an unexpected exception", async () => {
@@ -98,5 +185,26 @@ describe("TradeResearchWriter RPC contract", () => {
     expect(await new TradeResearchWriter(client).recoverClaimedJob(claimed.id, "worker-b", "2026-09-25T12:00:30.000Z", "WORKER_INTERNAL_ERROR"))
       .toBe("lease_lost");
     expect(rpc).not.toHaveBeenCalled();
+  });
+});
+
+describe("safe database type diagnostics", () => {
+  it.each([
+    ["invalid input syntax for type uuid", "DATABASE_22P02_INVALID_UUID"],
+    ["invalid input value for enum research_stage", "DATABASE_22P02_INVALID_ENUM"],
+    ["invalid input syntax for type bigint", "DATABASE_22P02_INVALID_INTEGER"],
+    ["invalid input syntax for type timestamp with time zone", "DATABASE_22P02_INVALID_TIMESTAMP"],
+    ["invalid input syntax", "DATABASE_22P02_OTHER"],
+  ])("classifies 22P02 without returning the offending value", (message, expected) => {
+    const error = { code: "22P02", message: `${message}: secret-value` };
+    expect(safeTradeResearchErrorCode(error)).toBe(expected);
+    expect(safeTradeResearchErrorCode(error)).not.toContain("secret-value");
+  });
+
+  it("reports only safe field/type/category metadata for local contract failures", () => {
+    const error = new TradeResearchContractError("job.batch_id", "uuid", "null");
+    expect(safeTradeResearchErrorMetadata(error)).toEqual({
+      fieldName: "job.batch_id", expectedSqlType: "uuid", suppliedCategory: "null", validFormat: false,
+    });
   });
 });

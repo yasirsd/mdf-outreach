@@ -16,6 +16,7 @@ import { TradeResearchWriter, type InternalJobRow, type SnapshotRow } from "../r
 import { FDA_FSVP_DESCRIPTOR } from "../providers";
 import {
   safeTradeResearchErrorCode,
+  safeTradeResearchErrorMetadata,
   type TradeResearchDiagnostic,
   type TradeResearchLogger,
 } from "./diagnostics";
@@ -254,10 +255,11 @@ export async function drainTradeResearch(deps: WorkerDependencies): Promise<Trad
       job = await deps.writer.claim(deps.workerId);
     } catch (error) {
       const safeErrorCode = safeTradeResearchErrorCode(error);
+      const safeMetadata = safeTradeResearchErrorMetadata(error);
       result.durationMs = Date.now() - started;
       result.noWork = false;
-      deps.log?.({ event: "claim_rejected", jobsClaimed: result.claimed, durationMs: result.durationMs, safeErrorCode });
-      deps.log?.({ event: "drain_finished", jobsRequested: maxJobs, jobsClaimed: result.claimed, processed: result.processed, completed: result.completed, requeued: result.requeued, failed: result.failed, noWork: false, durationMs: result.durationMs, safeErrorCode });
+      deps.log?.({ event: "claim_rejected", jobsClaimed: result.claimed, durationMs: result.durationMs, safeErrorCode, ...safeMetadata });
+      deps.log?.({ event: "drain_finished", jobsRequested: maxJobs, jobsClaimed: result.claimed, processed: result.processed, completed: result.completed, requeued: result.requeued, failed: result.failed, noWork: false, durationMs: result.durationMs, safeErrorCode, ...safeMetadata });
       throw new TradeResearchDrainExecutionError(safeErrorCode, result);
     }
     if (!job) {
@@ -276,6 +278,7 @@ export async function drainTradeResearch(deps: WorkerDependencies): Promise<Trad
       else result.completed += 1;
     } catch (error) {
       const safeErrorCode = safeTradeResearchErrorCode(error);
+      const safeMetadata = safeTradeResearchErrorMetadata(error);
       let leaseState: "released" | "lost" = "lost";
       try {
         const recovery = await deps.writer.recoverClaimedJob(
@@ -287,19 +290,19 @@ export async function drainTradeResearch(deps: WorkerDependencies): Promise<Trad
         if (recovery === "requeued") {
           result.requeued += 1;
           leaseState = "released";
-          deps.log?.(jobDiagnostic("job_requeued", job, { leaseState, safeErrorCode }));
+          deps.log?.(jobDiagnostic("job_requeued", job, { leaseState, safeErrorCode, ...safeMetadata }));
         } else if (recovery === "cancelled") {
           result.processed += 1;
           result.completed += 1;
           leaseState = "released";
         } else {
-          deps.log?.(jobDiagnostic("job_failed", job, { leaseState, safeErrorCode }));
+          deps.log?.(jobDiagnostic("job_failed", job, { leaseState, safeErrorCode, ...safeMetadata }));
         }
       } catch {
-        deps.log?.(jobDiagnostic("job_failed", job, { leaseState, safeErrorCode }));
+        deps.log?.(jobDiagnostic("job_failed", job, { leaseState, safeErrorCode, ...safeMetadata }));
       }
       result.durationMs = Date.now() - started;
-      deps.log?.({ event: "drain_finished", jobsRequested: maxJobs, jobsClaimed: result.claimed, processed: result.processed, completed: result.completed, requeued: result.requeued, failed: result.failed, noWork: false, durationMs: result.durationMs, safeErrorCode });
+      deps.log?.({ event: "drain_finished", jobsRequested: maxJobs, jobsClaimed: result.claimed, processed: result.processed, completed: result.completed, requeued: result.requeued, failed: result.failed, noWork: false, durationMs: result.durationMs, safeErrorCode, ...safeMetadata });
       throw new TradeResearchDrainExecutionError(safeErrorCode, result);
     }
   }

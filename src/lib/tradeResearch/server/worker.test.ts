@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { strToU8, zipSync } from "fflate";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import type { BuyerCandidate } from "@/lib/buyerFinder/types";
-import type { InternalJobRow, SnapshotRow, TradeResearchWriter } from "../repository";
+import { TradeResearchWriter, type InternalJobRow, type SnapshotRow } from "../repository";
 import { drainTradeResearch, processTradeResearchJob, TradeResearchDrainExecutionError } from "./worker";
 
 const NOW = new Date("2026-09-25T12:00:00Z");
@@ -169,6 +170,20 @@ describe("bounded trade research worker", () => {
     expect(result).toMatchObject({ jobsRequested: 2, claimed: 0, processed: 0, noWork: true, automaticSpendRupees: 0 });
     expect(log).toHaveBeenCalledWith(expect.objectContaining({ event: "claim_no_work", jobsClaimed: 0 }));
     expect(log).toHaveBeenCalledWith(expect.objectContaining({ event: "drain_finished", noWork: true }));
+  });
+
+  it("does not count or process an all-null scalar-composite claim response", async () => {
+    const nullClaim = {
+      id: null, batch_id: null, workspace_id: null, candidate_id: null, product_id: null,
+      country_code: null, status: null, stage: null, revision: null, lease_owner: null,
+    };
+    const rpc = vi.fn(async () => ({ data: nullClaim, error: null }));
+    const from = vi.fn();
+    const writer = new TradeResearchWriter({ rpc, from } as unknown as SupabaseClient);
+    const result = await drainTradeResearch({ writer, workerId: "worker-a", maxJobs: 2 });
+    expect(result).toMatchObject({ claimed: 0, processed: 0, failed: 0, noWork: true });
+    expect(rpc).toHaveBeenCalledOnce();
+    expect(from).not.toHaveBeenCalled();
   });
 
   it("normalizes a claim RPC rejection into a safe database error", async () => {

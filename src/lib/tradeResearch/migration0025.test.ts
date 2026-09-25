@@ -71,6 +71,15 @@ describe("BI4F Phase 2A migration 0025", () => {
     expect(sql).toMatch(/where id=p_job_id and lease_owner=p_worker and revision=p_revision and status='running' returning \* into v/);
   });
 
+  it("keeps UUID identities distinct from catalogue and provider text identifiers", () => {
+    expect(sql).toMatch(/create table public\.buyer_trade_research_jobs[\s\S]*?id uuid primary key[\s\S]*?batch_id uuid not null[\s\S]*?workspace_id uuid not null[\s\S]*?candidate_id uuid not null[\s\S]*?product_id text/);
+    expect(sql).toMatch(/create table public\.buyer_trade_research_provider_plans[\s\S]*?id uuid primary key[\s\S]*?job_id uuid not null[\s\S]*?provider_id text not null/);
+    expect(sql).toMatch(/create table public\.buyer_trade_source_snapshots[\s\S]*?id uuid primary key[\s\S]*?provider_id text not null[\s\S]*?dataset_id text not null/);
+    expect(sql).toContain("p_job_id uuid");
+    expect(sql).toContain("p_revision bigint");
+    expect(sql).toContain("p_next_attempt_at timestamptz");
+  });
+
   it("prevents another lease owner from advancing and permits stale recovery only after the full timeout", () => {
     expect(sql).toContain("lease_owner=p_worker and revision=p_revision");
     expect(sql).toContain("j.lease_expires_at < p_now and j.heartbeat_at < p_now - interval '60 seconds'");
