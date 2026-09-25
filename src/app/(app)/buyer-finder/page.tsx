@@ -19,6 +19,12 @@ import { resolveMarketIntelligenceBuyerFinderHandoff } from "@/lib/marketIntelli
 import { createTradeResearchReadRepository } from "@/lib/tradeResearch/repository";
 
 export const dynamic = "force-dynamic";
+// BI4F 2A Hobby-plan headroom: the server action awaits a bounded
+// trade-research drain kick after batch creation (up to
+// INLINE_KICK_MS ~= 12 s + normal request overhead). 60 s is Vercel's
+// Hobby-plan function ceiling and gives the drain safe margin even on
+// a cold FDA XLSX fetch. Never grows the drain's own row-count budget.
+export const maxDuration = 60;
 
 export default async function BuyerFinderPage({
   searchParams,

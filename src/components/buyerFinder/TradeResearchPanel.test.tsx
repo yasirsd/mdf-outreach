@@ -60,6 +60,52 @@ describe("truthful trade research UI", () => {
     expect(screen.queryByText(/credits/i)).toBeNull();
   });
 
+  it("BI4F 2A: a queued job displays 'Queued for research' — NOT the running-stage loader", () => {
+    const queued = job("preparing_identity", "queued");
+    render(<CandidateTradeResearchPanel candidateId={queued.candidateId} initialJob={queued} isOwner />);
+    expect(screen.getByText("Queued for research")).toBeTruthy();
+    // The running stage loader must NOT render for a queued job — otherwise
+    // "Preparing company identity" would appear active while no worker has
+    // actually claimed the job yet.
+    expect(document.querySelector('[data-job-state="queued"]')).not.toBeNull();
+    expect(document.querySelector('[data-job-state="running"]')).toBeNull();
+    expect(document.querySelector('[data-stage="preparing_identity"]')).toBeNull();
+    expect(screen.getByText(/A background scheduler runs official-source screening/)).toBeTruthy();
+  });
+
+  it("BI4F 2A: transitions to the running-stage loader once status = running", () => {
+    render(<CandidateTradeResearchPanel candidateId={job("preparing_identity").candidateId} initialJob={job("preparing_identity", "running")} isOwner />);
+    expect(document.querySelector('[data-job-state="running"]')).not.toBeNull();
+    expect(document.querySelector('[data-job-state="queued"]')).toBeNull();
+    expect(screen.getByText("Preparing company identity")).toBeTruthy();
+  });
+
+  it("BI4F 2A: `not_checked` renders 'Not evaluated' and its own explanatory sentence — distinct from `no_verified_match`", () => {
+    const completed = job("complete", "completed");
+    completed.outcome = "unsupported_coverage";
+    completed.result.officialProgramEvidence = "not_checked";
+    completed.result.sourcesChecked = 0;
+    render(<CandidateTradeResearchPanel candidateId={completed.candidateId} initialJob={completed} isOwner />);
+    expect(screen.getByText("Not evaluated")).toBeTruthy();
+    expect(screen.getByText(/No eligible free official source was evaluated/)).toBeTruthy();
+    // Ensure the "no_verified_match" copy does NOT leak into the unchecked case.
+    expect(screen.queryByText("No verified match found")).toBeNull();
+    // Sources checked = 0 is truthful in this case.
+    expect(screen.getByTestId("sources-checked").textContent).toBe("0");
+  });
+
+  it("BI4F 2A: completed FDA FSVP evaluation with no match keeps sources checked = 1 (evaluated but did not match)", () => {
+    const completed = job("complete", "completed");
+    completed.outcome = "no_verified_evidence";
+    completed.result.officialProgramEvidence = "no_verified_match";
+    completed.result.sourcesChecked = 1;
+    render(<CandidateTradeResearchPanel candidateId={completed.candidateId} initialJob={completed} isOwner />);
+    expect(screen.getByText("No verified match found")).toBeTruthy();
+    expect(screen.getByTestId("sources-checked").textContent).toBe("1");
+    // "not_checked" copy must NOT appear here.
+    expect(screen.queryByText(/No eligible free official source was evaluated/)).toBeNull();
+  });
+
   it("shows determinate batch completion only from the persisted denominator", () => {
     const batch: TradeResearchBatchSnapshot = {
       id: "00000000-0000-4000-8000-000000000002", status: "running", requestedGoal: "screen_trade_activity",

@@ -1,5 +1,6 @@
 "use server";
 
+import { randomUUID } from "node:crypto";
 import { cookies } from "next/headers";
 import { revalidatePath } from "next/cache";
 import { requireMdfSession } from "@/lib/auth/require";
@@ -8,8 +9,29 @@ import { serverRepositories } from "@/lib/repositories/server";
 import { createClient } from "@/utils/supabase/server";
 import { FDA_FSVP_DESCRIPTOR, planTradeResearch } from "@/lib/tradeResearch/providers";
 import { createTradeResearchReadRepository, TradeResearchWriter } from "@/lib/tradeResearch/repository";
+import { logTradeResearchDiagnostic, safeTradeResearchErrorCode } from "@/lib/tradeResearch/server/diagnostics";
 import { getTradeResearchServiceRoleClient } from "@/lib/tradeResearch/server/serviceRoleClient";
+import { drainTradeResearch, TradeResearchDrainExecutionError } from "@/lib/tradeResearch/server/worker";
 import { TRADE_RESEARCH_PLANNER_VERSION, isTerminalTradeResearchStatus, type TradeResearchBatchSnapshot, type TradeResearchJobSnapshot } from "@/lib/tradeResearch/types";
+
+/**
+ * BI4F 2A Hobby-plan adaptation. After a batch is committed, the server
+ * action awaits ONE bounded drain execution so the first job normally
+ * advances within a few seconds — no browser cron, no unawaited
+ * background promise, no HTTP hop back into the same deployment. The
+ * daily Vercel Hobby cron remains a stale/queued sweeper only.
+ *
+ *   INLINE_KICK_JOBS  = 1  — advance exactly one job per user click.
+ *   INLINE_KICK_MS    = 12_000 — bounded, keeps server-action latency
+ *                        well under Vercel's 60s function ceiling even
+ *                        on a cold FDA XLSX fetch.
+ *
+ * If the drain fails or times out the batch stays safely queued; the
+ * daily cron sweeper reclaims it. The server action NEVER surfaces a
+ * drain failure to the caller — the job was created safely.
+ */
+const INLINE_KICK_JOBS = 1;
+const INLINE_KICK_MS = 12_000;
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -55,19 +77,51 @@ export async function createTradeResearchBatchAction(candidateIds: readonly stri
       })),
     });
   }
+  let batch: TradeResearchBatchSnapshot;
   try {
-    const batch = await writer.createBatch({
+    batch = await writer.createBatch({
       workspaceId: session.membership.workspaceId, createdBy: session.userId,
       requestedGoal: "screen_trade_activity", productId: "", countryCode: "",
       plannerVersion: TRADE_RESEARCH_PLANNER_VERSION, jobs,
     });
-    revalidatePath("/buyer-finder");
-    return { outcome: "created", batch };
   } catch (error) {
     if (typeof error === "object" && error && "code" in error && (error as { code?: string }).code === "23505") {
       return { outcome: "already_active", message: "One or more candidates already have active trade research." };
     }
     throw error;
+  }
+  // Await a single bounded drain execution so the first job normally
+  // starts advancing before the button un-freezes. Failures are
+  // absorbed — the batch is safely queued and the daily cron sweeper
+  // will still pick it up. NEVER an unawaited background promise.
+  await kickTradeResearchDrain(writer);
+  revalidatePath("/buyer-finder");
+  return { outcome: "created", batch };
+}
+
+/**
+ * Bounded server-side drain "kick" invoked at the tail of the create
+ * action. Awaited but capped by INLINE_KICK_MS. The drain worker itself
+ * is idempotent (SKIP LOCKED + lease + CAS + terminal immutability),
+ * so overlapping user clicks cannot double-process the same job. The
+ * kick reuses the exact worker the daily cron reuses — no parallel
+ * worker code path exists.
+ */
+async function kickTradeResearchDrain(writer: TradeResearchWriter): Promise<void> {
+  try {
+    await drainTradeResearch({
+      writer,
+      workerId: `inline-${randomUUID()}`,
+      maxJobs: INLINE_KICK_JOBS,
+      timeBudgetMs: INLINE_KICK_MS,
+      log: logTradeResearchDiagnostic,
+    });
+  } catch (error) {
+    const failure = error instanceof TradeResearchDrainExecutionError ? error : undefined;
+    const safeErrorCode = failure?.safeErrorCode ?? safeTradeResearchErrorCode(error);
+    // The batch/job commit already succeeded; the drain kick is a
+    // best-effort accelerator. Never propagate its failure to the UI.
+    logTradeResearchDiagnostic({ event: "route_failed", jobsClaimed: 0, safeErrorCode });
   }
 }
 

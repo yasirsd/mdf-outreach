@@ -98,29 +98,63 @@ export function CandidateTradeResearchPanel({ candidateId, initialJob, isOwner }
 
 function JobContent({ job }: { job: TradeResearchJobSnapshot }) {
   const terminal = isTerminalTradeResearchStatus(job.status);
-  if (!terminal) return (
-    <div className="mt-3" role="status" aria-live="polite">
-      <div className="space-y-1.5">
-        {PHASE_2A_STAGES.map((stage) => {
-          const state = phase2AStageState(job.stage, stage);
-          const Icon = state === "complete" ? Check : state === "active" ? Loader2 : Circle;
-          return <div key={stage} data-stage={stage} data-state={state} className={`flex items-center gap-2 text-[11.5px] ${state === "pending" ? "text-text-muted" : "text-text-primary"}`}><Icon size={13} className={state === "active" ? "animate-spin" : ""} aria-hidden />{TRADE_RESEARCH_STAGE_LABELS[stage]}</div>;
-        })}
+  if (!terminal) {
+    // BI4F Phase 2A UX fix: distinguish `queued` (worker has not
+    // claimed the job yet) from `running` (worker is actively
+    // executing a truthful stage). "Preparing company identity" is
+    // only truthful once the worker owns the job — before that we
+    // display an explicit waiting affordance.
+    if (job.status === "queued") {
+      return (
+        <div className="mt-3" role="status" aria-live="polite" data-job-state="queued">
+          <div className="flex items-center gap-2 text-[11.5px] text-text-secondary" data-stage-state="queued">
+            <Circle size={13} className="text-text-muted" aria-hidden />
+            <span>Queued for research</span>
+          </div>
+          <p className="mt-1 text-[11px] text-text-muted leading-relaxed">
+            A background scheduler runs official-source screening a few times an hour. Feel
+            free to close this page — the result will be here when you come back.
+          </p>
+          <div className="mt-3 text-[11px] text-text-muted">₹{job.automaticSpendRupees} spent</div>
+        </div>
+      );
+    }
+    return (
+      <div className="mt-3" role="status" aria-live="polite" data-job-state="running">
+        <div className="space-y-1.5">
+          {PHASE_2A_STAGES.map((stage) => {
+            const state = phase2AStageState(job.stage, stage);
+            const Icon = state === "complete" ? Check : state === "active" ? Loader2 : Circle;
+            return <div key={stage} data-stage={stage} data-state={state} className={`flex items-center gap-2 text-[11.5px] ${state === "pending" ? "text-text-muted" : "text-text-primary"}`}><Icon size={13} className={state === "active" ? "animate-spin" : ""} aria-hidden />{TRADE_RESEARCH_STAGE_LABELS[stage]}</div>;
+          })}
+        </div>
+        <div className="mt-3 text-[11px] text-text-muted">₹{job.automaticSpendRupees} spent</div>
       </div>
-      <div className="mt-3 text-[11px] text-text-muted">₹{job.automaticSpendRupees} spent</div>
-    </div>
-  );
+    );
+  }
   const r = job.result;
+  // BI4F Phase 2A source-count / evidence copy fix: distinguish
+  // `not_checked` (no eligible source was evaluated for this scope)
+  // from `no_verified_match` (the source was checked and did not
+  // match). Both currently share the same visual line — that is
+  // misleading because `sources checked = 0` may sit next to a
+  // "No verified match" line that implies a check happened.
+  const evidenceLabel =
+    r.officialProgramEvidence === "verified" ? "Verified" :
+    r.officialProgramEvidence === "needs_review" ? "Needs review" :
+    r.officialProgramEvidence === "no_verified_match" ? "No verified match found" :
+    "Not evaluated";
   return (
     <div className="mt-3 text-[12px]">
       <dl className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-4 gap-y-2">
-        <dt className="text-text-muted">Official importer-program evidence</dt><dd className="text-text-primary">{r.officialProgramEvidence === "verified" ? "Verified" : r.officialProgramEvidence === "needs_review" ? "Needs review" : "No verified match found"}</dd>
+        <dt className="text-text-muted">Official importer-program evidence</dt><dd className="text-text-primary" data-evidence-status={r.officialProgramEvidence}>{evidenceLabel}</dd>
         <dt className="text-text-muted">Product evidence</dt><dd className="text-text-primary">Not available from this source</dd>
         <dt className="text-text-muted">India origin</dt><dd className="text-text-primary">Not verified</dd>
         <dt className="text-text-muted">Shipment evidence</dt><dd className="text-text-primary">Not verified</dd>
-        <dt className="text-text-muted">Sources checked</dt><dd className="text-text-primary tabular-nums">{r.sourcesChecked}</dd>
+        <dt className="text-text-muted">Sources checked</dt><dd className="text-text-primary tabular-nums" data-testid="sources-checked">{r.sourcesChecked}</dd>
         <dt className="text-text-muted">Cost</dt><dd className="text-text-primary">₹{r.automaticSpendRupees} spent</dd>
       </dl>
+      {r.officialProgramEvidence === "not_checked" && <p className="mt-3 text-[11px] leading-relaxed text-text-muted">No eligible free official source was evaluated for this candidate&apos;s scope. This is not evidence for or against import activity.</p>}
       {r.officialProgramEvidence === "no_verified_match" && <p className="mt-3 text-[11px] leading-relaxed text-text-muted">This means no match was found in the checked dataset. It does not prove the company has no import activity.</p>}
       {r.evidence && <details className="mt-3"><summary className="cursor-pointer text-text-secondary">View evidence</summary><dl className="mt-2 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-[11px]">
         <dt className="text-text-muted">Source</dt><dd>FDA FSVP</dd><dt className="text-text-muted">Dataset period</dt><dd>{r.evidence.datasetPeriod}</dd><dt className="text-text-muted">Retrieved</dt><dd>{new Date(r.evidence.retrievedAt).toLocaleDateString()}</dd><dt className="text-text-muted">Matched name</dt><dd>{r.evidence.matchedSourceName ?? "—"}</dd><dt className="text-text-muted">Matched state</dt><dd>{r.evidence.matchedState ?? "—"}</dd><dt className="text-text-muted">Identity decision</dt><dd>{r.evidence.identityDecision}</dd><dt className="text-text-muted">Reason</dt><dd>{r.evidence.matchReason}</dd><dt className="text-text-muted">Coverage</dt><dd>{r.evidence.coverageExplanation}</dd>
