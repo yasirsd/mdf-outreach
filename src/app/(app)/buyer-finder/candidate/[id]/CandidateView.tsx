@@ -60,6 +60,8 @@ import { BuyerIntelligencePanel } from "@/components/buyerFinder/BuyerIntelligen
 import { BuyerIntelligenceWebsiteResearch } from "@/components/buyerFinder/BuyerIntelligenceWebsiteResearch";
 import { hasUsableEmailForConversion } from "@/lib/buyerFinder/conversion";
 import { emptyBuyerIntelligenceViewModel } from "@/lib/buyerIntelligence/viewModel";
+import { CandidateTradeResearchPanel } from "@/components/buyerFinder/TradeResearchPanel";
+import type { TradeResearchJobSnapshot } from "@/lib/tradeResearch/types";
 
 function productName(id: string): string {
   return findBusinessProductById(id)?.displayName ?? id;
@@ -72,6 +74,8 @@ export function CandidateView({
   publicWebsite = "ready",
   publicJobStatus,
   peopleJobStatus,
+  isOwner = false,
+  initialTradeResearchJob,
 }: {
   record: CandidateDetailRecord;
   hunterDiscovery?: HunterDiscoveryAvailability;
@@ -79,6 +83,8 @@ export function CandidateView({
   publicWebsite?: PublicWebsiteAvailability;
   publicJobStatus?: FreeEnrichmentJobStatus;
   peopleJobStatus?: FreeEnrichmentJobStatus;
+  isOwner?: boolean;
+  initialTradeResearchJob?: TradeResearchJobSnapshot;
 }) {
   const router = useRouter();
   const { candidate, contacts, productMatches, publicEmails = [], conversion, convertedBuyer } = record;
@@ -226,6 +232,12 @@ export function CandidateView({
                 canResearch={Boolean(candidate.website) || Boolean(candidate.domain)}
               />
             }
+          />
+
+          <CandidateTradeResearchPanel
+            candidateId={candidate.id}
+            initialJob={initialTradeResearchJob}
+            isOwner={isOwner}
           />
 
           {others.length > 0 && (

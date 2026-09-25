@@ -3,11 +3,19 @@ import { PageContainer, PageHeader } from "@/components/ui/Page";
 import { loadBuyerCandidateAction } from "@/app/(app)/buyer-finder/actions";
 import { hunterDiscoveryAvailability, hunterRevealAvailability, publicWebsiteAvailability } from "@/lib/buyerFinder/config";
 import { CandidateView } from "./CandidateView";
+import { requireMdfSession } from "@/lib/auth/require";
+import { createClient } from "@/utils/supabase/server";
+import { cookies } from "next/headers";
+import { createTradeResearchReadRepository } from "@/lib/tradeResearch/repository";
 
 export const dynamic = "force-dynamic";
 
 export default async function CandidatePage({ params }: { params: { id: string } }) {
-  const record = await loadBuyerCandidateAction(params.id);
+  const session = await requireMdfSession();
+  const [record, researchJob] = await Promise.all([
+    loadBuyerCandidateAction(params.id),
+    createTradeResearchReadRepository(createClient(cookies()), session.membership.workspaceId).getLatestJobForCandidate(params.id),
+  ]);
   if (!record) {
     return (
       <PageContainer>
@@ -29,6 +37,8 @@ export default async function CandidatePage({ params }: { params: { id: string }
       publicWebsite={publicWebsiteAvailability()}
       publicJobStatus={record.publicJobStatus}
       peopleJobStatus={record.peopleJobStatus}
+      isOwner={session.membership.role === "owner"}
+      initialTradeResearchJob={researchJob}
     />
   );
 }

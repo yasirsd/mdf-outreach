@@ -48,6 +48,8 @@ import {
   type MarketIntelligenceBuyerFinderHandoff,
 } from "@/lib/marketIntelligence/buyerFinderHandoff";
 import { formatScoreOutOf100 } from "@/lib/marketIntelligence/format";
+import { TradeResearchBatchPanel } from "@/components/buyerFinder/TradeResearchPanel";
+import type { TradeResearchBatchSnapshot } from "@/lib/tradeResearch/types";
 
 type Tab = "search" | "queue";
 
@@ -70,6 +72,8 @@ export function BuyerFinderView({
   initialQuery,
   marketHandoff,
   marketContext,
+  isOwner = false,
+  initialResearchBatch,
 }: {
   initialQueue: QueueRow[];
   initialSummary: QueueSummary;
@@ -82,6 +86,8 @@ export function BuyerFinderView({
   initialQuery?: Pick<SearchFormValue, "country" | "productId">;
   marketHandoff?: MarketIntelligenceBuyerFinderHandoff | null;
   marketContext?: MarketIntelligenceHandoffContext;
+  isOwner?: boolean;
+  initialResearchBatch?: TradeResearchBatchSnapshot;
 }) {
   const router = useRouter();
   const [tab, setTab] = useState<Tab>("search");
@@ -362,6 +368,11 @@ export function BuyerFinderView({
       {tab === "queue" && (
         <div>
           <QueueHeader summary={initialSummary} limit={queueLimit} />
+          <TradeResearchBatchPanel
+            candidateIds={initialQueue.map((row) => row.candidate.id)}
+            initialBatch={initialResearchBatch}
+            isOwner={isOwner}
+          />
           {enrichmentSummary && (
             <FreeEnrichmentSummaryPanel
               summary={enrichmentSummary}

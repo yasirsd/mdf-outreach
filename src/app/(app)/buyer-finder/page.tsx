@@ -16,6 +16,7 @@ import { createClient } from "@/utils/supabase/server";
 import { createMarketReadRepository } from "@/lib/marketIntelligence/marketReadRepository";
 import { getMarketIntelligenceHandoffContext } from "@/lib/marketIntelligence/read/overview";
 import { resolveMarketIntelligenceBuyerFinderHandoff } from "@/lib/marketIntelligence/buyerFinderHandoff";
+import { createTradeResearchReadRepository } from "@/lib/tradeResearch/repository";
 
 export const dynamic = "force-dynamic";
 
@@ -29,20 +30,22 @@ export default async function BuyerFinderPage({
     returnCompare?: string | string[];
   };
 }) {
-  await requireMdfSession();
+  const session = await requireMdfSession();
+  const supabase = createClient(cookies());
   const handoff = resolveMarketIntelligenceBuyerFinderHandoff(searchParams);
   const marketContextPromise = handoff
     ? getMarketIntelligenceHandoffContext(
         handoff.productId,
         handoff.countryAlpha2,
-        createMarketReadRepository(createClient(cookies())),
+        createMarketReadRepository(supabase),
       )
     : Promise.resolve(undefined);
-  const [initial, activeRun, enrichmentSummary, marketContext] = await Promise.all([
+  const [initial, activeRun, enrichmentSummary, marketContext, researchBatch] = await Promise.all([
     handoff ? loadBuyerCandidateQueueReadOnlyAction() : loadBuyerCandidateQueueAction(),
     getLatestActiveBuyerFinderSearchRunAction(),
     getFreeEnrichmentSummaryAction(),
     marketContextPromise,
+    createTradeResearchReadRepository(supabase, session.membership.workspaceId).getLatestBatch(),
   ]);
   return (
     <BuyerFinderView
@@ -57,6 +60,8 @@ export default async function BuyerFinderPage({
       initialQuery={handoff ? { country: handoff.countryName, productId: handoff.productId } : undefined}
       marketHandoff={handoff}
       marketContext={marketContext}
+      isOwner={session.membership.role === "owner"}
+      initialResearchBatch={researchBatch}
     />
   );
 }
