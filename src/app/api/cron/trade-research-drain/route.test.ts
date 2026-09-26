@@ -169,6 +169,22 @@ describe("BI4F Phase 2A cron scheduler — safety scan", () => {
   });
 });
 
+describe("BI4F 2A cron scheduler passes deadlineAt to the worker", () => {
+  it("issues drain with a bounded deadlineAt (≥ 30 s and ≤ 55 s in the future)", async () => {
+    drainMock.mockResolvedValueOnce({
+      jobsRequested: 2, claimed: 0, processed: 0, completed: 0, requeued: 0,
+      failed: 0, noWork: true, durationMs: 5, automaticSpendRupees: 0,
+    });
+    const t0 = Date.now();
+    const route = await import("./route");
+    await route.GET(await req({ authorization: "Bearer cron-token-1234567890" }));
+    const deps = drainMock.mock.calls[0]![0] as { deadlineAt?: number };
+    expect(typeof deps.deadlineAt).toBe("number");
+    expect(deps.deadlineAt!).toBeGreaterThanOrEqual(t0 + 30_000);
+    expect(deps.deadlineAt!).toBeLessThanOrEqual(t0 + 55_000);
+  });
+});
+
 describe("BI4F Phase 2A cron scheduler — vercel.json cron entry", () => {
   const HERE = process.cwd();
   const config = JSON.parse(readFileSync(path.resolve(HERE, "vercel.json"), "utf8")) as {

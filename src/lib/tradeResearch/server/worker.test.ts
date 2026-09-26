@@ -212,6 +212,123 @@ describe("bounded trade research worker", () => {
     });
   });
 
+  // BI4F 2A hard-deadline safe checkpointing regressions.
+  describe("hard-deadline checkpointing", () => {
+    it("with generous deadline → job completes normally (control)", async () => {
+      const { state, writer } = memoryWriter();
+      const outcome = await processTradeResearchJob(
+        writer, job(), "worker", () => NOW, undefined, undefined,
+        Date.now() + 60_000,
+      );
+      expect(outcome).toBe("completed");
+      expect(state.finalized[0]).toMatchObject({ outcome: "official_importer_program_corroboration" });
+      expect(state.released).toHaveLength(0);
+    });
+
+    it("cold FDA path + insufficient headroom BEFORE fetch → checkpoints via writer.release, returns retry, no fetch, no attempt", async () => {
+      const { state, writer } = memoryWriter({ fresh: undefined, latest: undefined });
+      const fetchImpl = vi.fn() as unknown as typeof fetch;
+      const log = vi.fn();
+      const outcome = await processTradeResearchJob(
+        writer, job(), "worker", () => NOW, fetchImpl, log,
+        Date.now() + 5_000,   // 5 s remaining — less than 25 s FDA cold + 8 s reserve
+      );
+      expect(outcome).toBe("retry");
+      expect(fetchImpl).not.toHaveBeenCalled();
+      // No attempt row was created — resume-idempotent.
+      expect(state.attempts).toHaveLength(0);
+      // Lease was released with a short next_attempt_at (≤ 3 s in future).
+      expect(state.released).toHaveLength(1);
+      const nextAttempt = Date.parse(state.released[0]!);
+      expect(nextAttempt - NOW.getTime()).toBeLessThanOrEqual(3_000);
+      expect(log).toHaveBeenCalledWith(expect.objectContaining({
+        event: "job_checkpointed_runtime_budget",
+        jobId: "job", batchId: "batch", stage: "screening_sources",
+      }));
+      // No finalize — the job is reclaimable, not terminal.
+      expect(state.finalized).toHaveLength(0);
+    });
+
+    it("cache-hit + insufficient headroom BEFORE matching → checkpoints, retry, no finalize", async () => {
+      const { state, writer } = memoryWriter();  // default fresh snapshot
+      // The pre-FDA gate uses required=25 s; a cache-hit skips the FDA gate.
+      // Insert deadline that passes the cache-hit stage AND the pre-FDA gate
+      // (both require ~5 s or less remaining) but fails the pre-match gate.
+      // That's tight — this test uses a large-enough deadline for the FDA
+      // cache-hit + fake elapsed via now(), asserting the pre-match gate
+      // fires when remaining < 5 s + reserve.
+      const log = vi.fn();
+      const outcome = await processTradeResearchJob(
+        writer, job(), "worker", () => NOW, undefined, log,
+        Date.now() + 8_000,   // ~8 s < 5 s (match) + 8 s (reserve) → checkpoint at match gate
+      );
+      expect(outcome).toBe("retry");
+      // FDA attempt was recorded (cache-hit path completed).
+      expect(state.attempts[0]).toMatchObject({ state: "skipped_cached" });
+      // Then the match gate fired → released + no finalize.
+      expect(state.released).toHaveLength(1);
+      expect(state.finalized).toHaveLength(0);
+      expect(log).toHaveBeenCalledWith(expect.objectContaining({
+        event: "job_checkpointed_runtime_budget",
+      }));
+    });
+
+    it("resumed job with previous attempt = completed + fresh snapshot → NO new attempt, NO refetch, goes straight to match/finalize", async () => {
+      const { state, writer } = memoryWriter();
+      // Simulate a previous partial run that already finished the FDA attempt.
+      (writer as unknown as {
+        latestAttempt: ReturnType<typeof vi.fn>;
+      }).latestAttempt = vi.fn(async () => ({
+        id: "prev-attempt", attempt_number: 1, state: "completed",
+      }));
+      // Even with a WORKER's start-of-loop deadline that would otherwise
+      // reject a cold FDA path, a resumed job with a completed attempt
+      // skips the FDA gate entirely.
+      const fetchImpl = vi.fn() as unknown as typeof fetch;
+      const outcome = await processTradeResearchJob(
+        writer, job(), "worker", () => NOW, fetchImpl, undefined,
+        Date.now() + 60_000,
+      );
+      expect(outcome).toBe("completed");
+      expect(fetchImpl).not.toHaveBeenCalled();
+      // Existing attempt was reused — no new startAttempt or finishAttempt.
+      expect((writer as unknown as { startAttempt: ReturnType<typeof vi.fn> }).startAttempt).not.toHaveBeenCalled();
+      expect(state.attempts).toHaveLength(0);
+      // Terminal outcome present.
+      expect(state.finalized[0]).toMatchObject({ status: "completed" });
+    });
+
+    it("no deadline plumbed → worker behaves like before (backward-compatible)", async () => {
+      const { state, writer } = memoryWriter();
+      const outcome = await processTradeResearchJob(writer, job(), "worker", () => NOW);
+      expect(outcome).toBe("completed");
+      expect(state.released).toHaveLength(0);
+      expect(state.finalized[0]).toMatchObject({ outcome: "official_importer_program_corroboration" });
+    });
+
+    it("advanceStage is idempotent — a resumed job whose stage is already at/past target does NOT re-advance", async () => {
+      const { state, writer } = memoryWriter();
+      const resumingJob = { ...job(), stage: "resolving_company_matches" as const };
+      const outcome = await processTradeResearchJob(
+        writer, resumingJob, "worker", () => NOW, undefined, undefined,
+        Date.now() + 60_000,
+      );
+      expect(outcome).toBe("completed");
+      // planning_sources / screening_sources / resolving_company_matches
+      // are already-past. Only checking_trade_activity + finalizing should
+      // have called writer.advance.
+      const stages = (writer.advance as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[2]);
+      expect(stages).not.toContain("planning_sources");
+      expect(stages).not.toContain("screening_sources");
+      expect(stages).not.toContain("resolving_company_matches");
+      expect(stages).toContain("checking_trade_activity");
+      expect(stages).toContain("finalizing");
+      // Job still finalises with sourcesChecked=1 (evidence preserved from
+      // the reused snapshot + match).
+      expect(state.finalized[0]).toMatchObject({ result: { sourcesChecked: 1 } });
+    });
+  });
+
   it("allows only one of two overlapping drains to claim a shared job", async () => {
     let available = true;
     const { writer } = memoryWriter({ plan: undefined });

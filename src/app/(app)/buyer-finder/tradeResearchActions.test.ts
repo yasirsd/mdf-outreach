@@ -31,8 +31,10 @@ const writerCtorMock = vi.hoisted(() => vi.fn(() => ({
   createBatch: createBatchMock,
   getFreshSnapshot: getFreshSnapshotMock,
 })));
+const getBatchMock = vi.hoisted(() => vi.fn(async (_id: string) => undefined as unknown));
 const readRepoMock = vi.hoisted(() => vi.fn(() => ({
   getLatestJobsForCandidates: vi.fn(async () => new Map()),
+  getBatch: getBatchMock,
 })));
 vi.mock("@/lib/tradeResearch/repository", async () => {
   const actual = await vi.importActual<typeof import("@/lib/tradeResearch/repository")>(
@@ -94,6 +96,15 @@ beforeEach(() => {
     jobsRequested: 1, claimed: 1, processed: 1, completed: 1, requeued: 0,
     failed: 0, noWork: false, durationMs: 42, automaticSpendRupees: 0,
   });
+  // Default: batch has reached a terminal state after the first drain,
+  // so the kick loop exits after ONE iteration. Individual tests override.
+  getBatchMock.mockReset().mockResolvedValue({
+    id: "00000000-0000-4000-8000-000000000009", status: "completed",
+    requestedGoal: "screen_trade_activity", totalJobs: 1, queuedCount: 0,
+    runningCount: 0, completedCount: 1, partialCount: 0, needsReviewCount: 0,
+    failedCount: 0, cancelledCount: 0, corroboratedCount: 0,
+    automaticSpendRupees: 0, createdAt: "2026-09-26T00:00:00Z",
+  });
   serverReposMock.mockResolvedValue({
     repos: {
       buyerCandidates: { list: async () => [{ id: CANDIDATE_ID, companyName: "Latitude 36 Foods", country: "US" }] },
@@ -118,7 +129,8 @@ describe("BI4F 2A createTradeResearchBatchAction — inline kick", () => {
       maxJobs: number; timeBudgetMs: number; workerId: string;
     };
     expect(kick.maxJobs).toBe(1);
-    expect(kick.timeBudgetMs).toBeLessThanOrEqual(12_000);
+    expect(kick.timeBudgetMs).toBeGreaterThanOrEqual(30_000);
+    expect(kick.timeBudgetMs).toBeLessThanOrEqual(45_000);
     expect(kick.workerId).toMatch(/^inline-/);
     // Response payload never carries a secret name.
     expect(JSON.stringify(result)).not.toMatch(/TRADE_RESEARCH_DRAIN_SECRET|CRON_SECRET/);
@@ -190,9 +202,80 @@ describe("BI4F 2A createTradeResearchBatchAction — server-only surface", () =>
     expect(body).toMatch(/await\s+drainTradeResearch\(/);
   });
 
-  it("kick is bounded — maxJobs = 1, timeBudgetMs ≤ 12000", () => {
+  it("kick is bounded — maxJobs = 1, per-drain budget = 45s, hard ceiling ≤ 50s", () => {
     expect(body).toMatch(/INLINE_KICK_JOBS\s*=\s*1\b/);
-    expect(body).toMatch(/INLINE_KICK_MS\s*=\s*12_000\b/);
+    expect(body).toMatch(/INLINE_KICK_BUDGET_MS\s*=\s*45_000\b/);
+    expect(body).toMatch(/INLINE_KICK_HARD_CEILING_MS\s*=\s*50_000\b/);
+    expect(body).toMatch(/INLINE_KICK_MAX_ITERATIONS\s*=\s*2\b/);
+  });
+});
+
+describe("BI4F 2A createTradeResearchBatchAction — bounded stall-recovery loop", () => {
+  it("terminal batch after first drain → kick loop exits after ONE drain call (no busy loop)", async () => {
+    requireMdfSessionMock.mockResolvedValue(OWNER_SESSION);
+    createBatchMock.mockResolvedValueOnce(BATCH);
+    // Default beforeEach: batch is terminal after first drain.
+    const { createTradeResearchBatchAction } = await import("./tradeResearchActions");
+    await createTradeResearchBatchAction([CANDIDATE_ID]);
+    expect(drainMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("non-terminal batch after first drain → SECOND drain call is issued to advance retry_wait", async () => {
+    requireMdfSessionMock.mockResolvedValue(OWNER_SESSION);
+    createBatchMock.mockResolvedValueOnce(BATCH);
+    // Sequence: still running after 1st drain, terminal after 2nd.
+    getBatchMock.mockReset()
+      .mockResolvedValueOnce({
+        id: BATCH.id, status: "running", requestedGoal: "screen_trade_activity",
+        totalJobs: 1, queuedCount: 0, runningCount: 1, completedCount: 0,
+        partialCount: 0, needsReviewCount: 0, failedCount: 0, cancelledCount: 0,
+        corroboratedCount: 0, automaticSpendRupees: 0, createdAt: "2026-09-26T00:00:00Z",
+      })
+      .mockResolvedValueOnce({
+        id: BATCH.id, status: "completed", requestedGoal: "screen_trade_activity",
+        totalJobs: 1, queuedCount: 0, runningCount: 0, completedCount: 1,
+        partialCount: 0, needsReviewCount: 0, failedCount: 0, cancelledCount: 0,
+        corroboratedCount: 0, automaticSpendRupees: 0, createdAt: "2026-09-26T00:00:00Z",
+      });
+    const { createTradeResearchBatchAction } = await import("./tradeResearchActions");
+    await createTradeResearchBatchAction([CANDIDATE_ID]);
+    expect(drainMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("no_work first drain → kick loop exits (nothing to reclaim in the retry window)", async () => {
+    requireMdfSessionMock.mockResolvedValue(OWNER_SESSION);
+    createBatchMock.mockResolvedValueOnce(BATCH);
+    drainMock.mockReset().mockResolvedValueOnce({
+      jobsRequested: 1, claimed: 0, processed: 0, completed: 0, requeued: 0,
+      failed: 0, noWork: true, durationMs: 3, automaticSpendRupees: 0,
+    });
+    // The batch is still "queued" — but noWork short-circuits.
+    getBatchMock.mockReset().mockResolvedValue({
+      id: BATCH.id, status: "queued", requestedGoal: "screen_trade_activity",
+      totalJobs: 1, queuedCount: 1, runningCount: 0, completedCount: 0,
+      partialCount: 0, needsReviewCount: 0, failedCount: 0, cancelledCount: 0,
+      corroboratedCount: 0, automaticSpendRupees: 0, createdAt: "2026-09-26T00:00:00Z",
+    });
+    const { createTradeResearchBatchAction } = await import("./tradeResearchActions");
+    const result = await createTradeResearchBatchAction([CANDIDATE_ID]);
+    expect(result.outcome).toBe("created");
+    expect(drainMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("kick loop stops at INLINE_KICK_MAX_ITERATIONS even if batch stays non-terminal", async () => {
+    requireMdfSessionMock.mockResolvedValue(OWNER_SESSION);
+    createBatchMock.mockResolvedValueOnce(BATCH);
+    getBatchMock.mockReset().mockResolvedValue({
+      id: BATCH.id, status: "running", requestedGoal: "screen_trade_activity",
+      totalJobs: 1, queuedCount: 0, runningCount: 1, completedCount: 0,
+      partialCount: 0, needsReviewCount: 0, failedCount: 0, cancelledCount: 0,
+      corroboratedCount: 0, automaticSpendRupees: 0, createdAt: "2026-09-26T00:00:00Z",
+    });
+    const { createTradeResearchBatchAction } = await import("./tradeResearchActions");
+    await createTradeResearchBatchAction([CANDIDATE_ID]);
+    // Bounded: even under worst-case non-terminal state, the loop is
+    // capped at INLINE_KICK_MAX_ITERATIONS. It never runs unbounded.
+    expect(drainMock.mock.calls.length).toBeLessThanOrEqual(2);
   });
 });
 

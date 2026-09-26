@@ -4,7 +4,13 @@ import { TradeResearchContractError } from "../repository";
 
 export type TradeResearchDiagnostic = {
   event: "drain_started" | "drain_finished" | "route_failed" | "jobs_requested" | "jobs_claimed" | "claim_no_work" | "claim_rejected" |
-    "job_claimed" | "stage_started" | "stage_completed" | "job_requeued" | "job_failed";
+    "job_claimed" | "stage_started" | "stage_completed" | "job_requeued" | "job_failed" |
+    "inline_kick_started" | "inline_kick_finished" | "inline_kick_budget_exhausted" | "inline_kick_failed" |
+    "job_checkpointed_runtime_budget";
+  elapsedMs?: number;
+  remainingBudgetMs?: number;
+  remainingMs?: number;
+  iteration?: number;
   jobId?: string;
   batchId?: string;
   candidateId?: string;

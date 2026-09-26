@@ -112,4 +112,14 @@ describe("internal trade research drain response", () => {
       claimed: 0, failed: 1,
     });
   });
+
+  it("issues drain with a bounded deadlineAt (>= 30 s and <= 55 s in the future)", async () => {
+    mocks.drain.mockResolvedValueOnce(noWork);
+    const t0 = Date.now();
+    await POST(request());
+    const deps = mocks.drain.mock.calls[0]![0] as { deadlineAt?: number };
+    expect(typeof deps.deadlineAt).toBe("number");
+    expect(deps.deadlineAt!).toBeGreaterThanOrEqual(t0 + 30_000);
+    expect(deps.deadlineAt!).toBeLessThanOrEqual(t0 + 55_000);
+  });
 });

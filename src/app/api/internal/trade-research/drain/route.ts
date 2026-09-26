@@ -6,7 +6,7 @@ import { requireMdfSession } from "@/lib/auth/require";
 import { TradeResearchWriter } from "@/lib/tradeResearch/repository";
 import { logTradeResearchDiagnostic, safeTradeResearchErrorCode } from "@/lib/tradeResearch/server/diagnostics";
 import { getTradeResearchServiceRoleClient } from "@/lib/tradeResearch/server/serviceRoleClient";
-import { drainTradeResearch, TradeResearchDrainExecutionError } from "@/lib/tradeResearch/server/worker";
+import { createTradeResearchDeadline, drainTradeResearch, TradeResearchDrainExecutionError } from "@/lib/tradeResearch/server/worker";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -100,6 +100,9 @@ export async function POST(request: Request): Promise<NextResponse> {
       workerId: `drain-${randomUUID()}`,
       maxJobs: JOBS_PER_DRAIN,
       timeBudgetMs: TIME_BUDGET_MS,
+      // BI4F 2A hard-deadline safety on the operator/manual QA path —
+      // same shared helper as the inline action and the daily cron.
+      deadlineAt: createTradeResearchDeadline(started),
       log: logTradeResearchDiagnostic,
     });
     return NextResponse.json({ outcome: result.noWork ? "no_work" : "processed", ...publicResult(result) });
