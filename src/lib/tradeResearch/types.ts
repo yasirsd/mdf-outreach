@@ -61,7 +61,7 @@ export interface TradeResearchBatchSnapshot {
 }
 
 export interface TradeResearchEvidenceDetail {
-  source: "FDA FSVP";
+  source: "FDA FSVP" | "Canadian Importers Database";
   datasetPeriod: string;
   retrievedAt: string;
   matchedSourceName?: string;
@@ -73,10 +73,56 @@ export interface TradeResearchEvidenceDetail {
   coverageExplanation: string;
 }
 
+export type TradeResearchEvidenceLevel =
+  | "verified"
+  | "supporting"
+  | "no_verified_match"
+  | "needs_review"
+  | "not_verified"
+  | "not_available"
+  | "not_checked";
+
 export interface TradeResearchResultSummary {
   officialProgramEvidence: "verified" | "no_verified_match" | "needs_review" | "not_checked";
-  productEvidence: "not_available";
-  indiaOrigin: "not_verified";
+  /**
+   * Company + product relationship at the grain the source actually
+   * supports. FDA FSVP has no product grain so its output stays
+   * `not_available`. Canada CID's "Major Importers by HS6, country"
+   * legitimately joins company + HS6 in a single row and can set
+   * `verified` (exact catalogue mapping) or `supporting` (proxy /
+   * composite HS mapping) when the company appears.
+   */
+  productEvidence:
+    | "verified"
+    | "supporting"
+    | "no_verified_match"
+    | "not_available";
+  /**
+   * India-origin field. FDA FSVP does not surface origin, so its
+   * payload stays `"not_verified"`. Canada CID may populate this to
+   * `"verified"` or `"supporting"` when the matched company + target
+   * HS6 rows in the CID dataset carry India as an origin country —
+   * NEVER inferred from a separate market-level report.
+   */
+  indiaOrigin: "verified" | "supporting" | "not_verified";
+  /**
+   * Company + origin-country relationship at the grain the source
+   * actually supports. Canada CID sets this only from the joined
+   * "Major Importers by HS6, country" resource (per-company + HS6 +
+   * origin). Product-by-country market aggregates are NEVER promoted
+   * to a company-specific claim.
+   */
+  originEvidence:
+    | "verified"
+    | "supporting"
+    | "no_verified_match"
+    | "not_available"
+    | "not_verified";
+  /**
+   * CID directory rows are not shipments; per-company quantity and
+   * value are explicitly suppressed by CBSA. This field stays
+   * `not_verified` for every current provider.
+   */
   shipmentEvidence: "not_verified";
   sourcesChecked: number;
   automaticSpendRupees: 0;

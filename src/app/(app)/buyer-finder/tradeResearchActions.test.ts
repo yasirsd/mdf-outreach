@@ -27,9 +27,11 @@ vi.mock("@/lib/tradeResearch/server/serviceRoleClient", () => ({
 
 const createBatchMock = vi.hoisted(() => vi.fn());
 const getFreshSnapshotMock = vi.hoisted(() => vi.fn(async () => null));
+const getFreshSnapshotByProviderMock = vi.hoisted(() => vi.fn(async () => null));
 const writerCtorMock = vi.hoisted(() => vi.fn(() => ({
   createBatch: createBatchMock,
   getFreshSnapshot: getFreshSnapshotMock,
+  getFreshSnapshotByProvider: getFreshSnapshotByProviderMock,
 })));
 const getBatchMock = vi.hoisted(() => vi.fn(async (_id: string) => undefined as unknown));
 const readRepoMock = vi.hoisted(() => vi.fn(() => ({
@@ -61,15 +63,20 @@ vi.mock("@/lib/tradeResearch/server/worker", async () => {
   return { ...actual, drainTradeResearch: drainMock };
 });
 
-vi.mock("@/lib/tradeResearch/providers", () => ({
-  FDA_FSVP_DESCRIPTOR: { id: "fda_fsvp", version: "v1" },
-  planTradeResearch: () => [
-    {
-      descriptor: { id: "fda_fsvp", version: "v1", costClass: "free", termsVersion: "v1" },
-      role: "primary", eligible: true, reason: "", cacheHit: false,
-    },
-  ],
-}));
+vi.mock("@/lib/tradeResearch/providers", () => {
+  const FDA = { id: "fda_fsvp", version: "v1", costClass: "free", termsVersion: "v1" };
+  const CID = { id: "canada-cid", version: "canada-cid-v1", costClass: "free", termsVersion: "ogl-canada-v2.0" };
+  return {
+    FDA_FSVP_DESCRIPTOR: FDA,
+    CANADA_CID_DESCRIPTOR: CID,
+    DEFAULT_TRADE_RESEARCH_DESCRIPTORS: [FDA, CID],
+    planTradeResearch: (input: { descriptors?: unknown[] }) => (input.descriptors ?? [FDA]).map((descriptor) => ({
+      descriptor,
+      role: "primary", eligible: true, reason: "eligible", cacheHit: false,
+      automaticSpendRupees: 0,
+    })),
+  };
+});
 
 import type { TradeResearchBatchSnapshot } from "@/lib/tradeResearch/types";
 

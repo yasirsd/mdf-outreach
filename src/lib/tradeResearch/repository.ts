@@ -205,6 +205,7 @@ const EMPTY_RESULT: TradeResearchResultSummary = {
   officialProgramEvidence: "not_checked",
   productEvidence: "not_available",
   indiaOrigin: "not_verified",
+  originEvidence: "not_available",
   shipmentEvidence: "not_verified",
   sourcesChecked: 0,
   automaticSpendRupees: AUTOMATIC_SPEND_RUPEES,
@@ -441,12 +442,29 @@ export class TradeResearchWriter {
     if (error) throw error;
   }
   async getFreshSnapshot(now = new Date()): Promise<SnapshotRow | undefined> {
-    const { data, error } = await this.client.from("buyer_trade_source_snapshots").select("*").eq("provider_id", "fda-fsvp").eq("dataset_id", "fsvp-participant-list").eq("status", "ready").gte("expires_at", now.toISOString()).order("retrieved_at", { ascending: false }).limit(1).maybeSingle();
+    return this.getFreshSnapshotByProvider("fda-fsvp", "fsvp-participant-list", now);
+  }
+  async getLatestSnapshot(): Promise<SnapshotRow | undefined> {
+    return this.getLatestSnapshotByProvider("fda-fsvp", "fsvp-participant-list");
+  }
+  async getFreshSnapshotByProvider(providerId: string, datasetId: string, now = new Date()): Promise<SnapshotRow | undefined> {
+    requireText(providerId, "buyer_trade_source_snapshots.provider_id");
+    requireText(datasetId, "buyer_trade_source_snapshots.dataset_id");
+    const { data, error } = await this.client
+      .from("buyer_trade_source_snapshots").select("*")
+      .eq("provider_id", providerId).eq("dataset_id", datasetId).eq("status", "ready")
+      .gte("expires_at", now.toISOString()).order("retrieved_at", { ascending: false })
+      .limit(1).maybeSingle();
     if (error) throw error;
     return data as SnapshotRow | undefined;
   }
-  async getLatestSnapshot(): Promise<SnapshotRow | undefined> {
-    const { data, error } = await this.client.from("buyer_trade_source_snapshots").select("*").eq("provider_id", "fda-fsvp").eq("dataset_id", "fsvp-participant-list").eq("status", "ready").order("retrieved_at", { ascending: false }).limit(1).maybeSingle();
+  async getLatestSnapshotByProvider(providerId: string, datasetId: string): Promise<SnapshotRow | undefined> {
+    requireText(providerId, "buyer_trade_source_snapshots.provider_id");
+    requireText(datasetId, "buyer_trade_source_snapshots.dataset_id");
+    const { data, error } = await this.client
+      .from("buyer_trade_source_snapshots").select("*")
+      .eq("provider_id", providerId).eq("dataset_id", datasetId).eq("status", "ready")
+      .order("retrieved_at", { ascending: false }).limit(1).maybeSingle();
     if (error) throw error;
     return data as SnapshotRow | undefined;
   }

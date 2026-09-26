@@ -1,5 +1,6 @@
 import type { BuyerCandidate } from "@/lib/buyerFinder/types";
 import { PRODUCTS } from "@/lib/catalogue/products";
+import { PRODUCT_TRADE_MAPPINGS } from "@/lib/marketIntelligence/product";
 import {
   AUTOMATIC_SPEND_RUPEES,
   TRADE_RESEARCH_PLANNER_VERSION,
@@ -30,7 +31,7 @@ export interface TradeResearchProviderDescriptor {
   automationAllowed: boolean;
   termsApproved: boolean;
   termsVersion: string;
-  datasetCadence: "quarterly";
+  datasetCadence: "quarterly" | "annual";
   cacheMaxAgeDays: number;
   compatiblePlannerVersions: readonly string[];
 }
@@ -49,6 +50,88 @@ export const FDA_FSVP_DESCRIPTOR: TradeResearchProviderDescriptor = {
   cacheMaxAgeDays: 100,
   compatiblePlannerVersions: [TRADE_RESEARCH_PLANNER_VERSION],
 };
+
+/**
+ * BI4F Phase 2B — Canadian Importers Database (CID).
+ *
+ * Publisher: Innovation, Science and Economic Development Canada
+ * (ISED), based on CBSA import data.
+ * Licence:   Open Government Licence – Canada, v2.0.
+ * Semantics: company + HS product + origin country. NEVER shipment
+ *            evidence — per-company quantity and value are explicitly
+ *            suppressed. See `docs/bi4f-phase2b-canada-cid-legitimacy.md`
+ *            for the full semantics matrix and confidentiality rules.
+ *
+ * READY FOR CONTROLLED PRODUCTION QA (scaffold-only).
+ *
+ * `costClass` is `"unsupported"` by default so `planTradeResearch`
+ * refuses eligibility and no production traffic reaches this
+ * descriptor. Turning `costClass` to `"free"` is a deliberate,
+ * separately-reviewed action gated by the adapter implementation
+ * phase — do not flip this without: (a) an adapter that fetches +
+ * parses + matches Canada CID rows, (b) a widened
+ * `TradeResearchResultSummary` capable of representing
+ * `productEvidence` / `originEvidence` beyond the Phase 2A literals,
+ * and (c) a controlled owner-only QA on a single Canadian candidate.
+ */
+/**
+ * BI4F Phase 2B — the specific CID dataset year the worker consults.
+ * Set to the latest ISED-published year the adapter has been
+ * validated against. Bump this constant in a reviewed change once a
+ * new CID year is fetched, parsed, and tested end-to-end. The worker
+ * never probes speculative future URLs.
+ */
+export const CANADA_CID_SUPPORTED_YEAR = 2024;
+
+export const CANADA_CID_DESCRIPTOR: TradeResearchProviderDescriptor = {
+  id: "canada-cid",
+  displayName: "Canadian Importers Database",
+  version: "canada-cid-v1",
+  // BI4F Phase 2B final integration — adapter + worker dispatch +
+  // per-provider snapshot lookup + gate flip all land in the same
+  // reviewed change. Descriptor is planner-eligible for Canadian
+  // candidates; the worker's provider-dispatch fetches the joined
+  // `Major Importers by HS6, by country` resource, never composes a
+  // company+origin claim from separate CID resources.
+  costClass: "free",
+  countries: ["CA"],
+  roles: ["COMPANY_MATCH", "PRODUCT_SIGNAL", "ORIGIN_SIGNAL", "OFFICIAL_CORROBORATION"],
+  automationAllowed: true,
+  termsApproved: true,
+  termsVersion: "ogl-canada-v2.0",
+  datasetCadence: "annual",
+  cacheMaxAgeDays: 365,
+  compatiblePlannerVersions: [TRADE_RESEARCH_PLANNER_VERSION],
+};
+
+/**
+ * Default descriptor registry — every production planner call site
+ * should use this. Callers may still pass a custom `descriptors`
+ * array in tests to isolate a single provider.
+ */
+export const DEFAULT_TRADE_RESEARCH_DESCRIPTORS: readonly TradeResearchProviderDescriptor[] = [
+  FDA_FSVP_DESCRIPTOR,
+  CANADA_CID_DESCRIPTOR,
+];
+
+/**
+ * Canonical HS6 mapping for an MDF product. Returns the best-fit HS6
+ * from `PRODUCT_TRADE_MAPPINGS` — preferring an exact mapping, then
+ * a proxy, then a composite — plus the mapping kind so the caller
+ * can honestly downgrade `productEvidence` from "verified" to
+ * "supporting" when the HS grain is coarser than the target product.
+ */
+export function canonicalHs6ForProduct(productId: string | undefined): { hs6: string; kind: "exact" | "proxy" | "composite" } | undefined {
+  if (!productId) return undefined;
+  const mappings = PRODUCT_TRADE_MAPPINGS.filter((row) => row.mdfProductId === productId && row.hsLevel === 6);
+  if (!mappings.length) return undefined;
+  const exact = mappings.find((row) => row.mappingKind === "exact");
+  if (exact) return { hs6: exact.hsCode, kind: "exact" };
+  const proxy = mappings.slice().sort((a, b) => b.mappingConfidence - a.mappingConfidence).find((row) => row.mappingKind === "proxy");
+  if (proxy) return { hs6: proxy.hsCode, kind: "proxy" };
+  const composite = mappings.slice().sort((a, b) => b.mappingConfidence - a.mappingConfidence)[0]!;
+  return { hs6: composite.hsCode, kind: "composite" };
+}
 
 export type PlanDecisionReason =
   | "eligible" | "wrong_country" | "wrong_role" | "paid" | "manual_only"

@@ -10,10 +10,20 @@ import {
   parseFdaFsvpXlsx,
   type FdaFsvpFetchResult,
 } from "../fdaFsvp";
+import {
+  CANADA_CID_ATTRIBUTION,
+  CANADA_CID_DATASET_ID,
+  CANADA_CID_PARSE_VERSION,
+  CanadaCidParserError,
+  canadaCidByHs6ByCountryUrl,
+  fetchCanadaCidByHs6ByCountry,
+  matchCanadaCidCompany,
+  parseCanadaCidXlsx,
+} from "../canadaCid";
 import { isRetryableProviderFailure, retryDelayMs } from "../stateMachine";
 import { AUTOMATIC_SPEND_RUPEES, PHASE_2A_STAGES, type Phase2AStage, type TradeResearchResultSummary } from "../types";
 import { TradeResearchWriter, type InternalJobRow, type SnapshotRow } from "../repository";
-import { FDA_FSVP_DESCRIPTOR } from "../providers";
+import { CANADA_CID_DESCRIPTOR, CANADA_CID_SUPPORTED_YEAR, canonicalHs6ForProduct, FDA_FSVP_DESCRIPTOR } from "../providers";
 import {
   safeTradeResearchErrorCode,
   safeTradeResearchErrorMetadata,
@@ -46,6 +56,14 @@ const WORKER_CLEANUP_RESERVE_MS = 8_000;
  * that plus the cleanup reserve into the remaining wall time.
  */
 const FDA_COLD_PATH_WORST_CASE_MS = 25_000;
+/**
+ * Canada CID cold-path worst-case: HTTP fetch of the "Major
+ * Importers by HS6, country" XLSX (typically 4–8 MB) + unzip +
+ * sheet-XML parse + snapshot save. Larger than FDA FSVP because the
+ * dataset is bigger, but still fits well under the deadline given
+ * the 50 s safe execution budget minus the 8 s cleanup reserve.
+ */
+const CANADA_CID_COLD_PATH_WORST_CASE_MS = 30_000;
 
 /**
  * Vercel Hobby's function ceiling. Documented here as a source-of-truth
@@ -203,7 +221,8 @@ async function checkpointIfBudgetLow(
 function blankResult(): TradeResearchResultSummary {
   return {
     officialProgramEvidence: "not_checked", productEvidence: "not_available",
-    indiaOrigin: "not_verified", shipmentEvidence: "not_verified", sourcesChecked: 0,
+    indiaOrigin: "not_verified", originEvidence: "not_available",
+    shipmentEvidence: "not_verified", sourcesChecked: 0,
     automaticSpendRupees: AUTOMATIC_SPEND_RUPEES,
   };
 }
@@ -227,6 +246,66 @@ async function withHeartbeat<T>(
     await pending;
   }
   return { value, job };
+}
+
+/**
+ * Canada CID snapshot loader. Mirrors the FDA loader's shape:
+ *  1. return the fresh cached snapshot when available,
+ *  2. otherwise conditional-GET the ISED file with the last known
+ *     ETag / Last-Modified,
+ *  3. on 304 refresh the snapshot's expiry without re-parsing,
+ *  4. on 200 parse the XLSX (bounded), compute SHA-256, save a new
+ *     snapshot row keyed by (provider_id, dataset_id, material_hash).
+ * FDA snapshots are never returned here — the query is scoped to
+ * `provider_id = "canada-cid"`. Symmetrically, the FDA loader never
+ * returns a CID snapshot.
+ */
+export async function loadCanadaCidSnapshot(
+  writer: TradeResearchWriter,
+  now: Date,
+  year: number,
+  fetchImpl?: typeof fetch,
+): Promise<{ snapshot: SnapshotRow; cacheHit: boolean }> {
+  const fresh = await writer.getFreshSnapshotByProvider(CANADA_CID_DESCRIPTOR.id, CANADA_CID_DATASET_ID, now);
+  if (fresh) return { snapshot: fresh, cacheHit: true };
+  const latest = await writer.getLatestSnapshotByProvider(CANADA_CID_DESCRIPTOR.id, CANADA_CID_DATASET_ID);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort("Canada CID fetch timeout"), FETCH_TIMEOUT_MS);
+  let fetched;
+  try {
+    fetched = await fetchCanadaCidByHs6ByCountry({
+      year, etag: latest?.etag, lastModified: latest?.last_modified,
+      fetchImpl, signal: controller.signal,
+    });
+  } catch (error) {
+    if (controller.signal.aborted) throw Object.assign(new Error("Canada CID request timed out."), { code: "NETWORK_TIMEOUT" });
+    throw error;
+  } finally { clearTimeout(timeout); }
+  const retrievedAt = now.toISOString();
+  const expiresAt = new Date(now.getTime() + CANADA_CID_DESCRIPTOR.cacheMaxAgeDays * 86_400_000).toISOString();
+  if (fetched.outcome === "not_modified") {
+    if (!latest) throw new CanadaCidParserError("Canada CID returned not-modified without a cached snapshot.");
+    return { snapshot: await writer.refreshSnapshotExpiry(latest.id, retrievedAt, expiresAt), cacheHit: true };
+  }
+  if (!fetched.bytes || !fetched.materialHash) throw new CanadaCidParserError("Canada CID response was incomplete.");
+  const parsed = parseCanadaCidXlsx(fetched.bytes);
+  const snapshot = await writer.saveSnapshot({
+    provider_id: CANADA_CID_DESCRIPTOR.id, dataset_id: CANADA_CID_DATASET_ID,
+    published_period: parsed.publishedPeriod, source_url: fetched.sourceUrl,
+    etag: fetched.etag ?? null, last_modified: fetched.lastModified ?? null,
+    material_hash: fetched.materialHash, fetched_at: retrievedAt, retrieved_at: retrievedAt, expires_at: expiresAt,
+    row_count: parsed.rows.length,
+    coverage: {
+      fields: ["hs6", "origin_country", "importer_company", "province", "city"],
+      semantics: "company_hs_origin_directory_only",
+      attribution: CANADA_CID_ATTRIBUTION,
+      shipmentLevel: false,
+    },
+    parse_version: CANADA_CID_PARSE_VERSION, terms_version: CANADA_CID_DESCRIPTOR.termsVersion,
+    status: "ready", safe_metadata: { malformedRowCount: parsed.malformedRowCount, year },
+    normalized_rows: parsed.rows,
+  });
+  return { snapshot, cacheHit: false };
 }
 
 export async function loadFdaFsvpSnapshot(
@@ -296,11 +375,37 @@ export async function processTradeResearchJob(
   }
   job = await advanceStage(writer, job, workerId, "screening_sources", log);
 
-  // Resume-idempotent attempt handling. If the previous execution
-  // already finished a successful attempt (completed or skipped_cached)
-  // AND a fresh FDA snapshot exists, DO NOT start a new attempt or
-  // re-fetch the workbook — reuse the existing attempt row and the
-  // cached snapshot, jump straight to matching.
+  const providerId = String((plan as { provider_id?: unknown }).provider_id ?? "");
+  switch (providerId) {
+    case FDA_FSVP_DESCRIPTOR.id:
+      return processFdaFsvpPlan(writer, job, workerId, plan, now, fetchImpl, log, deadlineAt);
+    case CANADA_CID_DESCRIPTOR.id:
+      return processCanadaCidPlan(writer, job, workerId, plan, now, fetchImpl, log, deadlineAt);
+    default:
+      job = await advanceStage(writer, job, workerId, "finalizing", log);
+      await writer.finalize(job, workerId, "completed", "unsupported_coverage", blankResult());
+      log?.(jobDiagnostic("stage_completed", job));
+      return "completed";
+  }
+}
+
+/**
+ * Phase 2A FDA FSVP execution path. Byte-identical to the pre-Phase-2B
+ * behaviour: cache probe → pre-fetch deadline gate → attempt reuse →
+ * fetch/parse → match → finalize. Extracted from `processTradeResearchJob`
+ * so `processTradeResearchJob` can dispatch by `plan.provider_id`.
+ */
+async function processFdaFsvpPlan(
+  writer: TradeResearchWriter,
+  claimedJob: InternalJobRow,
+  workerId: string,
+  plan: Record<string, unknown>,
+  now: () => Date,
+  fetchImpl: typeof fetch | undefined,
+  log: TradeResearchLogger | undefined,
+  deadlineAt: number | undefined,
+): Promise<"completed" | "retry" | "failed"> {
+  let job = claimedJob;
   const previous = await writer.latestAttempt(String(plan.id));
   const previousStateRaw = previous?.state;
   const previousState = typeof previousStateRaw === "string" ? previousStateRaw : null;
@@ -309,29 +414,12 @@ export async function processTradeResearchJob(
 
   let snapshot: SnapshotRow;
   let cacheHit = false;
-
-  // Cheap probe first — if a fresh FDA snapshot already exists, we can
-  // avoid the pre-FDA cold-path deadline gate entirely because the FDA
-  // step will be effectively free (one Supabase read).
   const preloadedFresh = await writer.getFreshSnapshot(now());
-  if (preloadedFresh) {
-    snapshot = preloadedFresh;
-    cacheHit = true;
-  } else if (attemptAlreadyResolved) {
-    // The previous partial run reported a completed attempt but the
-    // snapshot has aged out between checkpointed run and resume — fall
-    // through to a fresh fetch. A NEW attempt row is created.
-    snapshot = undefined as unknown as SnapshotRow;
-  } else {
-    snapshot = undefined as unknown as SnapshotRow;
-  }
+  if (preloadedFresh) { snapshot = preloadedFresh; cacheHit = true; }
+  else { snapshot = undefined as unknown as SnapshotRow; }
 
-  // Deadline gate BEFORE the potentially expensive FDA cold-fetch path.
-  // Only relevant when we haven't already got the snapshot in hand.
   if (!snapshot) {
-    const gate = await checkpointIfBudgetLow(
-      writer, job, workerId, deadlineAt, FDA_COLD_PATH_WORST_CASE_MS, now, log,
-    );
+    const gate = await checkpointIfBudgetLow(writer, job, workerId, deadlineAt, FDA_COLD_PATH_WORST_CASE_MS, now, log);
     if (!gate.ok) return "retry";
   }
 
@@ -342,12 +430,9 @@ export async function processTradeResearchJob(
     ? previous as { id: string | number }
     : await writer.startAttempt(job, String(plan.id), attemptNumber, workerId);
   if (!(attemptAlreadyResolved && snapshot)) {
-    await writer.appendEvent(job, "provider_attempt_started", { providerId: "fda-fsvp", attempt: attemptNumber });
+    await writer.appendEvent(job, "provider_attempt_started", { providerId: FDA_FSVP_DESCRIPTOR.id, attempt: attemptNumber });
   }
   const started = Date.now();
-  if (snapshot) {
-    // Reused snapshot path — no fetch, no attempt writes needed.
-  }
   try {
     if (!snapshot) {
       const heartbeat = await withHeartbeat(writer, job, workerId, () => loadFdaFsvpSnapshot(writer, now(), fetchImpl));
@@ -361,7 +446,7 @@ export async function processTradeResearchJob(
     const delay = isRetryableProviderFailure({ status, code }) ? retryDelayMs(attemptNumber) : null;
     if (delay !== null) {
       await writer.finishAttempt(String(attempt.id), { state: "retry_wait", safe_error_code: code ?? "TRANSIENT_PROVIDER_ERROR", duration_ms: Date.now() - started });
-      await writer.appendEvent(job, "provider_attempt_completed", { providerId: "fda-fsvp", attempt: attemptNumber, state: "retry_wait" });
+      await writer.appendEvent(job, "provider_attempt_completed", { providerId: FDA_FSVP_DESCRIPTOR.id, attempt: attemptNumber, state: "retry_wait" });
       await writer.release(job, workerId, new Date(now().getTime() + delay).toISOString());
       log?.(jobDiagnostic("job_requeued", job, { leaseState: "released", safeErrorCode: code ?? "TRANSIENT_PROVIDER_ERROR" }));
       return "retry";
@@ -376,23 +461,18 @@ export async function processTradeResearchJob(
       state: cacheHit ? "skipped_cached" : "completed", duration_ms: Date.now() - started,
       record_count: snapshot.row_count, match_count: 0,
     });
-    await writer.appendEvent(job, "provider_attempt_completed", { providerId: "fda-fsvp", attempt: attemptNumber, state: cacheHit ? "skipped_cached" : "completed", recordCount: snapshot.row_count });
+    await writer.appendEvent(job, "provider_attempt_completed", { providerId: FDA_FSVP_DESCRIPTOR.id, attempt: attemptNumber, state: cacheHit ? "skipped_cached" : "completed", recordCount: snapshot.row_count });
   }
   if (await writer.isCancellationRequested(job.batch_id)) {
     await writer.finalize(job, workerId, "cancelled", "cancelled", blankResult());
     return "completed";
   }
-  // Deadline gate BEFORE matching — matching + finalize + downstream
-  // writes together need enough headroom to run to completion. Assume
-  // ~5 s worst case for matching (large row set) + finalize + writes.
-  const matchGate = await checkpointIfBudgetLow(
-    writer, job, workerId, deadlineAt, 5_000, now, log,
-  );
+  const matchGate = await checkpointIfBudgetLow(writer, job, workerId, deadlineAt, 5_000, now, log);
   if (!matchGate.ok) return "retry";
   job = await advanceStage(writer, job, workerId, "resolving_company_matches", log);
   const candidate = await writer.getCandidate(job);
   const match = matchFdaFsvpCompany({ companyName: candidate.companyName, address: candidate.address, city: candidate.city, rows: snapshot.normalized_rows });
-  await writer.appendEvent(job, "match_resolved", { providerId: "fda-fsvp", identityResult: match.decision, matchCount: match.matchedRows.length, datasetWatermark: snapshot.material_hash });
+  await writer.appendEvent(job, "match_resolved", { providerId: FDA_FSVP_DESCRIPTOR.id, identityResult: match.decision, matchCount: match.matchedRows.length, datasetWatermark: snapshot.material_hash });
   job = await advanceStage(writer, job, workerId, "checking_trade_activity", log);
   const result: TradeResearchResultSummary = {
     ...blankResult(),
@@ -412,6 +492,190 @@ export async function processTradeResearchJob(
   } else if (match.decision === "strong") {
     await writer.finalize(job, workerId, "completed", "official_importer_program_corroboration", result);
   } else if (match.decision === "ambiguous") {
+    await writer.finalize(job, workerId, "needs_review", "needs_review", result);
+  } else {
+    await writer.finalize(job, workerId, "completed", "no_verified_evidence", result);
+  }
+  log?.(jobDiagnostic("stage_completed", job));
+  return "completed";
+}
+
+/**
+ * Phase 2B Canada CID execution path. Mirrors the FDA path's shape
+ * (cache → deadline gate → attempt → fetch/parse → match → finalize)
+ * but uses the joined "Major Importers by HS6, country" resource and
+ * emits company-specific product + origin evidence honestly labelled
+ * by the target HS6's `mappingKind` (exact/proxy/composite).
+ *
+ * Evidence-join safety: origin countries are read from the SAME rows
+ * that matched the target HS6 and normalized company — never from a
+ * separate CID resource, never from market-level aggregates.
+ */
+async function processCanadaCidPlan(
+  writer: TradeResearchWriter,
+  claimedJob: InternalJobRow,
+  workerId: string,
+  plan: Record<string, unknown>,
+  now: () => Date,
+  fetchImpl: typeof fetch | undefined,
+  log: TradeResearchLogger | undefined,
+  deadlineAt: number | undefined,
+): Promise<"completed" | "retry" | "failed"> {
+  let job = claimedJob;
+  const productId = typeof job.product_id === "string" && job.product_id ? job.product_id : undefined;
+  const hs = canonicalHs6ForProduct(productId);
+  if (!hs) {
+    job = await advanceStage(writer, job, workerId, "finalizing", log);
+    await writer.finalize(job, workerId, "completed", "unsupported_coverage", { ...blankResult(), sourcesChecked: 0 });
+    log?.(jobDiagnostic("stage_completed", job));
+    return "completed";
+  }
+
+  const previous = await writer.latestAttempt(String(plan.id));
+  const previousStateRaw = previous?.state;
+  const previousState = typeof previousStateRaw === "string" ? previousStateRaw : null;
+  const attemptAlreadyResolved =
+    previousState === "completed" || previousState === "skipped_cached";
+
+  let snapshot: SnapshotRow;
+  let cacheHit = false;
+  const preloadedFresh = await writer.getFreshSnapshotByProvider(CANADA_CID_DESCRIPTOR.id, CANADA_CID_DATASET_ID, now());
+  if (preloadedFresh) { snapshot = preloadedFresh; cacheHit = true; }
+  else { snapshot = undefined as unknown as SnapshotRow; }
+
+  if (!snapshot) {
+    const gate = await checkpointIfBudgetLow(writer, job, workerId, deadlineAt, CANADA_CID_COLD_PATH_WORST_CASE_MS, now, log);
+    if (!gate.ok) return "retry";
+  }
+
+  const attemptNumber = attemptAlreadyResolved && snapshot
+    ? Number(previous?.attempt_number ?? 1)
+    : Number(previous?.attempt_number ?? 0) + 1;
+  const attempt = attemptAlreadyResolved && snapshot
+    ? previous as { id: string | number }
+    : await writer.startAttempt(job, String(plan.id), attemptNumber, workerId);
+  if (!(attemptAlreadyResolved && snapshot)) {
+    await writer.appendEvent(job, "provider_attempt_started", { providerId: CANADA_CID_DESCRIPTOR.id, attempt: attemptNumber });
+  }
+  const started = Date.now();
+  try {
+    if (!snapshot) {
+      const heartbeat = await withHeartbeat(writer, job, workerId, () => loadCanadaCidSnapshot(writer, now(), CANADA_CID_SUPPORTED_YEAR, fetchImpl));
+      job = heartbeat.job;
+      snapshot = heartbeat.value.snapshot;
+      cacheHit = heartbeat.value.cacheHit;
+    }
+  } catch (error) {
+    const status = typeof error === "object" && error && "status" in error ? Number((error as { status?: unknown }).status) : undefined;
+    const code = typeof error === "object" && error && "code" in error ? String((error as { code?: unknown }).code) : undefined;
+    const delay = isRetryableProviderFailure({ status, code }) ? retryDelayMs(attemptNumber) : null;
+    if (delay !== null) {
+      await writer.finishAttempt(String(attempt.id), { state: "retry_wait", safe_error_code: code ?? "TRANSIENT_PROVIDER_ERROR", duration_ms: Date.now() - started });
+      await writer.appendEvent(job, "provider_attempt_completed", { providerId: CANADA_CID_DESCRIPTOR.id, attempt: attemptNumber, state: "retry_wait" });
+      await writer.release(job, workerId, new Date(now().getTime() + delay).toISOString());
+      log?.(jobDiagnostic("job_requeued", job, { leaseState: "released", safeErrorCode: code ?? "TRANSIENT_PROVIDER_ERROR" }));
+      return "retry";
+    }
+    await writer.finishAttempt(String(attempt.id), { state: "failed_terminal", safe_error_code: code ?? (error instanceof CanadaCidParserError ? error.code : "PROVIDER_FAILURE"), duration_ms: Date.now() - started });
+    await writer.finalize(job, workerId, "failed", "failed", blankResult());
+    log?.(jobDiagnostic("job_failed", job, { leaseState: "released", safeErrorCode: code ?? (error instanceof CanadaCidParserError ? error.code : "PROVIDER_FAILURE") }));
+    return "failed";
+  }
+  if (!attemptAlreadyResolved) {
+    await writer.finishAttempt(String(attempt.id), {
+      state: cacheHit ? "skipped_cached" : "completed", duration_ms: Date.now() - started,
+      record_count: snapshot.row_count, match_count: 0,
+    });
+    await writer.appendEvent(job, "provider_attempt_completed", { providerId: CANADA_CID_DESCRIPTOR.id, attempt: attemptNumber, state: cacheHit ? "skipped_cached" : "completed", recordCount: snapshot.row_count });
+  }
+  if (await writer.isCancellationRequested(job.batch_id)) {
+    await writer.finalize(job, workerId, "cancelled", "cancelled", blankResult());
+    return "completed";
+  }
+  const matchGate = await checkpointIfBudgetLow(writer, job, workerId, deadlineAt, 5_000, now, log);
+  if (!matchGate.ok) return "retry";
+  job = await advanceStage(writer, job, workerId, "resolving_company_matches", log);
+  const candidate = await writer.getCandidate(job);
+  const cidRows = (snapshot.normalized_rows as unknown as Parameters<typeof matchCanadaCidCompany>[0]["rows"]);
+  const match = matchCanadaCidCompany({
+    companyName: candidate.companyName,
+    address: candidate.address,
+    city: candidate.city,
+    targetHs6: hs.hs6,
+    rows: cidRows,
+  });
+  await writer.appendEvent(job, "match_resolved", {
+    providerId: CANADA_CID_DESCRIPTOR.id, identityResult: match.decision,
+    matchCount: match.matchedRows.length, datasetWatermark: snapshot.material_hash,
+  });
+  job = await advanceStage(writer, job, workerId, "checking_trade_activity", log);
+
+  // Honest evidence assignment:
+  //   • productEvidence "verified" only when identity is strong AND HS
+  //     mapping is `exact`. `proxy` and `composite` HS mappings can
+  //     never rise above "supporting", per the user's explicit rule.
+  //   • originEvidence uses the SAME rows that matched (company + HS6);
+  //     never composed from separate CID resources.
+  //   • indiaOrigin is only ever populated when India is in
+  //     `matchedOriginCountries` — never inferred from another origin.
+  const strong = match.decision === "strong";
+  const ambiguous = match.decision === "ambiguous";
+  const noneMatch = match.decision === "none" || match.decision === "rejected";
+  const productEvidence: TradeResearchResultSummary["productEvidence"] =
+    noneMatch ? "no_verified_match"
+    : strong && hs.kind === "exact" ? "verified"
+    : (strong || ambiguous) ? "supporting"
+    : "not_available";
+  const originCountries = match.originCountries;
+  const indiaPresent = originCountries.includes("IND");
+  const originEvidence: TradeResearchResultSummary["originEvidence"] =
+    noneMatch ? "no_verified_match"
+    : originCountries.length === 0 ? "not_verified"
+    : strong ? "verified"
+    : ambiguous ? "supporting"
+    : "not_verified";
+  const indiaOrigin: TradeResearchResultSummary["indiaOrigin"] =
+    !indiaPresent ? "not_verified"
+    : strong ? "verified"
+    : "supporting";
+
+  const matchedRow = match.matchedRows[0];
+  const result: TradeResearchResultSummary = {
+    ...blankResult(),
+    officialProgramEvidence: strong ? "verified" : ambiguous ? "needs_review" : "no_verified_match",
+    productEvidence,
+    originEvidence,
+    indiaOrigin,
+    shipmentEvidence: "not_verified",
+    sourcesChecked: 1,
+    evidence: {
+      source: "Canadian Importers Database",
+      datasetPeriod: snapshot.published_period,
+      retrievedAt: snapshot.retrieved_at,
+      matchedSourceName: matchedRow?.companyName,
+      matchedState: matchedRow?.province,
+      candidateName: candidate.companyName,
+      candidateState: match.candidateProvince,
+      identityDecision: match.decision,
+      matchReason: match.reason,
+      coverageExplanation: [
+        `Canada CID is a major-importer directory joined at (HS6, origin country, importer company).`,
+        `HS6 ${hs.hs6} mapping quality: ${hs.kind}${hs.kind === "exact" ? "" : ` — product evidence capped at "supporting"`}.`,
+        `Origin countries observed for this company at HS6: ${originCountries.length ? originCountries.join(", ") : "none"}.`,
+        `Dataset does not carry shipment date, per-company quantity, per-company value, or supplier.`,
+        CANADA_CID_ATTRIBUTION,
+      ].join(" "),
+    },
+  };
+  job = await advanceStage(writer, job, workerId, "finalizing", log);
+  if (await writer.isCancellationRequested(job.batch_id)) {
+    await writer.finalize(job, workerId, "partial", "partial", result);
+  } else if (strong && productEvidence === "verified") {
+    // Only an EXACT HS mapping + STRONG identity can produce the
+    // company-level corroboration outcome. Proxy / composite HS
+    // mappings finalize as `needs_review` even under strong identity.
+    await writer.finalize(job, workerId, "completed", "official_importer_program_corroboration", result);
+  } else if (strong || ambiguous) {
     await writer.finalize(job, workerId, "needs_review", "needs_review", result);
   } else {
     await writer.finalize(job, workerId, "completed", "no_verified_evidence", result);

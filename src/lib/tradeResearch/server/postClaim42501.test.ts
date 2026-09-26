@@ -113,7 +113,7 @@ describe("BI4F 2A — a 42501 raised AFTER claim is safely requeued (production 
     const writer = {
       isCancellationRequested: vi.fn(async () => false),
       advance: vi.fn(async (row: InternalJobRow, _worker: string, stage: InternalJobRow["stage"]) => ({ ...row, stage, revision: row.revision + 1 })),
-      getEligiblePlan: vi.fn(async () => ({ id: "00000000-0000-4000-8000-000000000005", cost_class: "free", automatic_spend_rupees: 0 })),
+      getEligiblePlan: vi.fn(async () => ({ id: "00000000-0000-4000-8000-000000000005", cost_class: "free", automatic_spend_rupees: 0, provider_id: "fda-fsvp" })),
       latestAttempt: vi.fn(async () => undefined),
       getFreshSnapshot: vi.fn(async () => ({
         id: "00000000-0000-4000-8000-000000000006",
@@ -145,7 +145,7 @@ describe("BI4F 2A — a 42501 raised AFTER claim is safely requeued (production 
       }),
       isCancellationRequested: vi.fn(async () => false),
       advance: vi.fn(async (row: InternalJobRow, _worker: string, stage: InternalJobRow["stage"]) => ({ ...row, stage, revision: row.revision + 1 })),
-      getEligiblePlan: vi.fn(async () => ({ id: "00000000-0000-4000-8000-000000000005", cost_class: "free", automatic_spend_rupees: 0 })),
+      getEligiblePlan: vi.fn(async () => ({ id: "00000000-0000-4000-8000-000000000005", cost_class: "free", automatic_spend_rupees: 0, provider_id: "fda-fsvp" })),
       latestAttempt: vi.fn(async () => undefined),
       getFreshSnapshot: vi.fn(async () => ({
         id: "00000000-0000-4000-8000-000000000006",

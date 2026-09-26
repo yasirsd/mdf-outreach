@@ -7,7 +7,8 @@ import { requireMdfSession } from "@/lib/auth/require";
 import { codeForCountryName, findCountryByCode } from "@/lib/catalogue/countries";
 import { serverRepositories } from "@/lib/repositories/server";
 import { createClient } from "@/utils/supabase/server";
-import { FDA_FSVP_DESCRIPTOR, planTradeResearch } from "@/lib/tradeResearch/providers";
+import { CANADA_CID_DESCRIPTOR, DEFAULT_TRADE_RESEARCH_DESCRIPTORS, FDA_FSVP_DESCRIPTOR, planTradeResearch } from "@/lib/tradeResearch/providers";
+import { CANADA_CID_DATASET_ID } from "@/lib/tradeResearch/canadaCid";
 import { createTradeResearchReadRepository, TradeResearchWriter } from "@/lib/tradeResearch/repository";
 import { logTradeResearchDiagnostic, safeTradeResearchErrorCode } from "@/lib/tradeResearch/server/diagnostics";
 import { getTradeResearchServiceRoleClient } from "@/lib/tradeResearch/server/serviceRoleClient";
@@ -63,13 +64,18 @@ export async function createTradeResearchBatchAction(candidateIds: readonly stri
   const { repos } = await serverRepositories();
   const writer = new TradeResearchWriter(getTradeResearchServiceRoleClient());
   const read = createTradeResearchReadRepository(createClient(cookies()), session.membership.workspaceId);
-  const [freshCache, allCandidates, productMatches, latestJobs] = await Promise.all([
+  const [freshFdaCache, freshCanadaCache, allCandidates, productMatches, latestJobs] = await Promise.all([
     writer.getFreshSnapshot().then(Boolean),
+    writer.getFreshSnapshotByProvider(CANADA_CID_DESCRIPTOR.id, CANADA_CID_DATASET_ID).then(Boolean),
     repos.buyerCandidates.list(),
     repos.buyerCandidateProductMatches.listByCandidateIds
       ? repos.buyerCandidateProductMatches.listByCandidateIds(ids)
       : Promise.all(ids.map((id) => repos.buyerCandidateProductMatches.listByCandidate(id))).then((rows) => rows.flat()),
     read.getLatestJobsForCandidates(ids),
+  ]);
+  const freshCacheByProviderId = new Map<string, boolean>([
+    [FDA_FSVP_DESCRIPTOR.id, freshFdaCache],
+    [CANADA_CID_DESCRIPTOR.id, freshCanadaCache],
   ]);
   const candidates = new Map(allCandidates.filter((candidate) => ids.includes(candidate.id)).map((candidate) => [candidate.id, candidate]));
   const jobs = [];
@@ -82,14 +88,29 @@ export async function createTradeResearchBatchAction(candidateIds: readonly stri
     const countryCode = findCountryByCode(candidate.country)?.code ?? codeForCountryName(candidate.country);
     if (!countryCode) return { outcome: "invalid_input", message: `${candidate.companyName} does not have a canonical country.` };
     const productId = candidateProductMatches[0]?.productId;
-    const plans = planTradeResearch({ candidate, countryCode, goal: "screen_trade_activity", productId, hasFreshCache: freshCache });
+    // Phase 2B — evaluate BOTH FDA FSVP and Canada CID descriptors
+    // for every candidate. `planTradeResearch` refuses the wrong-
+    // country provider (`wrong_country` reason), so US candidates get
+    // exactly one FDA-eligible plan and Canadian candidates get
+    // exactly one Canada-CID-eligible plan. Never both eligible in
+    // the same batch — Phase 2B does NOT ship multi-provider
+    // sequencing.
+    const perProviderPlans = DEFAULT_TRADE_RESEARCH_DESCRIPTORS.map((descriptor) => {
+      const [only] = planTradeResearch({
+        candidate, countryCode, goal: "screen_trade_activity", productId,
+        hasFreshCache: freshCacheByProviderId.get(descriptor.id) ?? false,
+        descriptors: [descriptor],
+      });
+      return only!;
+    });
     jobs.push({
       candidateId, productId: productId ?? "", countryCode, supersedesJobId: latest?.id ?? "",
-      plans: plans.map((plan, index) => ({
+      plans: perProviderPlans.map((plan, index) => ({
         providerId: plan.descriptor.id, providerDescriptorVersion: plan.descriptor.version,
         role: plan.role, sequence: index + 1, eligibility: plan.eligible ? "eligible" : "ineligible",
         decisionReason: plan.reason, costClass: plan.descriptor.costClass,
-        termsVersion: plan.descriptor.termsVersion, datasetVersion: "", cacheKey: plan.cacheHit ? `${FDA_FSVP_DESCRIPTOR.id}:current` : "",
+        termsVersion: plan.descriptor.termsVersion, datasetVersion: "",
+        cacheKey: plan.cacheHit ? `${plan.descriptor.id}:current` : "",
       })),
     });
   }

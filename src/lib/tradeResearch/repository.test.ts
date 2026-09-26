@@ -125,7 +125,8 @@ describe("TradeResearchWriter RPC contract", () => {
       .rejects.toMatchObject({ expectedSqlType: "timestamptz", fieldName: "p_next_attempt_at" });
     await expect(writer.finalize(claimed, "worker-a", "completed", "no_verified_evidence", {
       automaticSpendRupees: 0, officialProgramEvidence: "not_checked", productEvidence: "not_available",
-      indiaOrigin: "not_verified", shipmentEvidence: "not_verified", sourcesChecked: BigInt(1) as unknown as number,
+      indiaOrigin: "not_verified", originEvidence: "not_available", shipmentEvidence: "not_verified",
+      sourcesChecked: BigInt(1) as unknown as number,
     })).rejects.toMatchObject({ expectedSqlType: "jsonb", fieldName: "p_result" });
     expect(rpc).not.toHaveBeenCalled();
   });

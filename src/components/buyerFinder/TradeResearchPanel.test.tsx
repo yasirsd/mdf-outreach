@@ -16,7 +16,7 @@ function job(stage: TradeResearchStage, status: TradeResearchJobSnapshot["status
     id: "00000000-0000-4000-8000-000000000001", batchId: "00000000-0000-4000-8000-000000000002",
     candidateId: "00000000-0000-4000-8000-000000000003", productId: "guntur-dry-red-chilli", countryCode: "US",
     requestedGoal: "screen_trade_activity", status, stage, revision: 2, automaticSpendRupees: 0,
-    result: { officialProgramEvidence: "not_checked", productEvidence: "not_available", indiaOrigin: "not_verified", shipmentEvidence: "not_verified", sourcesChecked: 0, automaticSpendRupees: 0 },
+    result: { officialProgramEvidence: "not_checked", productEvidence: "not_available", indiaOrigin: "not_verified", originEvidence: "not_available", shipmentEvidence: "not_verified", sourcesChecked: 0, automaticSpendRupees: 0 },
     createdAt: "2026-09-25T00:00:00Z",
   };
 }

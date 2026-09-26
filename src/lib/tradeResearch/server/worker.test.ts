@@ -37,7 +37,7 @@ function candidate(): BuyerCandidate {
 
 function memoryWriter(over: Record<string, unknown> = {}) {
   const state = {
-    cancelled: false, plan: { id: "plan", cost_class: "free", automatic_spend_rupees: 0 },
+    cancelled: false, plan: { id: "plan", cost_class: "free", automatic_spend_rupees: 0, provider_id: "fda-fsvp" },
     fresh: snapshot() as SnapshotRow | undefined, latest: undefined as SnapshotRow | undefined,
     finalized: [] as Array<Record<string, unknown>>, released: [] as string[], attempts: [] as Array<Record<string, unknown>>,
     heartbeatCount: 0, saved: 0, refreshed: 0,
