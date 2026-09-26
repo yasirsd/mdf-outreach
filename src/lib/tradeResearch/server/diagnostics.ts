@@ -76,6 +76,20 @@ export function safeTradeResearchErrorCode(error: unknown): string {
       if (/\b(?:timestamp|timestamptz|date|time)\b/.test(detail)) return "DATABASE_22P02_INVALID_TIMESTAMP";
       return "DATABASE_22P02_OTHER";
     }
+    if (code === "42501") {
+      // Classify 42501 into safe sub-codes WITHOUT emitting any
+      // table, function, or schema identifiers. We inspect only the
+      // Postgres object-kind noun in the error message ("function",
+      // "sequence", "schema", "table"/"relation") — never the actual
+      // object name. If the message shape is ambiguous, we fall back
+      // to _OTHER rather than leak SQL.
+      const detail = databaseErrorText(error);
+      if (/permission denied for function\b/.test(detail)) return "DATABASE_42501_RPC_EXECUTE";
+      if (/permission denied for sequence\b/.test(detail)) return "DATABASE_42501_SEQUENCE";
+      if (/permission denied for schema\b/.test(detail)) return "DATABASE_42501_SCHEMA";
+      if (/permission denied for (?:table|relation)\b/.test(detail)) return "DATABASE_42501_TABLE";
+      return "DATABASE_42501_OTHER";
+    }
     if (/^(?:PGRST\d{3}|[0-9A-Z]{5})$/.test(code)) return `DATABASE_${code}`;
   }
   return "WORKER_INTERNAL_ERROR";
