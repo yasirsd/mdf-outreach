@@ -1,4 +1,5 @@
 import type { BuyerCandidate } from "@/lib/buyerFinder/types";
+import { PRODUCTS } from "@/lib/catalogue/products";
 import {
   AUTOMATIC_SPEND_RUPEES,
   TRADE_RESEARCH_PLANNER_VERSION,
@@ -6,6 +7,18 @@ import {
   type ProviderRole,
   type TradeResearchGoal,
 } from "./types";
+
+/**
+ * MDF's product catalogue is 100 % food (spices + fresh produce), so a
+ * productId that resolves to a canonical catalogue slug is by itself
+ * sufficient proof of food-import relevance for FDA FSVP screening.
+ * The candidate's own `industry`/`buyerType`/`isImporter` fields are
+ * treated as a fallback for the case where no product context is
+ * available — never as a gate over an already-approved product match.
+ */
+const FOOD_CATALOGUE_PRODUCT_IDS: ReadonlySet<string> = new Set(
+  PRODUCTS.map((product) => product.id),
+);
 
 export interface TradeResearchProviderDescriptor {
   id: string;
@@ -59,7 +72,18 @@ export function isAutomaticallyExecutable(descriptor: TradeResearchProviderDescr
   return false;
 }
 
+/**
+ * BI4F 2A fix — treat a canonical MDF product match as sufficient food
+ * relevance for FDA FSVP eligibility. Buyer Finder discovers many
+ * candidates via directory/Hunter signals that never populate
+ * `industry`/`buyerType`/`isImporter` on the row; before this change
+ * such candidates were rejected as `not_food_import_relevant` even when
+ * they were already product-matched to a chilli, mango, or pomegranate
+ * catalogue slug. That produced the Latitude / Silva production regression
+ * where FDA FSVP was skipped and `sources_checked` stayed at 0.
+ */
 function foodImportRelevant(candidate: BuyerCandidate, productId?: string): boolean {
+  if (productId && FOOD_CATALOGUE_PRODUCT_IDS.has(productId)) return true;
   if (!productId) return false;
   const text = [candidate.industry, candidate.buyerType].filter(Boolean).join(" ").toLowerCase();
   return candidate.isImporter === true || /food|spice|chilli|pepper|agri|grocery|ingredient|import/.test(text);
