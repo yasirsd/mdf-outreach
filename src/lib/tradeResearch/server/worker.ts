@@ -442,9 +442,22 @@ async function processFdaFsvpPlan(
   deadlineAt: number | undefined,
 ): Promise<"completed" | "retry" | "failed"> {
   let job = claimedJob;
-  const previous = await writer.latestAttempt(String(plan.id));
-  const previousStateRaw = previous?.state;
-  const previousState = typeof previousStateRaw === "string" ? previousStateRaw : null;
+  let previous = await writer.latestAttempt(String(plan.id));
+  let previousStateRaw = previous?.state;
+  let previousState = typeof previousStateRaw === "string" ? previousStateRaw : null;
+  // BI4F 2B stale-attempt reconciliation. A `state='running'`
+  // previous attempt means a prior worker was hard-killed mid-fetch.
+  // Reconcile it truthfully as `failed_retryable` with
+  // `STALE_LEASE_RECOVERED` before creating a NEW attempt row.
+  if (previousState === "running" && previous?.id) {
+    await writer.reconcileStaleAttempt(String(previous.id), "STALE_LEASE_RECOVERED");
+    // Force the caller to increment attemptNumber past the stale
+    // row: treat the reconciled row as the previous non-resolved
+    // attempt (previous.state effectively reads `failed_retryable`).
+    previous = { ...previous, state: "failed_retryable" };
+    previousStateRaw = "failed_retryable";
+    previousState = "failed_retryable";
+  }
   const attemptAlreadyResolved =
     previousState === "completed" || previousState === "skipped_cached";
 
@@ -567,9 +580,19 @@ async function processCanadaCidPlan(
     return "completed";
   }
 
-  const previous = await writer.latestAttempt(String(plan.id));
-  const previousStateRaw = previous?.state;
-  const previousState = typeof previousStateRaw === "string" ? previousStateRaw : null;
+  let previous = await writer.latestAttempt(String(plan.id));
+  let previousStateRaw = previous?.state;
+  let previousState = typeof previousStateRaw === "string" ? previousStateRaw : null;
+  // BI4F 2B stale-attempt reconciliation — same contract as the FDA
+  // path. A prior hard-kill leaves the attempt row `running`; the
+  // job-level claim RPC doesn't touch attempts, so we reconcile it
+  // truthfully here before creating a new attempt row.
+  if (previousState === "running" && previous?.id) {
+    await writer.reconcileStaleAttempt(String(previous.id), "STALE_LEASE_RECOVERED");
+    previous = { ...previous, state: "failed_retryable" };
+    previousStateRaw = "failed_retryable";
+    previousState = "failed_retryable";
+  }
   const attemptAlreadyResolved =
     previousState === "completed" || previousState === "skipped_cached";
 

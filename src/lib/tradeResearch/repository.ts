@@ -431,6 +431,42 @@ export class TradeResearchWriter {
     const { error } = await this.client.from("buyer_trade_research_attempts").update({ ...patch, automatic_spend_rupees: 0, lease_owner: null, lease_expires_at: null, finished_at: new Date().toISOString() }).eq("id", id);
     if (error) throw error;
   }
+
+  /**
+   * BI4F 2B — truthful reconciliation of a stale `state='running'`
+   * attempt row left behind by a previous serverless hard-kill.
+   *
+   * When Vercel kills a function mid-fetch, the row inserted by
+   * `startAttempt` remains `running` forever — the job-level claim
+   * RPC only reclaims JOBS, not ATTEMPTS. When a subsequent worker
+   * observes `latestAttempt.state === "running"` on a job that was
+   * reclaimed from the outside, this method transitions that row to
+   * `failed_retryable` with `safe_error_code = 'STALE_LEASE_RECOVERED'`.
+   * The state is not fabricated as completed — the attempt truly did
+   * not finish. History (attempt_number, started_at) is preserved;
+   * only lease + state + safe_error_code + finished_at + updated_at
+   * are touched.
+   *
+   * Idempotent: the WHERE clause pins `state='running'`, so a second
+   * concurrent reconcile is a no-op.
+   */
+  async reconcileStaleAttempt(id: string, safeErrorCode: string): Promise<void> {
+    requireUuid(id, "buyer_trade_research_attempts.id");
+    requireText(safeErrorCode, "safe_error_code");
+    const { error } = await this.client
+      .from("buyer_trade_research_attempts")
+      .update({
+        state: "failed_retryable",
+        safe_error_code: safeErrorCode,
+        lease_owner: null,
+        lease_expires_at: null,
+        finished_at: new Date().toISOString(),
+        automatic_spend_rupees: 0,
+      })
+      .eq("id", id)
+      .eq("state", "running");
+    if (error) throw error;
+  }
   async appendEvent(job: InternalJobRow, eventType: string, safeDetails: Row = {}): Promise<void> {
     requireInternalJobRow(job);
     requireConstrainedText(eventType, "event_type", TRADE_RESEARCH_EVENT_TYPES);
