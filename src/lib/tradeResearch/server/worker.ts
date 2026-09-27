@@ -627,7 +627,7 @@ async function processCanadaCidPlan(
     : (strong || ambiguous) ? "supporting"
     : "not_available";
   const originCountries = match.originCountries;
-  const indiaPresent = originCountries.includes("IND");
+  const indiaPresent = originCountries.includes("IN");
   const originEvidence: TradeResearchResultSummary["originEvidence"] =
     noneMatch ? "no_verified_match"
     : originCountries.length === 0 ? "not_verified"

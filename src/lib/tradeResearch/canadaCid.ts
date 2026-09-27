@@ -1,131 +1,105 @@
 import "server-only";
 
 import { createHash } from "node:crypto";
-import { strFromU8, unzipSync } from "fflate";
+
+import { codeForCountryName } from "@/lib/catalogue/countries";
 
 /**
  * BI4F Phase 2B — Canadian Importers Database (CID) adapter.
  *
  * Publisher : Innovation, Science and Economic Development Canada
- *             (ISED), using CBSA import data collected by CBSA.
- * Dataset   : "Major Importers by HS6, country" — the ONLY CID
- *             resource whose row-grain is `(HS6, country of origin,
- *             importer company)`. This is the only legitimate
- *             single-row join of company + product + origin. Every
- *             other CID resource is either company-only (no origin)
- *             or origin-only (no company); this adapter deliberately
- *             refuses to synthesise a company+origin claim from
- *             separate resources.
+ *             (ISED), using CBSA import data.
  * Licence   : Open Government Licence – Canada, v2.0. Attribution
  *             string emitted on every result: CANADA_CID_ATTRIBUTION.
+ *
+ * Resource  : "Major Importers by HS6, by country" — the ONLY CID
+ *             resource whose row-grain legitimately joins company +
+ *             HS6 + origin country in a single row. Every other CID
+ *             resource is either company-only (no origin) or
+ *             origin-only (no company); this adapter deliberately
+ *             refuses to synthesise a company+origin claim from
+ *             separate resources.
+ *
+ * Format    : The 2023 and 2024 releases of that resource are XLSB
+ *             (Excel Binary Workbook, `xl/worksheets/sheet1.bin`
+ *             inside a ZIP container) served under an `.xls`
+ *             extension with `content-type: application/vnd.ms-excel`.
+ *             We deliberately do NOT parse XLSB — its binary sheet
+ *             stream (~219 MB uncompressed for 2024) would exceed
+ *             the Vercel Hobby function budget and its parsing
+ *             requires either a substantial new dependency or a
+ *             hand-rolled BIFF12 reader. Instead we use the
+ *             Open-Government-published CSV releases (2015–2021).
+ *             CSV is UTF-8 with BOM, bilingual headers, and one row
+ *             per (HS6, importer_company, origin_country) — the
+ *             exact grain the adapter needs.
+ *
  * Cadence   : annual; cache horizon 365 days.
  *
- * Boundary  : this adapter yields company-specific product AND origin
- *             evidence when a row matches. It NEVER yields shipment
- *             evidence — CID confidentiality suppressions mean per-
- *             company quantity and value are not divulged. It never
- *             composes a company+origin claim from the by-product
- *             list plus the by-country list; only the combined
- *             `by-HS6-by-country` resource supports that.
+ * Boundary  : this adapter yields company-specific product AND
+ *             origin evidence when a row matches. It NEVER yields
+ *             shipment evidence — CID confidentiality suppressions
+ *             mean per-company quantity and value are not divulged.
  */
 
 export const CANADA_CID_DATASET_ID = "cid-major-importers-by-hs6-by-country" as const;
-export const CANADA_CID_PARSE_VERSION = "canada-cid-xlsx-v1" as const;
+export const CANADA_CID_PARSE_VERSION = "canada-cid-csv-v1" as const;
 export const CANADA_CID_MAX_BYTES = 40 * 1024 * 1024;
 export const CANADA_CID_ATTRIBUTION =
   "Contains information licensed under the Open Government Licence – Canada." as const;
 
 /**
- * Build the official Open Government file URL for a given dataset
- * year. Mirrors the pattern observed on the 2023 and 2024 dataset
- * records; the actual file's extension is `.xls` on the server even
- * though the content is XLSX (Office Open XML zip) — this matches
- * ISED's published resource naming.
+ * Build the official Open Government CSV URL for a given dataset
+ * year. The 2015–2021 releases publish CSV directly; 2023 and 2024
+ * publish only XLSB (unsupported here). 2022 exists as an empty
+ * placeholder on ISED.
  */
 export function canadaCidByHs6ByCountryUrl(year: number): string {
-  return `https://ised-isde.canada.ca/site/ised/sites/default/files/documents/cid-bdic-majorimportersbyhs6bycountry${year}.xls`;
+  return `https://ised-isde.canada.ca/site/ised/sites/default/files/documents/cid-bdic-majorimportersbyhs6bycountry${year}.csv`;
 }
 
 export interface CanadaCidRow {
-  /** HS6 code, zero-padded to 6 digits (leading zero preservation). */
+  /** HS6 code, zero-padded to 6 digits. */
   hs6: string;
-  /** ISO-3166-1 alpha-3 country of origin as published in the CID row. */
+  /** ISO-3166-1 alpha-2 country of origin (normalized from CID's English display name). */
   originCountry: string;
   /** Importer legal name exactly as published. */
   companyName: string;
-  /** Two-letter province code where the importer is located (best-effort). */
+  /** Two-letter Canadian province code where the importer is located. */
   province?: string;
-  /** City where the importer is located (best-effort). */
+  /** City where the importer is located. */
   city?: string;
+  /** Canadian postal code (best-effort). */
+  postalCode?: string;
 }
 
 export interface ParsedCanadaCidDataset {
-  /** e.g. "2024" — 4-digit dataset year as declared on the row's period column. */
+  /** e.g. "2020" — dataset year from the CSV's DATA_YEAR column. */
   publishedPeriod: string;
   rows: CanadaCidRow[];
   malformedRowCount: number;
 }
 
 export class CanadaCidParserError extends Error {
-  readonly code = "PARSER_INCOMPATIBLE";
-  constructor(message: string) { super(message); this.name = "CanadaCidParserError"; }
-}
-
-function xmlDecode(value: string): string {
-  return value
-    .replace(/&#(\d+);/g, (_, n: string) => String.fromCodePoint(Number(n)))
-    .replace(/&#x([0-9a-f]+);/gi, (_, n: string) => String.fromCodePoint(parseInt(n, 16)))
-    .replaceAll("&amp;", "&").replaceAll("&lt;", "<").replaceAll("&gt;", ">")
-    .replaceAll("&quot;", "\"").replaceAll("&apos;", "'");
-}
-
-function textNodes(xml: string): string {
-  return Array.from(xml.matchAll(/<t(?:\s[^>]*)?>([\s\S]*?)<\/t>/g), (m) => xmlDecode(m[1])).join("");
-}
-
-function parseSharedStrings(xml?: string): string[] {
-  if (!xml) return [];
-  return Array.from(xml.matchAll(/<si(?:\s[^>]*)?>([\s\S]*?)<\/si>/g), (m) => textNodes(m[1]));
-}
-
-function cellValue(cellXml: string, shared: readonly string[]): string {
-  const type = /\bt="([^"]+)"/.exec(cellXml)?.[1];
-  if (type === "inlineStr") return textNodes(cellXml).trim();
-  const raw = /<v(?:\s[^>]*)?>([\s\S]*?)<\/v>/.exec(cellXml)?.[1];
-  if (raw === undefined) return "";
-  if (type === "s") return shared[Number(raw)]?.trim() ?? "";
-  return xmlDecode(raw).trim();
-}
-
-function columnFromRef(ref: string): string {
-  return /^[A-Z]+/i.exec(ref)?.[0].toUpperCase() ?? "";
-}
-
-/**
- * Case-insensitive header matcher — CID publishes bilingual headers
- * so both the English label and the French label are accepted. Only
- * the English label is required for a successful parse; French is a
- * disambiguation aid. Every regex here is intentionally strict enough
- * to reject an accidental substring collision.
- */
-const HEADER_MATCHERS = {
-  hs6: /^(?:hs\s*6|hs6\s*code|code\s*sh\s*6|sh6)$/i,
-  originCountry: /^(?:country\s*of\s*origin|origin\s*country|country|pays\s*d.?origine)$/i,
-  companyName: /^(?:importer\s*name|company\s*name|importer|nom(?:\s*de\s*l.?)?importateur|entreprise)$/i,
-  province: /^(?:province|prov\.?)$/i,
-  city: /^(?:city|ville)$/i,
-} as const;
-
-function findColumn(header: Record<string, string>, matcher: RegExp): string | undefined {
-  for (const [column, value] of Object.entries(header)) {
-    if (matcher.test((value ?? "").trim())) return column;
+  readonly code: "PARSER_INCOMPATIBLE" | "CID_SOURCE_HTML" | "CID_LEGACY_XLS_UNSUPPORTED" | "CID_XLSB_UNSUPPORTED" | "CID_REQUIRED_HEADERS_MISSING" | "CID_OVERSIZE" | "CID_CORRUPT_WORKBOOK";
+  constructor(message: string, code: CanadaCidParserError["code"] = "PARSER_INCOMPATIBLE") {
+    super(message); this.name = "CanadaCidParserError"; this.code = code;
   }
-  return undefined;
 }
 
-const HS6_PATTERN = /^(\d{6})$/;
-const ISO3_PATTERN = /^[A-Z]{3}$/;
+// Canonical two-letter Canadian province codes.
 const PROVINCE_PATTERN = /^(AB|BC|MB|NB|NL|NS|NT|NU|ON|PE|QC|SK|YT)$/i;
+
+/** Map full province name (English) to Canadian ISO 3166-2:CA subdivision code. */
+const PROVINCE_NAME_TO_CODE: Record<string, string> = {
+  "Alberta": "AB", "British Columbia": "BC", "Manitoba": "MB", "New Brunswick": "NB",
+  "Newfoundland and Labrador": "NL", "Nova Scotia": "NS", "Northwest Territories": "NT",
+  "Nunavut": "NU", "Ontario": "ON", "Prince Edward Island": "PE", "Quebec": "QC",
+  "Saskatchewan": "SK", "Yukon": "YT",
+};
+
+const HS6_PATTERN = /^\d{6}$/;
+const ISO2_PATTERN = /^[A-Z]{2}$/;
 
 export function normalizeHs6(value: string | number): string | undefined {
   const raw = typeof value === "number" ? Math.round(value).toString() : (value ?? "").trim();
@@ -136,84 +110,16 @@ export function normalizeHs6(value: string | number): string | undefined {
   return HS6_PATTERN.test(padded) ? padded : undefined;
 }
 
-export function parseCanadaCidXlsx(bytes: Uint8Array): ParsedCanadaCidDataset {
-  let archive: Record<string, Uint8Array>;
-  try { archive = unzipSync(bytes); }
-  catch { throw new CanadaCidParserError("Canada CID workbook is not a valid XLSX archive."); }
-  const sheetBytes = archive["xl/worksheets/sheet1.xml"];
-  if (!sheetBytes) throw new CanadaCidParserError("Canada CID workbook has no first worksheet.");
-  const sheet = strFromU8(sheetBytes);
-  const shared = parseSharedStrings(archive["xl/sharedStrings.xml"] ? strFromU8(archive["xl/sharedStrings.xml"]) : undefined);
-  const matrix: Array<Record<string, string>> = [];
-  for (const rowMatch of sheet.matchAll(/<row(?:\s[^>]*)?>([\s\S]*?)<\/row>/g)) {
-    const row: Record<string, string> = {};
-    for (const cellMatch of rowMatch[1].matchAll(/<c\s([^>]*)>([\s\S]*?)<\/c>/g)) {
-      const ref = /\br="([^"]+)"/.exec(cellMatch[1])?.[1];
-      if (ref) row[columnFromRef(ref)] = cellValue(`<c ${cellMatch[1]}>${cellMatch[2]}</c>`, shared);
-    }
-    matrix.push(row);
-  }
-  return parseCanadaCidRows(matrix);
-}
-
-export function parseCanadaCidRows(matrix: readonly Record<string, string>[]): ParsedCanadaCidDataset {
-  const headerIndex = matrix.findIndex((row) => {
-    const values = Object.values(row);
-    return values.some((v) => HEADER_MATCHERS.hs6.test((v ?? "").trim())) &&
-           values.some((v) => HEADER_MATCHERS.originCountry.test((v ?? "").trim())) &&
-           values.some((v) => HEADER_MATCHERS.companyName.test((v ?? "").trim()));
-  });
-  if (headerIndex < 0) {
-    throw new CanadaCidParserError(
-      "Canada CID workbook headers changed; expected HS6, Country of Origin, Importer Name.",
-    );
-  }
-  const header = matrix[headerIndex];
-  const hs6Col = findColumn(header, HEADER_MATCHERS.hs6);
-  const originCol = findColumn(header, HEADER_MATCHERS.originCountry);
-  const nameCol = findColumn(header, HEADER_MATCHERS.companyName);
-  if (!hs6Col || !originCol || !nameCol) {
-    throw new CanadaCidParserError("Canada CID header mapping is incomplete.");
-  }
-  const provinceCol = findColumn(header, HEADER_MATCHERS.province);
-  const cityCol = findColumn(header, HEADER_MATCHERS.city);
-
-  const preheader = matrix.slice(0, headerIndex).flatMap((row) => Object.values(row)).filter(Boolean);
-  const yearFromPreheader = preheader.map((text) => /\b(20\d{2})\b/.exec(text)?.[1]).find(Boolean);
-  // Fallback to picking a year from ANY cell — CID files publish the
-  // dataset year in the first row of every sheet.
-  const yearFromMatrix = yearFromPreheader ??
-    (matrix.slice(headerIndex + 1, headerIndex + 5)
-      .flatMap((row) => Object.values(row))
-      .map((text) => /\b(20\d{2})\b/.exec(text)?.[1])
-      .find(Boolean));
-  if (!yearFromMatrix) throw new CanadaCidParserError("Canada CID dataset year is missing.");
-  const publishedPeriod = String(yearFromMatrix);
-
-  const seen = new Set<string>();
-  const rows: CanadaCidRow[] = [];
-  let malformedRowCount = 0;
-  for (const row of matrix.slice(headerIndex + 1)) {
-    const rawHs6 = (row[hs6Col] ?? "").trim();
-    const rawOrigin = (row[originCol] ?? "").trim().toUpperCase();
-    const rawName = (row[nameCol] ?? "").trim().replace(/\s+/g, " ");
-    if (!rawHs6 && !rawOrigin && !rawName) continue;
-    const hs6 = normalizeHs6(rawHs6);
-    if (!hs6) { malformedRowCount += 1; continue; }
-    if (!rawOrigin || !ISO3_PATTERN.test(rawOrigin)) { malformedRowCount += 1; continue; }
-    if (!rawName) { malformedRowCount += 1; continue; }
-    const province = provinceCol ? (row[provinceCol] ?? "").trim().toUpperCase() : "";
-    const city = cityCol ? (row[cityCol] ?? "").trim().replace(/\s+/g, " ") : "";
-    const key = `${hs6}\u0000${rawOrigin}\u0000${normalizeCompanyName(rawName)}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    rows.push({
-      hs6, originCountry: rawOrigin, companyName: rawName,
-      province: province && PROVINCE_PATTERN.test(province) ? province : undefined,
-      city: city || undefined,
-    });
-  }
-  return { publishedPeriod, rows, malformedRowCount };
+/**
+ * Convert a CID English country name (e.g. "India", "United States")
+ * to its canonical ISO-3166-1 alpha-2 code (e.g. "IN", "US"). Uses
+ * the shared MDF countries catalogue so aliases (USA / UK / etc.)
+ * resolve too. Returns undefined for names not in the catalogue —
+ * the parser treats those rows as malformed rather than guessing.
+ */
+export function normalizeCidCountry(displayName: string): string | undefined {
+  if (!displayName) return undefined;
+  return codeForCountryName(displayName);
 }
 
 const LEGAL_SUFFIXES = new Set([
@@ -252,32 +158,167 @@ export function extractCanadianProvince(address?: string, city?: string): string
   return undefined;
 }
 
-export interface CanadaCidMatchResult {
-  /** Company identity decision. */
-  decision: "exact" | "strong" | "ambiguous" | "rejected" | "none";
-  reason: string;
-  candidateProvince?: string;
-  /**
-   * Rows that matched by normalized company name AND target HS6.
-   * These are ALL company+HS6+origin joined rows from the same
-   * dataset — a company may appear multiple times with different
-   * origin countries. NEVER cross-composed with a separate resource.
-   */
-  matchedRows: CanadaCidRow[];
-  /**
-   * Distinct origin countries the matched company appears under for
-   * the target HS6. Populated ONLY from `matchedRows` above — the
-   * caller must not populate it from any other CID resource.
-   */
-  originCountries: string[];
+/**
+ * Classify the raw response magic signature so we surface a specific
+ * parser error instead of feeding an unrelated blob into the CSV
+ * pipeline. Returns:
+ *   • "csv"   — anything else with recognizable text content
+ *   • "html"  — starts with `<!DOCTYPE`, `<html`, `<HTML`, or `<?xml`
+ *   • "xlsb"  — Office ZIP container magic PK\x03\x04 (XLSB / XLSX)
+ *   • "xls"   — legacy BIFF/OLE2 compound file (D0 CF 11 E0)
+ *   • "empty" — 0 bytes
+ */
+export function classifyCanadaCidBody(bytes: Uint8Array): "csv" | "html" | "xlsb" | "xls" | "empty" {
+  if (bytes.byteLength === 0) return "empty";
+  const first16 = bytes.subarray(0, Math.min(16, bytes.byteLength));
+  const hex = Array.from(first16, (b) => b.toString(16).padStart(2, "0")).join("");
+  if (hex.startsWith("504b0304")) return "xlsb"; // could be XLSX too — either way, not our format
+  if (hex.startsWith("d0cf11e0a1b11ae1")) return "xls";
+  // Strip UTF-8 BOM before HTML sniff
+  const start = bytes.byteLength >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf ? 3 : 0;
+  const head = new TextDecoder("utf-8", { fatal: false }).decode(bytes.subarray(start, Math.min(start + 512, bytes.byteLength)));
+  const trimmed = head.trimStart();
+  if (/^<(?:!doctype|html|\?xml)/i.test(trimmed)) return "html";
+  return "csv";
 }
 
 /**
- * Deterministic company match against the `Major Importers by HS6,
- * country` CID resource for a specific target HS6. The caller is
- * responsible for supplying rows already filtered to a single HS6 OR
- * relying on this function's `targetHs6` filter.
+ * RFC 4180-ish CSV parser sufficient for the Canada CID resource:
+ * commas as separator, `"` for quoting, `""` inside quotes for
+ * literal quote, CR/LF/CRLF line endings, UTF-8 with optional BOM.
+ * Emits rows as arrays; the caller matches columns by header name.
  */
+export function parseCsvRows(text: string): string[][] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let field = "";
+  let inQuotes = false;
+  let i = text.charCodeAt(0) === 0xfeff ? 1 : 0;
+  const n = text.length;
+  while (i < n) {
+    const c = text[i];
+    if (inQuotes) {
+      if (c === "\"") {
+        if (i + 1 < n && text[i + 1] === "\"") { field += "\""; i += 2; continue; }
+        inQuotes = false; i += 1; continue;
+      }
+      field += c; i += 1; continue;
+    }
+    if (c === "\"") { inQuotes = true; i += 1; continue; }
+    if (c === ",") { row.push(field); field = ""; i += 1; continue; }
+    if (c === "\r") {
+      row.push(field); rows.push(row); row = []; field = "";
+      if (i + 1 < n && text[i + 1] === "\n") i += 2; else i += 1;
+      continue;
+    }
+    if (c === "\n") {
+      row.push(field); rows.push(row); row = []; field = "";
+      i += 1; continue;
+    }
+    field += c; i += 1;
+  }
+  if (inQuotes) throw new CanadaCidParserError("Canada CID CSV has unclosed quoted field.", "CID_CORRUPT_WORKBOOK");
+  if (field.length > 0 || row.length > 0) { row.push(field); rows.push(row); }
+  return rows;
+}
+
+// Bilingual header matchers — English is authoritative; French is a
+// disambiguation aid so a stray column shift is caught.
+const REQUIRED_HEADERS = {
+  hs6: /^HS6(?:-SH6)?$/i,
+  company: /^(?:COMPANY(?:-ENTREPRISE)?|ENTREPRISE)$/i,
+  country: /^COUNTRY$/i, // English column; French PAYS is a sibling column, not required
+} as const;
+
+const OPTIONAL_HEADERS = {
+  province: /^PROVINCE(?:_ENG)?$/i,
+  city: /^(?:CITY(?:-VILLE)?|VILLE)$/i,
+  postalCode: /^POSTAL[_-]?CODE(?:-CODE_POSTAL)?$/i,
+  year: /^DATA[_-]?YEAR/i,
+} as const;
+
+function findHeader(headerRow: string[], matcher: RegExp): number {
+  return headerRow.findIndex((cell) => matcher.test(cell.trim()));
+}
+
+export function parseCanadaCidCsv(bytes: Uint8Array): ParsedCanadaCidDataset {
+  const kind = classifyCanadaCidBody(bytes);
+  if (kind === "empty") throw new CanadaCidParserError("Canada CID response body is empty.", "CID_CORRUPT_WORKBOOK");
+  if (kind === "html") throw new CanadaCidParserError("Canada CID URL returned an HTML page, not the CSV dataset.", "CID_SOURCE_HTML");
+  if (kind === "xls") throw new CanadaCidParserError("Canada CID URL returned a legacy XLS (BIFF/OLE2) workbook; adapter expects CSV.", "CID_LEGACY_XLS_UNSUPPORTED");
+  if (kind === "xlsb") throw new CanadaCidParserError("Canada CID URL returned an XLSB/XLSX workbook; adapter expects CSV.", "CID_XLSB_UNSUPPORTED");
+  const text = new TextDecoder("utf-8", { fatal: false }).decode(bytes);
+  const rows = parseCsvRows(text);
+  if (!rows.length) throw new CanadaCidParserError("Canada CID CSV has no rows.", "CID_CORRUPT_WORKBOOK");
+  const header = rows[0].map((cell) => cell.trim());
+  const hs6Col = findHeader(header, REQUIRED_HEADERS.hs6);
+  const companyCol = findHeader(header, REQUIRED_HEADERS.company);
+  const countryCol = findHeader(header, REQUIRED_HEADERS.country);
+  if (hs6Col < 0 || companyCol < 0 || countryCol < 0) {
+    throw new CanadaCidParserError(
+      "Canada CID CSV is missing one of HS6 / COMPANY / COUNTRY headers.",
+      "CID_REQUIRED_HEADERS_MISSING",
+    );
+  }
+  const provinceCol = findHeader(header, OPTIONAL_HEADERS.province);
+  const cityCol = findHeader(header, OPTIONAL_HEADERS.city);
+  const postalCol = findHeader(header, OPTIONAL_HEADERS.postalCode);
+  const yearCol = findHeader(header, OPTIONAL_HEADERS.year);
+
+  const seen = new Set<string>();
+  const out: CanadaCidRow[] = [];
+  let malformedRowCount = 0;
+  let publishedPeriod = "";
+  for (let r = 1; r < rows.length; r += 1) {
+    const row = rows[r];
+    if (row.length === 1 && row[0].trim() === "") continue; // trailing blank line
+    const rawHs6 = (row[hs6Col] ?? "").trim();
+    const rawCompany = (row[companyCol] ?? "").trim().replace(/\s+/g, " ");
+    const rawCountry = (row[countryCol] ?? "").trim();
+    if (!rawHs6 && !rawCompany && !rawCountry) continue;
+    const hs6 = normalizeHs6(rawHs6);
+    if (!hs6) { malformedRowCount += 1; continue; }
+    const originCountry = normalizeCidCountry(rawCountry);
+    if (!originCountry || !ISO2_PATTERN.test(originCountry)) { malformedRowCount += 1; continue; }
+    if (!rawCompany) { malformedRowCount += 1; continue; }
+    const rawProvince = provinceCol >= 0 ? (row[provinceCol] ?? "").trim() : "";
+    // Province cell may be full English name ("Ontario") or code ("ON").
+    const provinceCode = PROVINCE_PATTERN.test(rawProvince)
+      ? rawProvince.toUpperCase()
+      : (PROVINCE_NAME_TO_CODE[rawProvince] ?? undefined);
+    const city = cityCol >= 0 ? (row[cityCol] ?? "").trim().replace(/\s+/g, " ") : "";
+    const postalCode = postalCol >= 0 ? (row[postalCol] ?? "").trim() : "";
+    const yearFromRow = yearCol >= 0 ? (row[yearCol] ?? "").trim() : "";
+    if (!publishedPeriod && /^\d{4}$/.test(yearFromRow)) publishedPeriod = yearFromRow;
+    const key = `${hs6}\u0000${originCountry}\u0000${normalizeCompanyName(rawCompany)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      hs6, originCountry, companyName: rawCompany,
+      province: provinceCode || undefined,
+      city: city || undefined,
+      postalCode: postalCode || undefined,
+    });
+  }
+  if (!publishedPeriod) throw new CanadaCidParserError("Canada CID CSV has no DATA_YEAR column values.", "CID_REQUIRED_HEADERS_MISSING");
+  return { publishedPeriod, rows: out, malformedRowCount };
+}
+
+/**
+ * Back-compat entry point — older worker/test call sites use
+ * `parseCanadaCidXlsx`. The name is preserved (external API), but
+ * the implementation now goes through the CSV pipeline.
+ */
+export const parseCanadaCidXlsx = parseCanadaCidCsv;
+
+export interface CanadaCidMatchResult {
+  decision: "exact" | "strong" | "ambiguous" | "rejected" | "none";
+  reason: string;
+  candidateProvince?: string;
+  matchedRows: CanadaCidRow[];
+  originCountries: string[];
+}
+
 export function matchCanadaCidCompany(input: {
   companyName: string;
   address?: string;
@@ -328,9 +369,6 @@ export function matchCanadaCidCompany(input: {
       originCountries: Array.from(new Set(provinceMatches.map((row) => row.originCountry))).sort(),
     };
   }
-  // Some CID rows do not carry province at all — that is a soft
-  // absence, not a rejection. Downgrade to ambiguous rather than
-  // rejecting a valid name-only match.
   const hasProvinceField = nameMatches.some((row) => Boolean(row.province));
   if (hasProvinceField) {
     return {
@@ -356,12 +394,6 @@ export interface CanadaCidFetchResult {
   year: number;
 }
 
-/**
- * Fetch the "Major Importers by HS6, by country" workbook for a
- * given dataset year from the official ISED origin. Respects
- * conditional refresh via ETag / Last-Modified. Refuses any
- * response that is not XLSX-shaped or exceeds the bounded size.
- */
 export async function fetchCanadaCidByHs6ByCountry(input: {
   year: number;
   etag?: string;
@@ -371,7 +403,7 @@ export async function fetchCanadaCidByHs6ByCountry(input: {
 }): Promise<CanadaCidFetchResult> {
   const sourceUrl = canadaCidByHs6ByCountryUrl(input.year);
   const headers: Record<string, string> = {
-    Accept: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet, application/vnd.ms-excel",
+    Accept: "text/csv, application/octet-stream;q=0.5",
   };
   if (input.etag) headers["If-None-Match"] = input.etag;
   if (input.lastModified) headers["If-Modified-Since"] = input.lastModified;
@@ -388,9 +420,16 @@ export async function fetchCanadaCidByHs6ByCountry(input: {
     });
   }
   const length = Number(response.headers.get("content-length") ?? "0");
-  if (length > CANADA_CID_MAX_BYTES) throw new CanadaCidParserError("Canada CID dataset exceeds bounded download size.");
+  if (length > CANADA_CID_MAX_BYTES) throw new CanadaCidParserError("Canada CID dataset exceeds bounded download size.", "CID_OVERSIZE");
   const bytes = new Uint8Array(await response.arrayBuffer());
-  if (bytes.byteLength > CANADA_CID_MAX_BYTES) throw new CanadaCidParserError("Canada CID dataset exceeds bounded download size.");
+  if (bytes.byteLength > CANADA_CID_MAX_BYTES) throw new CanadaCidParserError("Canada CID dataset exceeds bounded download size.", "CID_OVERSIZE");
+  // Reject non-CSV bodies at the fetch boundary so the parser never
+  // sees them. HTML redirects / interstitials + accidental workbook
+  // uploads on ISED are caught here with a specific error code.
+  const kind = classifyCanadaCidBody(bytes);
+  if (kind === "html") throw new CanadaCidParserError("Canada CID URL returned an HTML page, not the CSV dataset.", "CID_SOURCE_HTML");
+  if (kind === "xls") throw new CanadaCidParserError("Canada CID URL returned a legacy XLS (BIFF/OLE2) workbook; adapter expects CSV.", "CID_LEGACY_XLS_UNSUPPORTED");
+  if (kind === "xlsb") throw new CanadaCidParserError("Canada CID URL returned an XLSB/XLSX workbook; adapter expects CSV.", "CID_XLSB_UNSUPPORTED");
   return {
     outcome: "downloaded", bytes, sourceUrl, year: input.year,
     etag: response.headers.get("etag") ?? undefined,

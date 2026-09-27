@@ -81,7 +81,15 @@ export const FDA_FSVP_DESCRIPTOR: TradeResearchProviderDescriptor = {
  * new CID year is fetched, parsed, and tested end-to-end. The worker
  * never probes speculative future URLs.
  */
-export const CANADA_CID_SUPPORTED_YEAR = 2024;
+/**
+ * BI4F Phase 2B — the CID dataset year the worker consults. The
+ * 2023 and 2024 releases publish only XLSB (unsupported here); the
+ * 2022 CSV placeholder is empty on ISED. 2020 is the newest CID CSV
+ * release that fits comfortably under `CANADA_CID_MAX_BYTES` (36 MB).
+ * When ISED next releases a CID year as CSV under the 40 MB cap,
+ * this constant may be bumped in a reviewed change.
+ */
+export const CANADA_CID_SUPPORTED_YEAR = 2020;
 
 export const CANADA_CID_DESCRIPTOR: TradeResearchProviderDescriptor = {
   id: "canada-cid",
