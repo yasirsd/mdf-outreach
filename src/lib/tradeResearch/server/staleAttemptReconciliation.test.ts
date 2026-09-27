@@ -15,7 +15,7 @@ import { processTradeResearchJob } from "./worker";
  * terminal-ish state.
  *
  * Fix: before creating a NEW attempt, the worker calls
- * `writer.reconcileStaleAttempt(prevId, "STALE_LEASE_RECOVERED")`
+ * `writer.reconcileStaleAttempt(job, workerId, prevId, "STALE_LEASE_RECOVERED")`
  * which transitions the stale row to `state='failed_retryable'`
  * with an honest safe error code. History (attempt_number,
  * started_at) is preserved; only lease + state + finished_at are
@@ -71,16 +71,19 @@ function makeFixture(previous: Record<string, unknown> | undefined, opts: { fres
     advance: vi.fn(async (row: InternalJobRow, _w: string, stage: InternalJobRow["stage"]) => ({ ...row, stage, revision: row.revision + 1 })),
     getEligiblePlan: vi.fn(async () => opts.plan ?? { id: "plan-1", provider_id: "canada-cid", cost_class: "free", automatic_spend_rupees: 0 }),
     latestAttempt: vi.fn(async () => previous),
-    reconcileStaleAttempt: vi.fn(async (id: string, safe_error_code: string) => { state.reconciled.push({ id, safe_error_code }); }),
+    reconcileStaleAttempt: vi.fn(async (_job: InternalJobRow, _worker: string, id: string, safe_error_code: string) => { state.reconciled.push({ id, safe_error_code }); }),
     startAttempt: vi.fn(async (_row: InternalJobRow, _planId: string, attemptNumber: number) => {
       state.startAttemptCalls.push(attemptNumber);
       return { id: `attempt-${attemptNumber}`, attempt_number: attemptNumber };
     }),
-    finishAttempt: vi.fn(async (id: string, patch: Record<string, unknown>) => { state.finishAttemptCalls.push({ id, patch }); }),
+    finishAttempt: vi.fn(async (_job: InternalJobRow, _worker: string, id: string, patch: Record<string, unknown>) => { state.finishAttemptCalls.push({ id, patch }); }),
     appendEvent: vi.fn(async () => undefined),
-    release: vi.fn(async () => undefined),
+    release: vi.fn(async (row: InternalJobRow) => ({ ...row, revision: row.revision + 1, lease_owner: null })),
     heartbeat: vi.fn(async (row: InternalJobRow) => ({ ...row, revision: row.revision + 1 })),
-    finalize: vi.fn(async (_row: InternalJobRow, _w: string, status: string, outcome: string) => { state.finalized.push({ status, outcome }); }),
+    finalize: vi.fn(async (row: InternalJobRow, _w: string, status: InternalJobRow["status"], outcome: string) => {
+      state.finalized.push({ status, outcome });
+      return { ...row, status, stage: "complete", outcome, revision: row.revision + 1, lease_owner: null };
+    }),
     getFreshSnapshot: vi.fn(async () => undefined),
     getLatestSnapshot: vi.fn(async () => undefined),
     getFreshSnapshotByProvider: vi.fn(async () => opts.fresh),
@@ -232,6 +235,6 @@ describe("BI4F 2B — reconcileStaleAttempt writer method contract", () => {
     // on the class prototype and has the expected signature.
     const { TradeResearchWriter } = await import("../repository");
     expect(typeof TradeResearchWriter.prototype.reconcileStaleAttempt).toBe("function");
-    expect(TradeResearchWriter.prototype.reconcileStaleAttempt.length).toBe(2); // (id, safeErrorCode)
+    expect(TradeResearchWriter.prototype.reconcileStaleAttempt.length).toBe(4); // (job, worker, id, safeErrorCode)
   });
 });

@@ -161,6 +161,6 @@ describe("BI4F 2B — planner is deterministic across planner-version bumps (his
     // version is likewise stable. Historical plan rows carry these
     // exact values and never need mutation on planner bumps.
     expect(FDA_FSVP_DESCRIPTOR.version).toBe("fda-fsvp-v1");
-    expect(CANADA_CID_DESCRIPTOR.version).toBe("canada-cid-v1");
+    expect(CANADA_CID_DESCRIPTOR.version).toBe("canada-cid-v2");
   });
 });

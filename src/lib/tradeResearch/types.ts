@@ -100,9 +100,11 @@ export interface TradeResearchResultSummary {
   /**
    * India-origin field. FDA FSVP does not surface origin, so its
    * payload stays `"not_verified"`. Canada CID may populate this to
-   * `"verified"` or `"supporting"` when the matched company + target
-   * HS6 rows in the CID dataset carry India as an origin country —
-   * NEVER inferred from a separate market-level report.
+   * `"verified"` or `"supporting"` only after company identity is accepted
+   * or ambiguous, respectively, and the same matched company + target HS6
+   * rows carry India as an origin country. Rejected/none identity always
+   * remains `"not_verified"`; origin is never inferred from a separate
+   * market-level report.
    */
   indiaOrigin: "verified" | "supporting" | "not_verified";
   /**

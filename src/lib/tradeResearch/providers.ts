@@ -94,7 +94,10 @@ export const CANADA_CID_SUPPORTED_YEAR = 2020;
 export const CANADA_CID_DESCRIPTOR: TradeResearchProviderDescriptor = {
   id: "canada-cid",
   displayName: "Canadian Importers Database",
-  version: "canada-cid-v1",
+  // v2 gates product/origin interpretation behind accepted company
+  // identity. Historical v1 plan rows can therefore be identified for
+  // later review/recomputation without mutating persisted result JSON.
+  version: "canada-cid-v2",
   // BI4F Phase 2B final integration — adapter + worker dispatch +
   // per-provider snapshot lookup + gate flip all land in the same
   // reviewed change. Descriptor is planner-eligible for Canadian
@@ -245,4 +248,3 @@ export function planTradeResearch(input: {
     };
   });
 }
-

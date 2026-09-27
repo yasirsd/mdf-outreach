@@ -29,6 +29,7 @@ import {
   canadaCidByHs6ByCountryUrl,
   fetchAndParseCanadaCidStream,
   matchCanadaCidCompany,
+  type CanadaCidMatchResult,
 } from "../canadaCid";
 import { PRODUCT_TRADE_MAPPINGS } from "@/lib/marketIntelligence/product";
 import { isRetryableProviderFailure, retryDelayMs } from "../stateMachine";
@@ -39,7 +40,12 @@ import {
   type TradeResearchResultSummary,
   type TradeResearchSourceEvidence,
 } from "../types";
-import { TradeResearchWriter, type InternalJobRow, type SnapshotRow } from "../repository";
+import {
+  isTradeResearchLeaseLostError,
+  TradeResearchWriter,
+  type InternalJobRow,
+  type SnapshotRow,
+} from "../repository";
 import { CANADA_CID_DESCRIPTOR, CANADA_CID_SUPPORTED_YEAR, canonicalHs6ForProduct, FDA_FSVP_DESCRIPTOR, FDA_VQIP_DESCRIPTOR } from "../providers";
 import {
   safeTradeResearchErrorCode,
@@ -196,6 +202,7 @@ async function advanceStage(
 interface CheckpointDecision {
   ok: boolean;
   remainingMs: number;
+  job: InternalJobRow;
 }
 
 /**
@@ -216,23 +223,18 @@ async function checkpointIfBudgetLow(
 ): Promise<CheckpointDecision> {
   const remaining = remainingBudgetMs(deadlineAt);
   if (remaining >= requiredMs + WORKER_CLEANUP_RESERVE_MS) {
-    return { ok: true, remainingMs: remaining };
+    return { ok: true, remainingMs: remaining, job };
   }
   // Release lease with a very short retry window so the next drain
   // (inline follow-up or daily cron) reclaims almost immediately.
   const nextAttemptAt = new Date(now().getTime() + 2_000).toISOString();
-  try {
-    await writer.release(job, workerId, nextAttemptAt);
-  } catch {
-    // If the release itself fails, the lease will still expire naturally;
-    // the reclaim path handles it. Log below either way.
-  }
+  const releasedJob = await writer.release(job, workerId, nextAttemptAt);
   log?.({
     event: "job_checkpointed_runtime_budget",
-    jobId: job.id, batchId: job.batch_id, candidateId: job.candidate_id,
-    stage: job.stage, remainingMs: remaining, elapsedMs: 0,
+    jobId: releasedJob.id, batchId: releasedJob.batch_id, candidateId: releasedJob.candidate_id,
+    stage: releasedJob.stage, remainingMs: remaining, elapsedMs: 0,
   });
-  return { ok: false, remainingMs: remaining };
+  return { ok: false, remainingMs: remaining, job: releasedJob };
 }
 
 function blankResult(): TradeResearchResultSummary {
@@ -244,24 +246,52 @@ function blankResult(): TradeResearchResultSummary {
   };
 }
 
+async function refreshOwnedJob(
+  writer: TradeResearchWriter,
+  job: InternalJobRow,
+  workerId: string,
+): Promise<InternalJobRow> {
+  // Structural worker fakes from earlier phases do not expose the read helper;
+  // production TradeResearchWriter always does. The fallback preserves those
+  // isolated tests while the real worker adopts cancellation's revised row.
+  if (typeof writer.refreshOwnedJob !== "function") return job;
+  return writer.refreshOwnedJob(job.id, workerId);
+}
+
 async function withHeartbeat<T>(
   writer: TradeResearchWriter,
   initialJob: InternalJobRow,
   workerId: string,
   work: () => Promise<T>,
+  adopt: (job: InternalJobRow) => void,
 ): Promise<{ value: T; job: InternalJobRow }> {
   let job = initialJob;
   let pending = Promise.resolve();
   const timer = setInterval(() => {
-    pending = pending.then(async () => { job = await writer.heartbeat(job, workerId); });
+    pending = pending.then(async () => {
+      job = await writer.heartbeat(job, workerId);
+      adopt(job);
+    });
   }, LEASE_HEARTBEAT_MS);
   let value!: T;
+  let workFailed = false;
+  let workError: unknown;
   try {
     value = await work();
+  } catch (error) {
+    workFailed = true;
+    workError = error;
   } finally {
     clearInterval(timer);
     await pending;
+    // A final CAS heartbeat closes the event-loop starvation window: even
+    // if parsing blocked every interval callback past lease expiry, the
+    // worker proves it still owns the current revision before mutating an
+    // attempt, releasing, advancing, or finalizing.
+    job = await writer.heartbeat(job, workerId);
+    adopt(job);
   }
+  if (workFailed) throw workError;
   return { value, job };
 }
 
@@ -409,7 +439,8 @@ export async function processTradeResearchJob(
   let job = claimed;
   log?.(jobDiagnostic("stage_started", job));
   if (await writer.isCancellationRequested(job.batch_id)) {
-    await writer.finalize(job, workerId, "cancelled", "cancelled", blankResult());
+    job = await refreshOwnedJob(writer, job, workerId);
+    job = await writer.finalize(job, workerId, "cancelled", "cancelled", blankResult());
     return "completed";
   }
   job = await advanceStage(writer, job, workerId, "planning_sources", log);
@@ -418,7 +449,7 @@ export async function processTradeResearchJob(
     : await (async () => { const p = await writer.getEligiblePlan(job.id); return p ? [p] : []; })();
   if (!plans.length) {
     job = await advanceStage(writer, job, workerId, "finalizing", log);
-    await writer.finalize(job, workerId, "completed", "unsupported_coverage", blankResult());
+    job = await writer.finalize(job, workerId, "completed", "unsupported_coverage", blankResult());
     log?.(jobDiagnostic("stage_completed", job));
     return "completed";
   }
@@ -430,7 +461,8 @@ export async function processTradeResearchJob(
     }
   }
   if (await writer.isCancellationRequested(job.batch_id)) {
-    await writer.finalize(job, workerId, "cancelled", "cancelled", blankResult());
+    job = await refreshOwnedJob(writer, job, workerId);
+    job = await writer.finalize(job, workerId, "cancelled", "cancelled", blankResult());
     return "completed";
   }
   job = await advanceStage(writer, job, workerId, "screening_sources", log);
@@ -449,7 +481,7 @@ export async function processTradeResearchJob(
         return processFdaVqipPlan(writer, job, workerId, plan, now, fetchImpl, log, deadlineAt);
       default:
         job = await advanceStage(writer, job, workerId, "finalizing", log);
-        await writer.finalize(job, workerId, "completed", "unsupported_coverage", blankResult());
+        job = await writer.finalize(job, workerId, "completed", "unsupported_coverage", blankResult());
         log?.(jobDiagnostic("stage_completed", job));
         return "completed";
     }
@@ -486,7 +518,7 @@ async function processFdaFsvpPlan(
   // Reconcile it truthfully as `failed_retryable` with
   // `STALE_LEASE_RECOVERED` before creating a NEW attempt row.
   if (previousState === "running" && previous?.id) {
-    await writer.reconcileStaleAttempt(String(previous.id), "STALE_LEASE_RECOVERED");
+    await writer.reconcileStaleAttempt(job, workerId, String(previous.id), "STALE_LEASE_RECOVERED");
     // Force the caller to increment attemptNumber past the stale
     // row: treat the reconciled row as the previous non-resolved
     // attempt (previous.state effectively reads `failed_retryable`).
@@ -520,36 +552,42 @@ async function processFdaFsvpPlan(
   const started = Date.now();
   try {
     if (!snapshot) {
-      const heartbeat = await withHeartbeat(writer, job, workerId, () => loadFdaFsvpSnapshot(writer, now(), fetchImpl));
+      const heartbeat = await withHeartbeat(
+        writer, job, workerId,
+        () => loadFdaFsvpSnapshot(writer, now(), fetchImpl),
+        (authoritativeJob) => { job = authoritativeJob; },
+      );
       job = heartbeat.job;
       snapshot = heartbeat.value.snapshot;
       cacheHit = heartbeat.value.cacheHit;
     }
   } catch (error) {
+    if (isTradeResearchLeaseLostError(error)) throw error;
     const status = typeof error === "object" && error && "status" in error ? Number((error as { status?: unknown }).status) : undefined;
     const code = typeof error === "object" && error && "code" in error ? String((error as { code?: unknown }).code) : undefined;
     const delay = isRetryableProviderFailure({ status, code }) ? retryDelayMs(attemptNumber) : null;
     if (delay !== null) {
-      await writer.finishAttempt(String(attempt.id), { state: "retry_wait", safe_error_code: code ?? "TRANSIENT_PROVIDER_ERROR", duration_ms: Date.now() - started });
+      await writer.finishAttempt(job, workerId, String(attempt.id), { state: "retry_wait", safe_error_code: code ?? "TRANSIENT_PROVIDER_ERROR", duration_ms: Date.now() - started });
       await writer.appendEvent(job, "provider_attempt_completed", { providerId: FDA_FSVP_DESCRIPTOR.id, attempt: attemptNumber, state: "retry_wait" });
-      await writer.release(job, workerId, new Date(now().getTime() + delay).toISOString());
+      job = await writer.release(job, workerId, new Date(now().getTime() + delay).toISOString());
       log?.(jobDiagnostic("job_requeued", job, { leaseState: "released", safeErrorCode: code ?? "TRANSIENT_PROVIDER_ERROR" }));
       return "retry";
     }
-    await writer.finishAttempt(String(attempt.id), { state: "failed_terminal", safe_error_code: code ?? (error instanceof FdaFsvpParserError ? error.code : "PROVIDER_FAILURE"), duration_ms: Date.now() - started });
-    await writer.finalize(job, workerId, "failed", "failed", blankResult());
+    await writer.finishAttempt(job, workerId, String(attempt.id), { state: "failed_terminal", safe_error_code: code ?? (error instanceof FdaFsvpParserError ? error.code : "PROVIDER_FAILURE"), duration_ms: Date.now() - started });
+    job = await writer.finalize(job, workerId, "failed", "failed", blankResult());
     log?.(jobDiagnostic("job_failed", job, { leaseState: "released", safeErrorCode: code ?? (error instanceof FdaFsvpParserError ? error.code : "PROVIDER_FAILURE") }));
     return "failed";
   }
   if (!attemptAlreadyResolved) {
-    await writer.finishAttempt(String(attempt.id), {
+    await writer.finishAttempt(job, workerId, String(attempt.id), {
       state: cacheHit ? "skipped_cached" : "completed", duration_ms: Date.now() - started,
       record_count: snapshot.row_count, match_count: 0,
     });
     await writer.appendEvent(job, "provider_attempt_completed", { providerId: FDA_FSVP_DESCRIPTOR.id, attempt: attemptNumber, state: cacheHit ? "skipped_cached" : "completed", recordCount: snapshot.row_count });
   }
   if (await writer.isCancellationRequested(job.batch_id)) {
-    await writer.finalize(job, workerId, "cancelled", "cancelled", blankResult());
+    job = await refreshOwnedJob(writer, job, workerId);
+    job = await writer.finalize(job, workerId, "cancelled", "cancelled", blankResult());
     return "completed";
   }
   const matchGate = await checkpointIfBudgetLow(writer, job, workerId, deadlineAt, 5_000, now, log);
@@ -573,16 +611,76 @@ async function processFdaFsvpPlan(
   };
   job = await advanceStage(writer, job, workerId, "finalizing", log);
   if (await writer.isCancellationRequested(job.batch_id)) {
-    await writer.finalize(job, workerId, "partial", "partial", result);
+    job = await refreshOwnedJob(writer, job, workerId);
+    job = await writer.finalize(job, workerId, "partial", "partial", result);
   } else if (match.decision === "strong") {
-    await writer.finalize(job, workerId, "completed", "official_importer_program_corroboration", result);
+    job = await writer.finalize(job, workerId, "completed", "official_importer_program_corroboration", result);
   } else if (match.decision === "ambiguous") {
-    await writer.finalize(job, workerId, "needs_review", "needs_review", result);
+    job = await writer.finalize(job, workerId, "needs_review", "needs_review", result);
   } else {
-    await writer.finalize(job, workerId, "completed", "no_verified_evidence", result);
+    job = await writer.finalize(job, workerId, "completed", "no_verified_evidence", result);
   }
   log?.(jobDiagnostic("stage_completed", job));
   return "completed";
+}
+
+export interface CanadaCidEvidenceProjection {
+  productEvidence: TradeResearchResultSummary["productEvidence"];
+  originEvidence: TradeResearchResultSummary["originEvidence"];
+  indiaOrigin: TradeResearchResultSummary["indiaOrigin"];
+}
+
+/**
+ * Project company-scoped CID evidence only after resolving identity.
+ *
+ * Identity is the outer gate: a same-name CID row for a conflicting
+ * province remains useful review provenance, but none of its product or
+ * origin fields may be attributed to the candidate. Ambiguous identity is
+ * intentionally capped at supporting. Exact/strong identity may use only
+ * the rows returned by the matcher for that accepted identity.
+ */
+export function projectCanadaCidEvidence(input: {
+  decision: CanadaCidMatchResult["decision"];
+  originCountries: readonly string[];
+  mappingKind: "exact" | "proxy" | "composite";
+}): CanadaCidEvidenceProjection {
+  const identityAccepted = input.decision === "exact" || input.decision === "strong";
+  const identityAmbiguous = input.decision === "ambiguous";
+
+  if (!identityAccepted && !identityAmbiguous) {
+    return {
+      productEvidence: "no_verified_match",
+      originEvidence: "no_verified_match",
+      indiaOrigin: "not_verified",
+    };
+  }
+
+  const hasOrigin = input.originCountries.length > 0;
+  const indiaPresent = input.originCountries.includes("IN");
+  return {
+    productEvidence:
+      identityAccepted && input.mappingKind === "exact" ? "verified" : "supporting",
+    originEvidence:
+      !hasOrigin ? "not_verified" : identityAccepted ? "verified" : "supporting",
+    indiaOrigin:
+      !indiaPresent ? "not_verified" : identityAccepted ? "verified" : "supporting",
+  };
+}
+
+function canadaCidOriginCoverage(
+  match: CanadaCidMatchResult,
+  hs6: string,
+): string {
+  if (match.decision === "rejected") {
+    return `A similar company name exists in CID at HS6 ${hs6}, but its source province conflicts with the candidate's known province. Product and origin fields from those rows are not attributed to this candidate.`;
+  }
+  if (match.decision === "none") {
+    return `No company identity match was found in CID at HS6 ${hs6}; no product or origin fields are attributed to this candidate.`;
+  }
+  if (match.decision === "ambiguous") {
+    return `Origin countries observed on the similar-name rows at HS6 ${hs6}: ${match.originCountries.length ? match.originCountries.join(", ") : "none"}. Candidate province is unavailable, so company-scoped evidence is capped at supporting.`;
+  }
+  return `Origin countries observed for the accepted company identity at HS6 ${hs6}: ${match.originCountries.length ? match.originCountries.join(", ") : "none"}.`;
 }
 
 /**
@@ -611,7 +709,7 @@ async function processCanadaCidPlan(
   const hs = canonicalHs6ForProduct(productId);
   if (!hs) {
     job = await advanceStage(writer, job, workerId, "finalizing", log);
-    await writer.finalize(job, workerId, "completed", "unsupported_coverage", { ...blankResult(), sourcesChecked: 0 });
+    job = await writer.finalize(job, workerId, "completed", "unsupported_coverage", { ...blankResult(), sourcesChecked: 0 });
     log?.(jobDiagnostic("stage_completed", job));
     return "completed";
   }
@@ -624,7 +722,7 @@ async function processCanadaCidPlan(
   // job-level claim RPC doesn't touch attempts, so we reconcile it
   // truthfully here before creating a new attempt row.
   if (previousState === "running" && previous?.id) {
-    await writer.reconcileStaleAttempt(String(previous.id), "STALE_LEASE_RECOVERED");
+    await writer.reconcileStaleAttempt(job, workerId, String(previous.id), "STALE_LEASE_RECOVERED");
     previous = { ...previous, state: "failed_retryable" };
     previousStateRaw = "failed_retryable";
     previousState = "failed_retryable";
@@ -661,7 +759,7 @@ async function processCanadaCidPlan(
   const previousExhaustedBudget = previousSafeErrorCode === "CID_RUNTIME_BUDGET_CHECKPOINT";
   if (!(attemptAlreadyResolved && snapshot) && !snapshot && attemptNumber > MAX_CID_ATTEMPTS && previousExhaustedBudget) {
     job = await advanceStage(writer, job, workerId, "finalizing", log);
-    await writer.finalize(job, workerId, "failed", "failed", { ...blankResult(), sourcesChecked: 0 });
+    job = await writer.finalize(job, workerId, "failed", "failed", { ...blankResult(), sourcesChecked: 0 });
     log?.(jobDiagnostic("job_failed", job, {
       leaseState: "released", safeErrorCode: "CID_RUNTIME_BUDGET_EXHAUSTED",
     }));
@@ -685,23 +783,24 @@ async function processCanadaCidPlan(
         // manual heartbeat pings here in the future if a very slow
         // download proves to need them.
         return loadCanadaCidSnapshot(writer, now(), CANADA_CID_SUPPORTED_YEAR, fetchImpl, deadlineAt);
-      });
+      }, (authoritativeJob) => { job = authoritativeJob; });
       job = heartbeat.job;
       snapshot = heartbeat.value.snapshot;
       cacheHit = heartbeat.value.cacheHit;
     }
   } catch (error) {
+    if (isTradeResearchLeaseLostError(error)) throw error;
     // Runtime-budget checkpoint: we voluntarily aborted before
     // Vercel's kill. Never finalize as "failed" — release the lease
     // with a short retry window so the next drain reclaims cleanly.
     if (error instanceof CanadaCidRuntimeBudgetError) {
-      await writer.finishAttempt(String(attempt.id), {
+      await writer.finishAttempt(job, workerId, String(attempt.id), {
         state: "retry_wait", safe_error_code: error.code, duration_ms: Date.now() - started,
       });
       await writer.appendEvent(job, "provider_attempt_completed", {
         providerId: CANADA_CID_DESCRIPTOR.id, attempt: attemptNumber, state: "retry_wait",
       });
-      await writer.release(job, workerId, new Date(now().getTime() + 2_000).toISOString());
+      job = await writer.release(job, workerId, new Date(now().getTime() + 2_000).toISOString());
       log?.(jobDiagnostic("job_requeued", job, { leaseState: "released", safeErrorCode: error.code }));
       return "retry";
     }
@@ -709,26 +808,27 @@ async function processCanadaCidPlan(
     const code = typeof error === "object" && error && "code" in error ? String((error as { code?: unknown }).code) : undefined;
     const delay = isRetryableProviderFailure({ status, code }) ? retryDelayMs(attemptNumber) : null;
     if (delay !== null) {
-      await writer.finishAttempt(String(attempt.id), { state: "retry_wait", safe_error_code: code ?? "TRANSIENT_PROVIDER_ERROR", duration_ms: Date.now() - started });
+      await writer.finishAttempt(job, workerId, String(attempt.id), { state: "retry_wait", safe_error_code: code ?? "TRANSIENT_PROVIDER_ERROR", duration_ms: Date.now() - started });
       await writer.appendEvent(job, "provider_attempt_completed", { providerId: CANADA_CID_DESCRIPTOR.id, attempt: attemptNumber, state: "retry_wait" });
-      await writer.release(job, workerId, new Date(now().getTime() + delay).toISOString());
+      job = await writer.release(job, workerId, new Date(now().getTime() + delay).toISOString());
       log?.(jobDiagnostic("job_requeued", job, { leaseState: "released", safeErrorCode: code ?? "TRANSIENT_PROVIDER_ERROR" }));
       return "retry";
     }
-    await writer.finishAttempt(String(attempt.id), { state: "failed_terminal", safe_error_code: code ?? (error instanceof CanadaCidParserError ? error.code : "PROVIDER_FAILURE"), duration_ms: Date.now() - started });
-    await writer.finalize(job, workerId, "failed", "failed", blankResult());
+    await writer.finishAttempt(job, workerId, String(attempt.id), { state: "failed_terminal", safe_error_code: code ?? (error instanceof CanadaCidParserError ? error.code : "PROVIDER_FAILURE"), duration_ms: Date.now() - started });
+    job = await writer.finalize(job, workerId, "failed", "failed", blankResult());
     log?.(jobDiagnostic("job_failed", job, { leaseState: "released", safeErrorCode: code ?? (error instanceof CanadaCidParserError ? error.code : "PROVIDER_FAILURE") }));
     return "failed";
   }
   if (!attemptAlreadyResolved) {
-    await writer.finishAttempt(String(attempt.id), {
+    await writer.finishAttempt(job, workerId, String(attempt.id), {
       state: cacheHit ? "skipped_cached" : "completed", duration_ms: Date.now() - started,
       record_count: snapshot.row_count, match_count: 0,
     });
     await writer.appendEvent(job, "provider_attempt_completed", { providerId: CANADA_CID_DESCRIPTOR.id, attempt: attemptNumber, state: cacheHit ? "skipped_cached" : "completed", recordCount: snapshot.row_count });
   }
   if (await writer.isCancellationRequested(job.batch_id)) {
-    await writer.finalize(job, workerId, "cancelled", "cancelled", blankResult());
+    job = await refreshOwnedJob(writer, job, workerId);
+    job = await writer.finalize(job, workerId, "cancelled", "cancelled", blankResult());
     return "completed";
   }
   const matchGate = await checkpointIfBudgetLow(writer, job, workerId, deadlineAt, 5_000, now, log);
@@ -749,34 +849,16 @@ async function processCanadaCidPlan(
   });
   job = await advanceStage(writer, job, workerId, "checking_trade_activity", log);
 
-  // Honest evidence assignment:
-  //   • productEvidence "verified" only when identity is strong AND HS
-  //     mapping is `exact`. `proxy` and `composite` HS mappings can
-  //     never rise above "supporting", per the user's explicit rule.
-  //   • originEvidence uses the SAME rows that matched (company + HS6);
-  //     never composed from separate CID resources.
-  //   • indiaOrigin is only ever populated when India is in
-  //     `matchedOriginCountries` — never inferred from another origin.
+  // Identity gates every company-scoped product/origin projection before
+  // the same-row HS/origin fields are interpreted. Rejected/none rows are
+  // retained below as conflict/no-match provenance only.
   const strong = match.decision === "strong";
   const ambiguous = match.decision === "ambiguous";
-  const noneMatch = match.decision === "none" || match.decision === "rejected";
-  const productEvidence: TradeResearchResultSummary["productEvidence"] =
-    noneMatch ? "no_verified_match"
-    : strong && hs.kind === "exact" ? "verified"
-    : (strong || ambiguous) ? "supporting"
-    : "not_available";
-  const originCountries = match.originCountries;
-  const indiaPresent = originCountries.includes("IN");
-  const originEvidence: TradeResearchResultSummary["originEvidence"] =
-    noneMatch ? "no_verified_match"
-    : originCountries.length === 0 ? "not_verified"
-    : strong ? "verified"
-    : ambiguous ? "supporting"
-    : "not_verified";
-  const indiaOrigin: TradeResearchResultSummary["indiaOrigin"] =
-    !indiaPresent ? "not_verified"
-    : strong ? "verified"
-    : "supporting";
+  const { productEvidence, originEvidence, indiaOrigin } = projectCanadaCidEvidence({
+    decision: match.decision,
+    originCountries: match.originCountries,
+    mappingKind: hs.kind,
+  });
 
   const matchedRow = match.matchedRows[0];
   const result: TradeResearchResultSummary = {
@@ -800,7 +882,7 @@ async function processCanadaCidPlan(
       coverageExplanation: [
         `Canada CID is a major-importer directory joined at (HS6, origin country, importer company).`,
         `HS6 ${hs.hs6} mapping quality: ${hs.kind}${hs.kind === "exact" ? "" : ` — product evidence capped at "supporting"`}.`,
-        `Origin countries observed for this company at HS6: ${originCountries.length ? originCountries.join(", ") : "none"}.`,
+        canadaCidOriginCoverage(match, hs.hs6),
         `Dataset does not carry shipment date, per-company quantity, per-company value, or supplier.`,
         CANADA_CID_ATTRIBUTION,
       ].join(" "),
@@ -808,16 +890,17 @@ async function processCanadaCidPlan(
   };
   job = await advanceStage(writer, job, workerId, "finalizing", log);
   if (await writer.isCancellationRequested(job.batch_id)) {
-    await writer.finalize(job, workerId, "partial", "partial", result);
+    job = await refreshOwnedJob(writer, job, workerId);
+    job = await writer.finalize(job, workerId, "partial", "partial", result);
   } else if (strong && productEvidence === "verified") {
     // Only an EXACT HS mapping + STRONG identity can produce the
     // company-level corroboration outcome. Proxy / composite HS
     // mappings finalize as `needs_review` even under strong identity.
-    await writer.finalize(job, workerId, "completed", "official_importer_program_corroboration", result);
+    job = await writer.finalize(job, workerId, "completed", "official_importer_program_corroboration", result);
   } else if (strong || ambiguous) {
-    await writer.finalize(job, workerId, "needs_review", "needs_review", result);
+    job = await writer.finalize(job, workerId, "needs_review", "needs_review", result);
   } else {
-    await writer.finalize(job, workerId, "completed", "no_verified_evidence", result);
+    job = await writer.finalize(job, workerId, "completed", "no_verified_evidence", result);
   }
   log?.(jobDiagnostic("stage_completed", job));
   return "completed";
@@ -893,7 +976,7 @@ async function processFdaVqipPlan(
   let previousStateRaw = previous?.state;
   let previousState = typeof previousStateRaw === "string" ? previousStateRaw : null;
   if (previousState === "running" && previous?.id) {
-    await writer.reconcileStaleAttempt(String(previous.id), "STALE_LEASE_RECOVERED");
+    await writer.reconcileStaleAttempt(job, workerId, String(previous.id), "STALE_LEASE_RECOVERED");
     previous = { ...previous, state: "failed_retryable" };
     previousStateRaw = "failed_retryable";
     previousState = "failed_retryable";
@@ -923,36 +1006,42 @@ async function processFdaVqipPlan(
   const started = Date.now();
   try {
     if (!snapshot) {
-      const heartbeat = await withHeartbeat(writer, job, workerId, () => loadFdaVqipSnapshot(writer, now(), fetchImpl));
+      const heartbeat = await withHeartbeat(
+        writer, job, workerId,
+        () => loadFdaVqipSnapshot(writer, now(), fetchImpl),
+        (authoritativeJob) => { job = authoritativeJob; },
+      );
       job = heartbeat.job;
       snapshot = heartbeat.value.snapshot;
       cacheHit = heartbeat.value.cacheHit;
     }
   } catch (error) {
+    if (isTradeResearchLeaseLostError(error)) throw error;
     const status = typeof error === "object" && error && "status" in error ? Number((error as { status?: unknown }).status) : undefined;
     const code = typeof error === "object" && error && "code" in error ? String((error as { code?: unknown }).code) : undefined;
     const delay = isRetryableProviderFailure({ status, code }) ? retryDelayMs(attemptNumber) : null;
     if (delay !== null) {
-      await writer.finishAttempt(String(attempt.id), { state: "retry_wait", safe_error_code: code ?? "TRANSIENT_PROVIDER_ERROR", duration_ms: Date.now() - started });
+      await writer.finishAttempt(job, workerId, String(attempt.id), { state: "retry_wait", safe_error_code: code ?? "TRANSIENT_PROVIDER_ERROR", duration_ms: Date.now() - started });
       await writer.appendEvent(job, "provider_attempt_completed", { providerId: FDA_VQIP_DESCRIPTOR.id, attempt: attemptNumber, state: "retry_wait" });
-      await writer.release(job, workerId, new Date(now().getTime() + delay).toISOString());
+      job = await writer.release(job, workerId, new Date(now().getTime() + delay).toISOString());
       log?.(jobDiagnostic("job_requeued", job, { leaseState: "released", safeErrorCode: code ?? "TRANSIENT_PROVIDER_ERROR" }));
       return "retry";
     }
-    await writer.finishAttempt(String(attempt.id), { state: "failed_terminal", safe_error_code: code ?? (error instanceof FdaVqipParserError ? error.code : "PROVIDER_FAILURE"), duration_ms: Date.now() - started });
-    await writer.finalize(job, workerId, "failed", "failed", blankResult());
+    await writer.finishAttempt(job, workerId, String(attempt.id), { state: "failed_terminal", safe_error_code: code ?? (error instanceof FdaVqipParserError ? error.code : "PROVIDER_FAILURE"), duration_ms: Date.now() - started });
+    job = await writer.finalize(job, workerId, "failed", "failed", blankResult());
     log?.(jobDiagnostic("job_failed", job, { leaseState: "released", safeErrorCode: code ?? (error instanceof FdaVqipParserError ? error.code : "PROVIDER_FAILURE") }));
     return "failed";
   }
   if (!attemptAlreadyResolved) {
-    await writer.finishAttempt(String(attempt.id), {
+    await writer.finishAttempt(job, workerId, String(attempt.id), {
       state: cacheHit ? "skipped_cached" : "completed", duration_ms: Date.now() - started,
       record_count: snapshot.row_count, match_count: 0,
     });
     await writer.appendEvent(job, "provider_attempt_completed", { providerId: FDA_VQIP_DESCRIPTOR.id, attempt: attemptNumber, state: cacheHit ? "skipped_cached" : "completed", recordCount: snapshot.row_count });
   }
   if (await writer.isCancellationRequested(job.batch_id)) {
-    await writer.finalize(job, workerId, "cancelled", "cancelled", blankResult());
+    job = await refreshOwnedJob(writer, job, workerId);
+    job = await writer.finalize(job, workerId, "cancelled", "cancelled", blankResult());
     return "completed";
   }
   const matchGate = await checkpointIfBudgetLow(writer, job, workerId, deadlineAt, 5_000, now, log);
@@ -982,13 +1071,14 @@ async function processFdaVqipPlan(
   };
   job = await advanceStage(writer, job, workerId, "finalizing", log);
   if (await writer.isCancellationRequested(job.batch_id)) {
-    await writer.finalize(job, workerId, "partial", "partial", result);
+    job = await refreshOwnedJob(writer, job, workerId);
+    job = await writer.finalize(job, workerId, "partial", "partial", result);
   } else if (match.decision === "strong") {
-    await writer.finalize(job, workerId, "completed", "official_importer_program_corroboration", result);
+    job = await writer.finalize(job, workerId, "completed", "official_importer_program_corroboration", result);
   } else if (match.decision === "ambiguous") {
-    await writer.finalize(job, workerId, "needs_review", "needs_review", result);
+    job = await writer.finalize(job, workerId, "needs_review", "needs_review", result);
   } else {
-    await writer.finalize(job, workerId, "completed", "no_verified_evidence", result);
+    job = await writer.finalize(job, workerId, "completed", "no_verified_evidence", result);
   }
   log?.(jobDiagnostic("stage_completed", job));
   return "completed";
@@ -1031,17 +1121,18 @@ async function processMultiProviderUsPlans(
     if (!gate.ok) return "retry";
     // Cancellation gate.
     if (await writer.isCancellationRequested(job.batch_id)) {
-      await writer.finalize(job, workerId, "cancelled", "cancelled", blankResult());
+      job = await refreshOwnedJob(writer, job, workerId);
+      job = await writer.finalize(job, workerId, "cancelled", "cancelled", blankResult());
       return "completed";
     }
     // Reconcile stale attempts for THIS provider only.
     let previous = await writer.latestAttempt(String(plan.id));
     if (previous?.state === "running" && previous?.id) {
-      await writer.reconcileStaleAttempt(String(previous.id), "STALE_LEASE_RECOVERED");
+      await writer.reconcileStaleAttempt(job, workerId, String(previous.id), "STALE_LEASE_RECOVERED");
       previous = { ...previous, state: "failed_retryable" };
     }
     // Run per-provider execution.
-    let providerResult: { evidence?: TradeResearchSourceEvidence; failed: boolean } = { failed: false };
+    let providerResult: { job: InternalJobRow; evidence?: TradeResearchSourceEvidence; failed: boolean } = { job, failed: false };
     try {
       if (providerId === FDA_FSVP_DESCRIPTOR.id) {
         providerResult = await runFdaFsvpProviderOnly(writer, job, workerId, plan, previous, now, fetchImpl, log);
@@ -1052,10 +1143,13 @@ async function processMultiProviderUsPlans(
         continue;
       }
     } catch (error) {
-      anyProviderFailed = true;
-      const code = typeof error === "object" && error && "code" in error ? String((error as { code?: unknown }).code) : "PROVIDER_FAILURE";
-      log?.(jobDiagnostic("job_failed", job, { safeErrorCode: code, leaseState: "owned" }));
+      // Expected provider failures are converted to a result inside each
+      // provider runner. Any thrown error is a repository/control-flow
+      // failure and must reach the drain instead of continuing with a
+      // potentially stale job revision.
+      throw error;
     }
+    job = providerResult.job;
     if (providerResult.evidence) {
       anyEvaluated = true;
       perProvider.push(providerResult.evidence);
@@ -1096,20 +1190,21 @@ async function processMultiProviderUsPlans(
 
   job = await advanceStage(writer, job, workerId, "finalizing", log);
   if (await writer.isCancellationRequested(job.batch_id)) {
-    await writer.finalize(job, workerId, "partial", "partial", result);
+    job = await refreshOwnedJob(writer, job, workerId);
+    job = await writer.finalize(job, workerId, "partial", "partial", result);
   } else if (!anyEvaluated) {
-    await writer.finalize(job, workerId, "failed", "failed", result);
+    job = await writer.finalize(job, workerId, "failed", "failed", result);
   } else if (aggregate.identity === "conflicting_evidence") {
-    await writer.finalize(job, workerId, "needs_review", "needs_review", result);
+    job = await writer.finalize(job, workerId, "needs_review", "needs_review", result);
   } else if (strongCount > 0) {
     // Any strong identity match finalizes as corroboration.
     const outcome = anyProviderFailed ? "partial" : "official_importer_program_corroboration";
     const status = anyProviderFailed ? "partial" : "completed";
-    await writer.finalize(job, workerId, status, outcome, result);
+    job = await writer.finalize(job, workerId, status, outcome, result);
   } else if (supportingCount > 0) {
-    await writer.finalize(job, workerId, "needs_review", "needs_review", result);
+    job = await writer.finalize(job, workerId, "needs_review", "needs_review", result);
   } else {
-    await writer.finalize(job, workerId, "completed", "no_verified_evidence", result);
+    job = await writer.finalize(job, workerId, "completed", "no_verified_evidence", result);
   }
   log?.(jobDiagnostic("stage_completed", job));
   return "completed";
@@ -1128,7 +1223,7 @@ async function runFdaFsvpProviderOnly(
   now: () => Date,
   fetchImpl: typeof fetch | undefined,
   log: TradeResearchLogger | undefined,
-): Promise<{ evidence?: TradeResearchSourceEvidence; failed: boolean }> {
+): Promise<{ job: InternalJobRow; evidence?: TradeResearchSourceEvidence; failed: boolean }> {
   const previousState = typeof previous?.state === "string" ? previous.state as string : null;
   const attemptAlreadyResolved = previousState === "completed" || previousState === "skipped_cached";
   const preloadedFresh = await writer.getFreshSnapshot(now());
@@ -1146,18 +1241,24 @@ async function runFdaFsvpProviderOnly(
   const started = Date.now();
   try {
     if (!snapshot) {
-      const heartbeat = await withHeartbeat(writer, job, workerId, () => loadFdaFsvpSnapshot(writer, now(), fetchImpl));
+      const heartbeat = await withHeartbeat(
+        writer, job, workerId,
+        () => loadFdaFsvpSnapshot(writer, now(), fetchImpl),
+        (authoritativeJob) => { job = authoritativeJob; },
+      );
+      job = heartbeat.job;
       snapshot = heartbeat.value.snapshot; cacheHit = heartbeat.value.cacheHit;
     }
   } catch (error) {
+    if (isTradeResearchLeaseLostError(error)) throw error;
     const code = typeof error === "object" && error && "code" in error ? String((error as { code?: unknown }).code) : (error instanceof FdaFsvpParserError ? error.code : "PROVIDER_FAILURE");
-    await writer.finishAttempt(String(attempt.id), { state: "failed_terminal", safe_error_code: code, duration_ms: Date.now() - started });
+    await writer.finishAttempt(job, workerId, String(attempt.id), { state: "failed_terminal", safe_error_code: code, duration_ms: Date.now() - started });
     await writer.appendEvent(job, "provider_attempt_completed", { providerId: FDA_FSVP_DESCRIPTOR.id, attempt: attemptNumber, state: "failed_terminal" });
     log?.(jobDiagnostic("job_failed", job, { safeErrorCode: code }));
-    return { failed: true };
+    return { job, failed: true };
   }
   if (!attemptAlreadyResolved) {
-    await writer.finishAttempt(String(attempt.id), {
+    await writer.finishAttempt(job, workerId, String(attempt.id), {
       state: cacheHit ? "skipped_cached" : "completed", duration_ms: Date.now() - started,
       record_count: snapshot!.row_count, match_count: 0,
     });
@@ -1171,6 +1272,7 @@ async function runFdaFsvpProviderOnly(
     match.decision === "ambiguous" ? "supporting" :
     match.decision === "none" || match.decision === "rejected" ? "no_verified_match" : "not_available";
   return {
+    job,
     failed: false,
     evidence: {
       providerId: "fda-fsvp",
@@ -1197,7 +1299,7 @@ async function runFdaVqipProviderOnly(
   now: () => Date,
   fetchImpl: typeof fetch | undefined,
   log: TradeResearchLogger | undefined,
-): Promise<{ evidence?: TradeResearchSourceEvidence; failed: boolean }> {
+): Promise<{ job: InternalJobRow; evidence?: TradeResearchSourceEvidence; failed: boolean }> {
   const previousState = typeof previous?.state === "string" ? previous.state as string : null;
   const attemptAlreadyResolved = previousState === "completed" || previousState === "skipped_cached";
   const preloadedFresh = await writer.getFreshSnapshotByProvider(FDA_VQIP_DESCRIPTOR.id, FDA_VQIP_DATASET_ID, now());
@@ -1215,18 +1317,24 @@ async function runFdaVqipProviderOnly(
   const started = Date.now();
   try {
     if (!snapshot) {
-      const heartbeat = await withHeartbeat(writer, job, workerId, () => loadFdaVqipSnapshot(writer, now(), fetchImpl));
+      const heartbeat = await withHeartbeat(
+        writer, job, workerId,
+        () => loadFdaVqipSnapshot(writer, now(), fetchImpl),
+        (authoritativeJob) => { job = authoritativeJob; },
+      );
+      job = heartbeat.job;
       snapshot = heartbeat.value.snapshot; cacheHit = heartbeat.value.cacheHit;
     }
   } catch (error) {
+    if (isTradeResearchLeaseLostError(error)) throw error;
     const code = typeof error === "object" && error && "code" in error ? String((error as { code?: unknown }).code) : (error instanceof FdaVqipParserError ? error.code : "PROVIDER_FAILURE");
-    await writer.finishAttempt(String(attempt.id), { state: "failed_terminal", safe_error_code: code, duration_ms: Date.now() - started });
+    await writer.finishAttempt(job, workerId, String(attempt.id), { state: "failed_terminal", safe_error_code: code, duration_ms: Date.now() - started });
     await writer.appendEvent(job, "provider_attempt_completed", { providerId: FDA_VQIP_DESCRIPTOR.id, attempt: attemptNumber, state: "failed_terminal" });
     log?.(jobDiagnostic("job_failed", job, { safeErrorCode: code }));
-    return { failed: true };
+    return { job, failed: true };
   }
   if (!attemptAlreadyResolved) {
-    await writer.finishAttempt(String(attempt.id), {
+    await writer.finishAttempt(job, workerId, String(attempt.id), {
       state: cacheHit ? "skipped_cached" : "completed", duration_ms: Date.now() - started,
       record_count: snapshot!.row_count, match_count: 0,
     });
@@ -1243,6 +1351,7 @@ async function runFdaVqipProviderOnly(
     match.decision === "ambiguous" ? "supporting" :
     match.decision === "none" || match.decision === "rejected" ? "no_verified_match" : "not_available";
   return {
+    job,
     failed: false,
     evidence: {
       providerId: "fda-vqip",
@@ -1375,6 +1484,14 @@ export async function drainTradeResearch(deps: WorkerDependencies): Promise<Trad
     } catch (error) {
       const safeErrorCode = safeTradeResearchErrorCode(error);
       const safeMetadata = safeTradeResearchErrorMetadata(error);
+      if (isTradeResearchLeaseLostError(error)) {
+        deps.log?.(jobDiagnostic("job_failed", job, {
+          leaseState: "lost", safeErrorCode, ...safeMetadata,
+        }));
+        // Another worker owns the authoritative revision. Do not reconcile
+        // attempts, release, or finalize from this stale execution.
+        continue;
+      }
       let leaseState: "released" | "lost" = "lost";
       try {
         const recovery = await deps.writer.recoverClaimedJob(

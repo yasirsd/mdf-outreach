@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { TradeResearchContractError, TradeResearchWriter, type InternalJobRow } from "./repository";
+import {
+  TradeResearchContractError,
+  TradeResearchLeaseLostError,
+  TradeResearchWriter,
+  type InternalJobRow,
+} from "./repository";
 import { safeTradeResearchErrorCode, safeTradeResearchErrorMetadata } from "./server/diagnostics";
 
 const claimed: InternalJobRow = {
@@ -112,6 +117,88 @@ describe("TradeResearchWriter RPC contract", () => {
     const rpc = vi.fn(async () => ({ data: null, error: null }));
     await expect(new TradeResearchWriter(clientWithRpc(rpc)).advance(claimed, "worker-b", "planning_sources"))
       .rejects.toThrow("JOB_LEASE_LOST");
+  });
+
+  it("finalizes through the revision-CAS v2 RPC and adopts the terminal revision", async () => {
+    const finalized: InternalJobRow = {
+      ...claimed, status: "completed", stage: "complete", revision: 2, lease_owner: null,
+    };
+    const rpc = vi.fn(async () => ({ data: finalized, error: null }));
+    const result = await new TradeResearchWriter(clientWithRpc(rpc)).finalize(
+      claimed,
+      "worker-a",
+      "completed",
+      "no_verified_evidence",
+      {
+        automaticSpendRupees: 0, officialProgramEvidence: "not_checked", productEvidence: "not_available",
+        indiaOrigin: "not_verified", originEvidence: "not_available", shipmentEvidence: "not_verified", sourcesChecked: 0,
+      },
+    );
+
+    expect(rpc).toHaveBeenCalledWith("finalize_buyer_trade_research_job_v2", expect.objectContaining({
+      p_job_id: claimed.id,
+      p_worker_id: "worker-a",
+      p_revision: 1,
+    }));
+    expect(result).toEqual(finalized);
+  });
+
+  it.each([
+    ["stale revision", { code: "P0001", message: "STALE_JOB_REVISION" }],
+    ["wrong lease owner", { code: "P0001", message: "STALE_JOB_REVISION" }],
+  ])("classifies %s finalization as lease loss", async (_label, databaseError) => {
+    const rpc = vi.fn(async () => ({ data: null, error: databaseError }));
+    await expect(new TradeResearchWriter(clientWithRpc(rpc)).finalize(
+      claimed, "worker-b", "completed", "no_verified_evidence", {
+        automaticSpendRupees: 0, officialProgramEvidence: "not_checked", productEvidence: "not_available",
+        indiaOrigin: "not_verified", originEvidence: "not_available", shipmentEvidence: "not_verified", sourcesChecked: 0,
+      },
+    )).rejects.toBeInstanceOf(TradeResearchLeaseLostError);
+  });
+
+  it("finishes an attempt only through the fenced RPC with authoritative job context", async () => {
+    const attemptId = "00000000-0000-4000-8000-000000000006";
+    const rpc = vi.fn(async () => ({ data: { id: attemptId, state: "completed" }, error: null }));
+    await new TradeResearchWriter(clientWithRpc(rpc)).finishAttempt(
+      claimed, "worker-a", attemptId,
+      { state: "completed", duration_ms: 10, record_count: 2, match_count: 1 },
+    );
+    expect(rpc).toHaveBeenCalledWith("finish_buyer_trade_research_attempt", {
+      p_attempt_id: attemptId,
+      p_job_id: claimed.id,
+      p_worker_id: "worker-a",
+      p_revision: 1,
+      p_state: "completed",
+      p_safe_error_code: null,
+      p_duration_ms: 10,
+      p_record_count: 2,
+      p_match_count: 1,
+    });
+  });
+
+  it("fences stale attempt completion and stale-attempt reconciliation", async () => {
+    const attemptId = "00000000-0000-4000-8000-000000000006";
+    const rpc = vi.fn(async () => ({ data: null, error: { code: "P0001", message: "STALE_JOB_REVISION" } }));
+    const writer = new TradeResearchWriter(clientWithRpc(rpc));
+    await expect(writer.finishAttempt(claimed, "worker-a", attemptId, { state: "failed_terminal" }))
+      .rejects.toBeInstanceOf(TradeResearchLeaseLostError);
+    await expect(writer.reconcileStaleAttempt(claimed, "worker-a", attemptId, "STALE_LEASE_RECOVERED"))
+      .rejects.toBeInstanceOf(TradeResearchLeaseLostError);
+  });
+
+  it("uses the fenced reconciliation RPC and accepts an idempotent null attempt result", async () => {
+    const attemptId = "00000000-0000-4000-8000-000000000006";
+    const rpc = vi.fn(async () => ({ data: null, error: null }));
+    await expect(new TradeResearchWriter(clientWithRpc(rpc)).reconcileStaleAttempt(
+      claimed, "worker-a", attemptId, "STALE_LEASE_RECOVERED",
+    )).resolves.toBeUndefined();
+    expect(rpc).toHaveBeenCalledWith("reconcile_buyer_trade_research_attempt", {
+      p_attempt_id: attemptId,
+      p_job_id: claimed.id,
+      p_worker_id: "worker-a",
+      p_revision: 1,
+      p_safe_error_code: "STALE_LEASE_RECOVERED",
+    });
   });
 
   it("blocks invalid revision, stage, timestamp, and JSON before an RPC", async () => {

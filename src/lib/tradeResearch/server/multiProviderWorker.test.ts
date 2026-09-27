@@ -83,17 +83,20 @@ function makeFixture(opts: {
     getEligiblePlan: vi.fn(async () => opts.plans[0] ? { ...opts.plans[0], cost_class: "free", automatic_spend_rupees: 0 } : undefined),
     getEligiblePlans: vi.fn(async () => opts.plans.map((p) => ({ ...p, cost_class: "free", automatic_spend_rupees: 0 }))),
     latestAttempt: vi.fn(async (planId: string) => opts.latestAttempt?.(planId)),
-    reconcileStaleAttempt: vi.fn(async (id: string, safe: string) => { state.reconciled.push({ id, safe_error_code: safe }); }),
+    reconcileStaleAttempt: vi.fn(async (_job: InternalJobRow, _worker: string, id: string, safe: string) => { state.reconciled.push({ id, safe_error_code: safe }); }),
     startAttempt: vi.fn(async (_row: InternalJobRow, planId: string, n: number) => {
       const id = `attempt-${planId}-${n}`;
       state.startedAttempts.push(id);
       return { id, attempt_number: n };
     }),
-    finishAttempt: vi.fn(async (id: string, patch: Record<string, unknown>) => { state.attempts.push({ id, patch }); }),
+    finishAttempt: vi.fn(async (_job: InternalJobRow, _worker: string, id: string, patch: Record<string, unknown>) => { state.attempts.push({ id, patch }); }),
     appendEvent: vi.fn(async (_r: InternalJobRow, event: string, payload: Record<string, unknown>) => { state.events.push({ event, payload }); }),
-    release: vi.fn(async () => undefined),
+    release: vi.fn(async (row: InternalJobRow) => ({ ...row, revision: row.revision + 1, lease_owner: null })),
     heartbeat: vi.fn(async (row: InternalJobRow) => ({ ...row, revision: row.revision + 1 })),
-    finalize: vi.fn(async (_r: InternalJobRow, _w: string, status: string, outcome: string, result: unknown) => { state.finalized.push({ status, outcome, result }); }),
+    finalize: vi.fn(async (row: InternalJobRow, _w: string, status: InternalJobRow["status"], outcome: string, result: unknown) => {
+      state.finalized.push({ status, outcome, result });
+      return { ...row, status, stage: "complete", outcome, revision: row.revision + 1, lease_owner: null };
+    }),
     getFreshSnapshot: vi.fn(async () => opts.fdaFresh),
     getLatestSnapshot: vi.fn(async () => undefined),
     getFreshSnapshotByProvider: vi.fn(async (providerId: string) =>
@@ -339,6 +342,53 @@ describe("BI4F 2C — aggregation function is deterministic and never overwrites
 });
 
 describe("BI4F 2C — cross-source inference safety", () => {
+  it("a rejected CID source stays source-local no-match when another provider verifies the company", () => {
+    const evidence = (over: Partial<TradeResearchSourceEvidence>): TradeResearchSourceEvidence => ({
+      providerId: "fda-fsvp",
+      outcome: "completed",
+      source: "FDA FSVP",
+      datasetPeriod: "test",
+      retrievedAt: NOW.toISOString(),
+      candidateName: "Test",
+      identityDecision: "strong",
+      matchReason: "test",
+      coverageExplanation: "test",
+      companyEvidence: "verified",
+      productEvidence: "not_available",
+      originEvidence: "not_available",
+      shipmentEvidence: "not_verified",
+      attribution: "test",
+      ...over,
+    });
+    const rejectedCid = evidence({
+      providerId: "canada-cid",
+      source: "Canadian Importers Database",
+      identityDecision: "rejected",
+      matchedState: "BC",
+      companyEvidence: "no_verified_match",
+      productEvidence: "no_verified_match",
+      originEvidence: "no_verified_match",
+    });
+    const verifiedFsvp = evidence({
+      providerId: "fda-fsvp",
+      source: "FDA FSVP",
+      identityDecision: "strong",
+      matchedState: "ON",
+      companyEvidence: "verified",
+    });
+
+    const aggregate = aggregateProviderEvidence([rejectedCid, verifiedFsvp]);
+
+    expect(aggregate.identity).toBe("single_source_support");
+    expect(aggregate.sourcesCorroborating).toBe(1);
+    expect(rejectedCid).toMatchObject({
+      identityDecision: "rejected",
+      companyEvidence: "no_verified_match",
+      productEvidence: "no_verified_match",
+      originEvidence: "no_verified_match",
+    });
+  });
+
   it("VQIP has no product data → sources[].productEvidence is 'not_available' regardless of FSVP", async () => {
     const { writer, state } = makeFixture({
       plans: [{ provider_id: "fda-fsvp", id: "plan-fsvp" }, { provider_id: "fda-vqip", id: "plan-vqip" }],

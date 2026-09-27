@@ -64,6 +64,19 @@ export class TradeResearchContractError extends Error {
   }
 }
 
+export class TradeResearchLeaseLostError extends Error {
+  readonly code = "STALE_JOB_REVISION";
+
+  constructor(readonly databaseError?: unknown) {
+    super("JOB_LEASE_LOST");
+    this.name = "TradeResearchLeaseLostError";
+  }
+}
+
+export function isTradeResearchLeaseLostError(error: unknown): error is TradeResearchLeaseLostError {
+  return error instanceof TradeResearchLeaseLostError;
+}
+
 function requireUuid(value: unknown, fieldName: string): string {
   if (typeof value !== "string" || !UUID_PATTERN.test(value)) {
     throw new TradeResearchContractError(fieldName, "uuid", valueCategory(value));
@@ -201,6 +214,24 @@ function requireInternalJobRow(job: InternalJobRow): void {
   }
 }
 
+function isStaleMutationError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const candidate = error as { code?: unknown; message?: unknown; details?: unknown };
+  const combined = `${String(candidate.message ?? "")} ${String(candidate.details ?? "")}`;
+  return candidate.code === "P0001"
+    && (combined.includes("STALE_JOB_REVISION") || combined.includes("ATTEMPT_STATE_CONFLICT"));
+}
+
+function authoritativeJobMutation(data: unknown, error: unknown): InternalJobRow {
+  if (error) {
+    if (isStaleMutationError(error)) throw new TradeResearchLeaseLostError(error);
+    throw error;
+  }
+  const row = mapInternalJobRow(data);
+  if (!row) throw new TradeResearchLeaseLostError();
+  return row;
+}
+
 const EMPTY_RESULT: TradeResearchResultSummary = {
   officialProgramEvidence: "not_checked",
   productEvidence: "not_available",
@@ -329,35 +360,32 @@ export class TradeResearchWriter {
     const { data, error } = await this.client.rpc("advance_buyer_trade_research_job", {
       p_job_id: job.id, p_worker: worker, p_revision: job.revision, p_stage: stage,
     });
-    const row = mapInternalJobRow(data);
-    if (error || !row) throw error ?? new Error("JOB_LEASE_LOST");
-    return row;
+    return authoritativeJobMutation(data, error);
   }
   async heartbeat(job: InternalJobRow, worker: string): Promise<InternalJobRow> {
     requireInternalJobRow(job);
     const { data, error } = await this.client.rpc("heartbeat_buyer_trade_research_job", {
       p_job_id: job.id, p_worker: worker, p_revision: job.revision,
     });
-    const row = mapInternalJobRow(data);
-    if (error || !row) throw error ?? new Error("JOB_LEASE_LOST");
-    return row;
+    return authoritativeJobMutation(data, error);
   }
-  async release(job: InternalJobRow, worker: string, nextAttemptAt: string): Promise<void> {
+  async release(job: InternalJobRow, worker: string, nextAttemptAt: string): Promise<InternalJobRow> {
     requireInternalJobRow(job);
     requireTimestamp(nextAttemptAt, "p_next_attempt_at");
     const { data, error } = await this.client.rpc("release_buyer_trade_research_job", { p_job_id: job.id, p_worker: worker, p_revision: job.revision, p_next_attempt_at: nextAttemptAt });
-    if (error || !mapInternalJobRow(data)) throw error ?? new Error("JOB_LEASE_LOST");
+    return authoritativeJobMutation(data, error);
   }
-  async finalize(job: InternalJobRow, worker: string, status: TradeResearchStatus, outcome: TradeResearchOutcome, result: TradeResearchResultSummary): Promise<void> {
+  async finalize(job: InternalJobRow, worker: string, status: TradeResearchStatus, outcome: TradeResearchOutcome, result: TradeResearchResultSummary): Promise<InternalJobRow> {
     requireInternalJobRow(job);
     requireConstrainedText(status, "p_status", TERMINAL_TRADE_RESEARCH_STATUSES);
     requireConstrainedText(outcome, "p_outcome", TRADE_RESEARCH_OUTCOMES);
     requireJson(result, "p_result");
     if (result.automaticSpendRupees !== 0) throw new Error("AUTOMATIC_SPEND_MUST_REMAIN_ZERO");
-    const { data, error } = await this.client.rpc("finalize_buyer_trade_research_job", {
-      p_job_id: job.id, p_worker: worker, p_status: status, p_outcome: outcome, p_result: result,
+    const { data, error } = await this.client.rpc("finalize_buyer_trade_research_job_v2", {
+      p_job_id: job.id, p_worker_id: worker, p_revision: job.revision,
+      p_status: status, p_outcome: outcome, p_result_summary: result,
     });
-    if (error || !mapInternalJobRow(data)) throw error ?? new Error("JOB_LEASE_LOST");
+    return authoritativeJobMutation(data, error);
   }
   async recoverClaimedJob(jobId: string, worker: string, nextAttemptAt: string, safeErrorCode: string): Promise<"requeued" | "cancelled" | "lease_lost"> {
     requireUuid(jobId, "job_id");
@@ -365,20 +393,30 @@ export class TradeResearchWriter {
     const { data, error } = await this.client.from("buyer_trade_research_jobs").select("*")
       .eq("id", jobId).eq("lease_owner", worker).in("status", ["running", "cancel_requested"]).maybeSingle();
     if (error) throw error;
-    const job = mapInternalJobRow(data);
+    let job = mapInternalJobRow(data);
     if (!job) return "lease_lost";
     const { data: attempt, error: attemptError } = await this.client.from("buyer_trade_research_attempts").select("id")
       .eq("job_id", jobId).eq("lease_owner", worker).eq("state", "running").maybeSingle();
     if (attemptError) throw attemptError;
     if (attempt) {
-      await this.finishAttempt(requireUuid(attempt.id, "attempt.id"), { state: "failed_retryable", safe_error_code: safeErrorCode });
+      await this.finishAttempt(job, worker, requireUuid(attempt.id, "attempt.id"), { state: "failed_retryable", safe_error_code: safeErrorCode });
     }
     if (job.status === "cancel_requested") {
-      await this.finalize(job, worker, "cancelled", "cancelled", EMPTY_RESULT);
+      job = await this.finalize(job, worker, "cancelled", "cancelled", EMPTY_RESULT);
       return "cancelled";
     }
-    await this.release(job, worker, nextAttemptAt);
+    job = await this.release(job, worker, nextAttemptAt);
     return "requeued";
+  }
+  async refreshOwnedJob(jobId: string, worker: string): Promise<InternalJobRow> {
+    requireUuid(jobId, "job_id");
+    requireText(worker, "lease_owner");
+    const { data, error } = await this.client.from("buyer_trade_research_jobs").select("*")
+      .eq("id", jobId).eq("lease_owner", worker).in("status", ["running", "cancel_requested"]).maybeSingle();
+    if (error) throw error;
+    const job = mapInternalJobRow(data);
+    if (!job) throw new TradeResearchLeaseLostError();
+    return job;
   }
   async isCancellationRequested(batchId: string): Promise<boolean> {
     requireUuid(batchId, "buyer_trade_research_batches.id");
@@ -442,12 +480,30 @@ export class TradeResearchWriter {
     if (error) throw error;
     return data as Row;
   }
-  async finishAttempt(id: string, patch: Row): Promise<void> {
+  async finishAttempt(job: InternalJobRow, worker: string, id: string, patch: Row): Promise<void> {
+    requireInternalJobRow(job);
+    requireText(worker, "p_worker_id");
     requireUuid(id, "buyer_trade_research_attempts.id");
     requireJson(patch, "attempt_patch");
     validateAttemptPatch(patch);
-    const { error } = await this.client.from("buyer_trade_research_attempts").update({ ...patch, automatic_spend_rupees: 0, lease_owner: null, lease_expires_at: null, finished_at: new Date().toISOString() }).eq("id", id);
-    if (error) throw error;
+    const state = requireConstrainedText(patch.state, "attempt.state", PROVIDER_ATTEMPT_STATES);
+    const { data, error } = await this.client.rpc("finish_buyer_trade_research_attempt", {
+      p_attempt_id: id,
+      p_job_id: job.id,
+      p_worker_id: worker,
+      p_revision: job.revision,
+      p_state: state,
+      p_safe_error_code: patch.safe_error_code ?? null,
+      p_duration_ms: patch.duration_ms ?? null,
+      p_record_count: patch.record_count ?? null,
+      p_match_count: patch.match_count ?? null,
+    });
+    if (error) {
+      if (isStaleMutationError(error)) throw new TradeResearchLeaseLostError(error);
+      throw error;
+    }
+    const attempt = singleRpcRow<Row>(data);
+    if (!attempt || isNullComposite(attempt)) throw new TradeResearchLeaseLostError();
   }
 
   /**
@@ -468,22 +524,22 @@ export class TradeResearchWriter {
    * Idempotent: the WHERE clause pins `state='running'`, so a second
    * concurrent reconcile is a no-op.
    */
-  async reconcileStaleAttempt(id: string, safeErrorCode: string): Promise<void> {
+  async reconcileStaleAttempt(job: InternalJobRow, worker: string, id: string, safeErrorCode: string): Promise<void> {
+    requireInternalJobRow(job);
+    requireText(worker, "p_worker_id");
     requireUuid(id, "buyer_trade_research_attempts.id");
     requireText(safeErrorCode, "safe_error_code");
-    const { error } = await this.client
-      .from("buyer_trade_research_attempts")
-      .update({
-        state: "failed_retryable",
-        safe_error_code: safeErrorCode,
-        lease_owner: null,
-        lease_expires_at: null,
-        finished_at: new Date().toISOString(),
-        automatic_spend_rupees: 0,
-      })
-      .eq("id", id)
-      .eq("state", "running");
-    if (error) throw error;
+    const { error } = await this.client.rpc("reconcile_buyer_trade_research_attempt", {
+      p_attempt_id: id,
+      p_job_id: job.id,
+      p_worker_id: worker,
+      p_revision: job.revision,
+      p_safe_error_code: safeErrorCode,
+    });
+    if (error) {
+      if (isStaleMutationError(error)) throw new TradeResearchLeaseLostError(error);
+      throw error;
+    }
   }
   async appendEvent(job: InternalJobRow, eventType: string, safeDetails: Row = {}): Promise<void> {
     requireInternalJobRow(job);

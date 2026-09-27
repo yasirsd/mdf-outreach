@@ -86,12 +86,13 @@ function writerFor(over: Partial<State> = {}): { state: State; writer: TradeRese
     getEligiblePlan: vi.fn(async () => state.plan),
     latestAttempt: vi.fn(async () => undefined),
     startAttempt: vi.fn(async (_row: InternalJobRow, _planId: string, attemptNumber: number) => ({ id: `attempt-${attemptNumber}`, attempt_number: attemptNumber })),
-    finishAttempt: vi.fn(async (_id: string, patch: Record<string, unknown>) => { state.attempts.push(patch); }),
+    finishAttempt: vi.fn(async (_job: InternalJobRow, _worker: string, _id: string, patch: Record<string, unknown>) => { state.attempts.push(patch); }),
     appendEvent: vi.fn(async (_job: InternalJobRow, event: string, safe: Record<string, unknown>) => { state.events.push({ event, ...safe }); }),
-    release: vi.fn(async (_job: InternalJobRow, _worker: string, next: string) => { state.released.push(next); }),
+    release: vi.fn(async (row: InternalJobRow, _worker: string, next: string) => { state.released.push(next); return { ...row, revision: row.revision + 1, lease_owner: null }; }),
     heartbeat: vi.fn(async (row: InternalJobRow) => ({ ...row, revision: row.revision + 1 })),
-    finalize: vi.fn(async (_job: InternalJobRow, _worker: string, status: string, outcome: string, result: unknown) => {
+    finalize: vi.fn(async (row: InternalJobRow, _worker: string, status: InternalJobRow["status"], outcome: string, result: unknown) => {
       state.finalized.push({ status, outcome, result });
+      return { ...row, status, stage: "complete", outcome, revision: row.revision + 1, lease_owner: null };
     }),
     getFreshSnapshot: vi.fn(async () => undefined), // FDA — never used in CID path
     getLatestSnapshot: vi.fn(async () => undefined),
@@ -144,6 +145,14 @@ describe("BI4F 2B — worker dispatch by plan.provider_id", () => {
       provider_id: "canada-cid",
       dataset_id: "cid-major-importers-by-hs6-by-country",
     }));
+    const calls = writer as unknown as {
+      heartbeat: ReturnType<typeof vi.fn>;
+      finishAttempt: ReturnType<typeof vi.fn>;
+      finalize: ReturnType<typeof vi.fn>;
+    };
+    expect(calls.heartbeat).toHaveBeenCalledWith(expect.objectContaining({ revision: 3 }), "worker-a");
+    expect(calls.finishAttempt.mock.calls[0][0]).toMatchObject({ revision: 4 });
+    expect(calls.finalize.mock.calls[0][0]).toMatchObject({ revision: 7 });
   });
 
   it("warm CID cache → no second fetch, no new snapshot, attempt marked skipped_cached", async () => {
@@ -219,6 +228,86 @@ describe("BI4F 2B — worker dispatch by plan.provider_id", () => {
       sourcesChecked: 1,
       automaticSpendRupees: 0,
     });
+  });
+
+  it("Ontario candidate + same-name British Columbia India row → rejected identity cannot project product or origin", async () => {
+    const conflicting = cidSnapshot({
+      normalized_rows: [
+        { hs6: "090421", originCountry: "IN", companyName: "LOBLAW COMPANIES LIMITED", province: "BC", city: "Vancouver" },
+      ] as unknown as SnapshotRow["normalized_rows"],
+    });
+    const { state, writer } = writerFor({ fresh: conflicting });
+
+    await processTradeResearchJob(writer, job(), "worker-a", () => NOW);
+
+    const finalized = state.finalized[0]!;
+    expect(finalized).toMatchObject({ status: "completed", outcome: "no_verified_evidence" });
+    const result = finalized.result as Record<string, unknown>;
+    expect(result).toMatchObject({
+      officialProgramEvidence: "no_verified_match",
+      productEvidence: "no_verified_match",
+      originEvidence: "no_verified_match",
+      indiaOrigin: "not_verified",
+      shipmentEvidence: "not_verified",
+      sourcesChecked: 1,
+      automaticSpendRupees: 0,
+    });
+
+    const evidence = result.evidence as Record<string, unknown>;
+    expect(evidence).toMatchObject({
+      identityDecision: "rejected",
+      matchedSourceName: "LOBLAW COMPANIES LIMITED",
+      matchedState: "BC",
+      candidateState: "ON",
+    });
+    expect(String(evidence.matchReason)).toMatch(/conflicting Canadian province/i);
+    expect(String(evidence.coverageExplanation)).toMatch(/source province conflicts/i);
+    expect(String(evidence.coverageExplanation)).toMatch(/not attributed/i);
+    expect(String(evidence.coverageExplanation)).not.toMatch(/\bIN\b/);
+  });
+
+  it("accepted non-India row + rejected India namesake row → India remains not_verified", async () => {
+    const mixedLocations = cidSnapshot({
+      normalized_rows: [
+        { hs6: "090421", originCountry: "CN", companyName: "LOBLAW COMPANIES LIMITED", province: "ON", city: "Brampton" },
+        { hs6: "090421", originCountry: "IN", companyName: "LOBLAW COMPANIES LIMITED", province: "BC", city: "Vancouver" },
+      ] as unknown as SnapshotRow["normalized_rows"],
+    });
+    const { state, writer } = writerFor({ fresh: mixedLocations });
+
+    await processTradeResearchJob(writer, job(), "worker-a", () => NOW);
+
+    const result = state.finalized[0]!.result as Record<string, unknown>;
+    expect(result).toMatchObject({
+      productEvidence: "supporting",
+      originEvidence: "verified",
+      indiaOrigin: "not_verified",
+    });
+    const coverage = String((result.evidence as Record<string, unknown>).coverageExplanation);
+    expect(coverage).toMatch(/\bCN\b/);
+    expect(coverage).not.toMatch(/\bIN\b/);
+  });
+
+  it("accepted India row + rejected non-India namesake row → accepted-row evidence remains valid", async () => {
+    const mixedLocations = cidSnapshot({
+      normalized_rows: [
+        { hs6: "090421", originCountry: "IN", companyName: "LOBLAW COMPANIES LIMITED", province: "ON", city: "Brampton" },
+        { hs6: "090421", originCountry: "CN", companyName: "LOBLAW COMPANIES LIMITED", province: "BC", city: "Vancouver" },
+      ] as unknown as SnapshotRow["normalized_rows"],
+    });
+    const { state, writer } = writerFor({ fresh: mixedLocations });
+
+    await processTradeResearchJob(writer, job(), "worker-a", () => NOW);
+
+    const result = state.finalized[0]!.result as Record<string, unknown>;
+    expect(result).toMatchObject({
+      productEvidence: "supporting",
+      originEvidence: "verified",
+      indiaOrigin: "verified",
+    });
+    const coverage = String((result.evidence as Record<string, unknown>).coverageExplanation);
+    expect(coverage).toMatch(/\bIN\b/);
+    expect(coverage).not.toMatch(/\bCN\b/);
   });
 
   it("proxy HS mapping never verifies product-level evidence even under strong identity", async () => {
@@ -371,4 +460,3 @@ describe("BI4F 2B — routing regressions (FDA path preserved byte-identically)"
     expect(state.events.filter((e) => e.event === "provider_attempt_started")).toHaveLength(0);
   });
 });
-

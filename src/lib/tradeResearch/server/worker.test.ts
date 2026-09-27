@@ -46,14 +46,20 @@ function memoryWriter(over: Record<string, unknown> = {}) {
   Object.assign(state, over);
   const writer = {
     isCancellationRequested: vi.fn(async () => state.cancelled),
-    finalize: vi.fn(async (_job, _worker, status, outcome, result) => { state.finalized.push({ status, outcome, result }); }),
+    finalize: vi.fn(async (row: InternalJobRow, _worker, status, outcome, result) => {
+      state.finalized.push({ status, outcome, result });
+      return { ...row, status, stage: "complete", outcome, revision: row.revision + 1, lease_owner: null };
+    }),
     advance: vi.fn(async (row: InternalJobRow, _worker: string, stage: InternalJobRow["stage"]) => ({ ...row, stage, revision: row.revision + 1 })),
     getEligiblePlan: vi.fn(async () => state.plan),
     latestAttempt: vi.fn(async () => undefined),
     startAttempt: vi.fn(async (_job, _plan, attemptNumber) => ({ id: `attempt-${attemptNumber}`, attempt_number: attemptNumber })),
     appendEvent: vi.fn(async () => undefined),
-    finishAttempt: vi.fn(async (_id, patch) => { state.attempts.push(patch); }),
-    release: vi.fn(async (_job, _worker, next: string) => { state.released.push(next); }),
+    finishAttempt: vi.fn(async (_job, _worker, _id, patch) => { state.attempts.push(patch); }),
+    release: vi.fn(async (row: InternalJobRow, _worker, next: string) => {
+      state.released.push(next);
+      return { ...row, revision: row.revision + 1, lease_owner: null };
+    }),
     heartbeat: vi.fn(async (row: InternalJobRow) => { state.heartbeatCount += 1; return { ...row, revision: row.revision + 1 }; }),
     getFreshSnapshot: vi.fn(async () => state.fresh),
     getLatestSnapshot: vi.fn(async () => state.latest),
@@ -69,7 +75,15 @@ afterEach(() => { vi.useRealTimers(); });
 describe("bounded trade research worker", () => {
   it("cancels before provider execution and preserves zero spend", async () => {
     const { state, writer } = memoryWriter({ cancelled: true });
+    const refreshOwnedJob = vi.fn(async (_jobId: string) => ({
+      ...job(), status: "cancel_requested" as const, revision: job().revision + 1,
+    }));
+    Object.assign(writer as object, { refreshOwnedJob });
     expect(await processTradeResearchJob(writer, job(), "worker", () => NOW)).toBe("completed");
+    expect(refreshOwnedJob).toHaveBeenCalledWith("job", "worker");
+    expect((writer.finalize as ReturnType<typeof vi.fn>).mock.calls[0][0]).toMatchObject({
+      status: "cancel_requested", revision: 2,
+    });
     expect(state.finalized[0]).toMatchObject({ status: "cancelled", outcome: "cancelled", result: { automaticSpendRupees: 0 } });
     expect(state.attempts).toHaveLength(0);
   });

@@ -63,12 +63,13 @@ function makeFixture(previous: Record<string, unknown> | undefined): Fixture {
       state.startedAttempts.push(attemptNumber);
       return { id: `attempt-${attemptNumber}`, attempt_number: attemptNumber };
     }),
-    finishAttempt: vi.fn(async (_id: string, patch: Record<string, unknown>) => { state.attempts.push({ patch }); }),
+    finishAttempt: vi.fn(async (_job: InternalJobRow, _worker: string, _id: string, patch: Record<string, unknown>) => { state.attempts.push({ patch }); }),
     appendEvent: vi.fn(async (_row: InternalJobRow, event: string, payload: Record<string, unknown>) => { state.events.push({ event, payload }); }),
-    release: vi.fn(async (_row: InternalJobRow, _worker: string, next: string) => { state.released.push(next); }),
+    release: vi.fn(async (row: InternalJobRow, _worker: string, next: string) => { state.released.push(next); return { ...row, revision: row.revision + 1, lease_owner: null }; }),
     heartbeat: vi.fn(async (row: InternalJobRow) => ({ ...row, revision: row.revision + 1 })),
-    finalize: vi.fn(async (_row: InternalJobRow, _worker: string, status: string, outcome: string, result: unknown) => {
+    finalize: vi.fn(async (row: InternalJobRow, _worker: string, status: InternalJobRow["status"], outcome: string, result: unknown) => {
       state.finalized.push({ status, outcome, result });
+      return { ...row, status, stage: "complete", outcome, revision: row.revision + 1, lease_owner: null };
     }),
     getFreshSnapshot: vi.fn(async () => undefined),
     getLatestSnapshot: vi.fn(async () => undefined),
