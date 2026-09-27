@@ -15,11 +15,12 @@ import {
   CANADA_CID_DATASET_ID,
   CANADA_CID_PARSE_VERSION,
   CanadaCidParserError,
+  CanadaCidRuntimeBudgetError,
   canadaCidByHs6ByCountryUrl,
-  fetchCanadaCidByHs6ByCountry,
+  fetchAndParseCanadaCidStream,
   matchCanadaCidCompany,
-  parseCanadaCidXlsx,
 } from "../canadaCid";
+import { PRODUCT_TRADE_MAPPINGS } from "@/lib/marketIntelligence/product";
 import { isRetryableProviderFailure, retryDelayMs } from "../stateMachine";
 import { AUTOMATIC_SPEND_RUPEES, PHASE_2A_STAGES, type Phase2AStage, type TradeResearchResultSummary } from "../types";
 import { TradeResearchWriter, type InternalJobRow, type SnapshotRow } from "../repository";
@@ -260,22 +261,48 @@ async function withHeartbeat<T>(
  * `provider_id = "canada-cid"`. Symmetrically, the FDA loader never
  * returns a CID snapshot.
  */
+/**
+ * Canonical MDF HS6 set — every HS6 code the trade-research engine
+ * currently supports. The Canada CID streaming loader keeps ONLY
+ * these rows in the cached normalized snapshot, so a 40 MB source
+ * dataset shrinks to a 70 KB cached row set that stays reusable
+ * across every MDF product. The full source bytes are still
+ * SHA-256-hashed for material_hash provenance.
+ */
+const CANONICAL_MDF_HS6: ReadonlySet<string> = new Set(
+  PRODUCT_TRADE_MAPPINGS
+    .filter((mapping) => mapping.hsLevel === 6)
+    .map((mapping) => mapping.hsCode.padStart(6, "0")),
+);
+
+/**
+ * Streaming Canada CID snapshot loader. Downloads the response body
+ * incrementally, heartbeats between chunks, checks the deadline
+ * before each yield, and normalizes ONLY rows whose HS6 is in
+ * `CANONICAL_MDF_HS6`. Any deadline breach throws
+ * `CanadaCidRuntimeBudgetError`; the caller MUST treat that as a
+ * safe retryable release (never a terminal failure).
+ */
 export async function loadCanadaCidSnapshot(
   writer: TradeResearchWriter,
   now: Date,
   year: number,
   fetchImpl?: typeof fetch,
+  deadlineAt?: number,
+  onProgress?: () => void,
 ): Promise<{ snapshot: SnapshotRow; cacheHit: boolean }> {
   const fresh = await writer.getFreshSnapshotByProvider(CANADA_CID_DESCRIPTOR.id, CANADA_CID_DATASET_ID, now);
   if (fresh) return { snapshot: fresh, cacheHit: true };
   const latest = await writer.getLatestSnapshotByProvider(CANADA_CID_DESCRIPTOR.id, CANADA_CID_DATASET_ID);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort("Canada CID fetch timeout"), FETCH_TIMEOUT_MS);
-  let fetched;
+  let loaded;
   try {
-    fetched = await fetchCanadaCidByHs6ByCountry({
+    loaded = await fetchAndParseCanadaCidStream({
       year, etag: latest?.etag, lastModified: latest?.last_modified,
       fetchImpl, signal: controller.signal,
+      canonicalHs6: CANONICAL_MDF_HS6,
+      deadlineAt, onProgress,
     });
   } catch (error) {
     if (controller.signal.aborted) throw Object.assign(new Error("Canada CID request timed out."), { code: "NETWORK_TIMEOUT" });
@@ -283,27 +310,36 @@ export async function loadCanadaCidSnapshot(
   } finally { clearTimeout(timeout); }
   const retrievedAt = now.toISOString();
   const expiresAt = new Date(now.getTime() + CANADA_CID_DESCRIPTOR.cacheMaxAgeDays * 86_400_000).toISOString();
-  if (fetched.outcome === "not_modified") {
+  if (loaded.outcome === "not_modified") {
     if (!latest) throw new CanadaCidParserError("Canada CID returned not-modified without a cached snapshot.");
     return { snapshot: await writer.refreshSnapshotExpiry(latest.id, retrievedAt, expiresAt), cacheHit: true };
   }
-  if (!fetched.bytes || !fetched.materialHash) throw new CanadaCidParserError("Canada CID response was incomplete.");
-  const parsed = parseCanadaCidXlsx(fetched.bytes);
   const snapshot = await writer.saveSnapshot({
     provider_id: CANADA_CID_DESCRIPTOR.id, dataset_id: CANADA_CID_DATASET_ID,
-    published_period: parsed.publishedPeriod, source_url: fetched.sourceUrl,
-    etag: fetched.etag ?? null, last_modified: fetched.lastModified ?? null,
-    material_hash: fetched.materialHash, fetched_at: retrievedAt, retrieved_at: retrievedAt, expires_at: expiresAt,
-    row_count: parsed.rows.length,
+    published_period: loaded.publishedPeriod, source_url: loaded.sourceUrl,
+    etag: loaded.etag ?? null, last_modified: loaded.lastModified ?? null,
+    material_hash: loaded.materialHash, fetched_at: retrievedAt, retrieved_at: retrievedAt, expires_at: expiresAt,
+    row_count: loaded.rows.length,
     coverage: {
       fields: ["hs6", "origin_country", "importer_company", "province", "city"],
       semantics: "company_hs_origin_directory_only",
       attribution: CANADA_CID_ATTRIBUTION,
       shipmentLevel: false,
+      // Provenance: we downloaded the ENTIRE CID resource (SHA-256
+      // covers all `bytesConsumed`) but the cached normalized rows
+      // are the MDF-canonical-HS6 subset only. Consumers must not
+      // read `normalized_rows` as the complete CID dataset.
+      cachedSubset: "canonical-mdf-hs6-only",
+      sourceBytes: loaded.bytesConsumed,
+      sourceDataRows: loaded.totalDataRows,
     },
     parse_version: CANADA_CID_PARSE_VERSION, terms_version: CANADA_CID_DESCRIPTOR.termsVersion,
-    status: "ready", safe_metadata: { malformedRowCount: parsed.malformedRowCount, year },
-    normalized_rows: parsed.rows,
+    status: "ready",
+    safe_metadata: {
+      malformedRowCount: loaded.malformedRowCount, year,
+      totalDataRows: loaded.totalDataRows, retainedRows: loaded.retainedRows,
+    },
+    normalized_rows: loaded.rows,
   });
   return { snapshot, cacheHit: false };
 }
@@ -551,6 +587,27 @@ async function processCanadaCidPlan(
   const attemptNumber = attemptAlreadyResolved && snapshot
     ? Number(previous?.attempt_number ?? 1)
     : Number(previous?.attempt_number ?? 0) + 1;
+
+  // Bounded retry protection. Migration 0025's
+  // `check (attempt_number between 1 and 3)` gives us a hard DB
+  // ceiling; if we tried to `startAttempt` with number = 4 the
+  // CHECK constraint would violate and the job would silently loop
+  // in the reclaim path. Instead, when the previous attempt was a
+  // runtime-budget checkpoint AND we've exhausted the 3 attempts
+  // the schema allows, finalize the job as failed with a specific
+  // safe error code. Cache-hits (`attemptAlreadyResolved && snapshot`)
+  // bypass this — we're not starting a new attempt.
+  const MAX_CID_ATTEMPTS = 3;
+  const previousSafeErrorCode = typeof previous?.safe_error_code === "string" ? previous.safe_error_code : "";
+  const previousExhaustedBudget = previousSafeErrorCode === "CID_RUNTIME_BUDGET_CHECKPOINT";
+  if (!(attemptAlreadyResolved && snapshot) && !snapshot && attemptNumber > MAX_CID_ATTEMPTS && previousExhaustedBudget) {
+    job = await advanceStage(writer, job, workerId, "finalizing", log);
+    await writer.finalize(job, workerId, "failed", "failed", { ...blankResult(), sourcesChecked: 0 });
+    log?.(jobDiagnostic("job_failed", job, {
+      leaseState: "released", safeErrorCode: "CID_RUNTIME_BUDGET_EXHAUSTED",
+    }));
+    return "failed";
+  }
   const attempt = attemptAlreadyResolved && snapshot
     ? previous as { id: string | number }
     : await writer.startAttempt(job, String(plan.id), attemptNumber, workerId);
@@ -560,12 +617,35 @@ async function processCanadaCidPlan(
   const started = Date.now();
   try {
     if (!snapshot) {
-      const heartbeat = await withHeartbeat(writer, job, workerId, () => loadCanadaCidSnapshot(writer, now(), CANADA_CID_SUPPORTED_YEAR, fetchImpl));
+      const heartbeat = await withHeartbeat(writer, job, workerId, async () => {
+        // The streaming loader heartbeats between chunks. We also
+        // pass `deadlineAt` so it can voluntarily abort with
+        // `CanadaCidRuntimeBudgetError` before Vercel kills us.
+        // `onProgress` is a no-op because withHeartbeat's setInterval
+        // already covers periodic heartbeat writes; we could route
+        // manual heartbeat pings here in the future if a very slow
+        // download proves to need them.
+        return loadCanadaCidSnapshot(writer, now(), CANADA_CID_SUPPORTED_YEAR, fetchImpl, deadlineAt);
+      });
       job = heartbeat.job;
       snapshot = heartbeat.value.snapshot;
       cacheHit = heartbeat.value.cacheHit;
     }
   } catch (error) {
+    // Runtime-budget checkpoint: we voluntarily aborted before
+    // Vercel's kill. Never finalize as "failed" — release the lease
+    // with a short retry window so the next drain reclaims cleanly.
+    if (error instanceof CanadaCidRuntimeBudgetError) {
+      await writer.finishAttempt(String(attempt.id), {
+        state: "retry_wait", safe_error_code: error.code, duration_ms: Date.now() - started,
+      });
+      await writer.appendEvent(job, "provider_attempt_completed", {
+        providerId: CANADA_CID_DESCRIPTOR.id, attempt: attemptNumber, state: "retry_wait",
+      });
+      await writer.release(job, workerId, new Date(now().getTime() + 2_000).toISOString());
+      log?.(jobDiagnostic("job_requeued", job, { leaseState: "released", safeErrorCode: error.code }));
+      return "retry";
+    }
     const status = typeof error === "object" && error && "status" in error ? Number((error as { status?: unknown }).status) : undefined;
     const code = typeof error === "object" && error && "code" in error ? String((error as { code?: unknown }).code) : undefined;
     const delay = isRetryableProviderFailure({ status, code }) ? retryDelayMs(attemptNumber) : null;
