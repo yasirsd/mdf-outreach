@@ -7,8 +7,9 @@ import { requireMdfSession } from "@/lib/auth/require";
 import { codeForCountryName, findCountryByCode } from "@/lib/catalogue/countries";
 import { serverRepositories } from "@/lib/repositories/server";
 import { createClient } from "@/utils/supabase/server";
-import { CANADA_CID_DESCRIPTOR, DEFAULT_TRADE_RESEARCH_DESCRIPTORS, FDA_FSVP_DESCRIPTOR, planTradeResearch } from "@/lib/tradeResearch/providers";
+import { CANADA_CID_DESCRIPTOR, DEFAULT_TRADE_RESEARCH_DESCRIPTORS, FDA_FSVP_DESCRIPTOR, FDA_VQIP_DESCRIPTOR, planTradeResearch } from "@/lib/tradeResearch/providers";
 import { CANADA_CID_DATASET_ID } from "@/lib/tradeResearch/canadaCid";
+import { FDA_VQIP_DATASET_ID } from "@/lib/tradeResearch/fdaVqip";
 import { createTradeResearchReadRepository, TradeResearchWriter } from "@/lib/tradeResearch/repository";
 import { logTradeResearchDiagnostic, safeTradeResearchErrorCode } from "@/lib/tradeResearch/server/diagnostics";
 import { getTradeResearchServiceRoleClient } from "@/lib/tradeResearch/server/serviceRoleClient";
@@ -64,9 +65,10 @@ export async function createTradeResearchBatchAction(candidateIds: readonly stri
   const { repos } = await serverRepositories();
   const writer = new TradeResearchWriter(getTradeResearchServiceRoleClient());
   const read = createTradeResearchReadRepository(createClient(cookies()), session.membership.workspaceId);
-  const [freshFdaCache, freshCanadaCache, allCandidates, productMatches, latestJobs] = await Promise.all([
+  const [freshFdaCache, freshCanadaCache, freshVqipCache, allCandidates, productMatches, latestJobs] = await Promise.all([
     writer.getFreshSnapshot().then(Boolean),
     writer.getFreshSnapshotByProvider(CANADA_CID_DESCRIPTOR.id, CANADA_CID_DATASET_ID).then(Boolean),
+    writer.getFreshSnapshotByProvider(FDA_VQIP_DESCRIPTOR.id, FDA_VQIP_DATASET_ID).then(Boolean),
     repos.buyerCandidates.list(),
     repos.buyerCandidateProductMatches.listByCandidateIds
       ? repos.buyerCandidateProductMatches.listByCandidateIds(ids)
@@ -76,6 +78,7 @@ export async function createTradeResearchBatchAction(candidateIds: readonly stri
   const freshCacheByProviderId = new Map<string, boolean>([
     [FDA_FSVP_DESCRIPTOR.id, freshFdaCache],
     [CANADA_CID_DESCRIPTOR.id, freshCanadaCache],
+    [FDA_VQIP_DESCRIPTOR.id, freshVqipCache],
   ]);
   const candidates = new Map(allCandidates.filter((candidate) => ids.includes(candidate.id)).map((candidate) => [candidate.id, candidate]));
   const jobs = [];

@@ -66,16 +66,23 @@ vi.mock("@/lib/tradeResearch/server/worker", async () => {
 vi.mock("@/lib/tradeResearch/providers", () => {
   const FDA = { id: "fda_fsvp", version: "v1", costClass: "free", termsVersion: "v1" };
   const CID = { id: "canada-cid", version: "canada-cid-v1", costClass: "free", termsVersion: "ogl-canada-v2.0" };
+  const VQIP = { id: "fda-vqip", version: "fda-vqip-v1", costClass: "free", termsVersion: "public-fda-list-v1" };
   return {
     FDA_FSVP_DESCRIPTOR: FDA,
     CANADA_CID_DESCRIPTOR: CID,
-    DEFAULT_TRADE_RESEARCH_DESCRIPTORS: [FDA, CID],
+    FDA_VQIP_DESCRIPTOR: VQIP,
+    DEFAULT_TRADE_RESEARCH_DESCRIPTORS: [FDA, VQIP, CID],
     planTradeResearch: (input: { descriptors?: unknown[] }) => (input.descriptors ?? [FDA]).map((descriptor) => ({
       descriptor,
       role: "primary", eligible: true, reason: "eligible", cacheHit: false,
       automaticSpendRupees: 0,
     })),
   };
+});
+
+vi.mock("@/lib/tradeResearch/fdaVqip", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/tradeResearch/fdaVqip")>();
+  return { ...actual, FDA_VQIP_DATASET_ID: "fda-vqip-participant-list" };
 });
 
 import type { TradeResearchBatchSnapshot } from "@/lib/tradeResearch/types";

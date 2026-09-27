@@ -11,6 +11,16 @@ import {
   type FdaFsvpFetchResult,
 } from "../fdaFsvp";
 import {
+  FDA_VQIP_ATTRIBUTION,
+  FDA_VQIP_DATASET_ID,
+  FDA_VQIP_PARSE_VERSION,
+  FDA_VQIP_SOURCE_URL,
+  FdaVqipParserError,
+  fetchFdaVqipDataset,
+  matchFdaVqipCompany,
+  parseFdaVqipHtml,
+} from "../fdaVqip";
+import {
   CANADA_CID_ATTRIBUTION,
   CANADA_CID_DATASET_ID,
   CANADA_CID_PARSE_VERSION,
@@ -22,9 +32,15 @@ import {
 } from "../canadaCid";
 import { PRODUCT_TRADE_MAPPINGS } from "@/lib/marketIntelligence/product";
 import { isRetryableProviderFailure, retryDelayMs } from "../stateMachine";
-import { AUTOMATIC_SPEND_RUPEES, PHASE_2A_STAGES, type Phase2AStage, type TradeResearchResultSummary } from "../types";
+import {
+  AUTOMATIC_SPEND_RUPEES, PHASE_2A_STAGES,
+  type Phase2AStage,
+  type TradeResearchAggregateSummary,
+  type TradeResearchResultSummary,
+  type TradeResearchSourceEvidence,
+} from "../types";
 import { TradeResearchWriter, type InternalJobRow, type SnapshotRow } from "../repository";
-import { CANADA_CID_DESCRIPTOR, CANADA_CID_SUPPORTED_YEAR, canonicalHs6ForProduct, FDA_FSVP_DESCRIPTOR } from "../providers";
+import { CANADA_CID_DESCRIPTOR, CANADA_CID_SUPPORTED_YEAR, canonicalHs6ForProduct, FDA_FSVP_DESCRIPTOR, FDA_VQIP_DESCRIPTOR } from "../providers";
 import {
   safeTradeResearchErrorCode,
   safeTradeResearchErrorMetadata,
@@ -397,32 +413,52 @@ export async function processTradeResearchJob(
     return "completed";
   }
   job = await advanceStage(writer, job, workerId, "planning_sources", log);
-  const plan = await writer.getEligiblePlan(job.id);
-  if (!plan) {
+  const plans = typeof writer.getEligiblePlans === "function"
+    ? await writer.getEligiblePlans(job.id)
+    : await (async () => { const p = await writer.getEligiblePlan(job.id); return p ? [p] : []; })();
+  if (!plans.length) {
     job = await advanceStage(writer, job, workerId, "finalizing", log);
     await writer.finalize(job, workerId, "completed", "unsupported_coverage", blankResult());
     log?.(jobDiagnostic("stage_completed", job));
     return "completed";
   }
-  if (Number(plan.automatic_spend_rupees) !== 0 || plan.cost_class !== "free") throw new Error("PROVIDER_COST_POLICY_VIOLATION");
+  // Every eligible plan must respect the ₹0 contract independently.
+  for (const p of plans) {
+    if (Number((p as { automatic_spend_rupees?: unknown }).automatic_spend_rupees) !== 0
+        || (p as { cost_class?: unknown }).cost_class !== "free") {
+      throw new Error("PROVIDER_COST_POLICY_VIOLATION");
+    }
+  }
   if (await writer.isCancellationRequested(job.batch_id)) {
     await writer.finalize(job, workerId, "cancelled", "cancelled", blankResult());
     return "completed";
   }
   job = await advanceStage(writer, job, workerId, "screening_sources", log);
 
-  const providerId = String((plan as { provider_id?: unknown }).provider_id ?? "");
-  switch (providerId) {
-    case FDA_FSVP_DESCRIPTOR.id:
-      return processFdaFsvpPlan(writer, job, workerId, plan, now, fetchImpl, log, deadlineAt);
-    case CANADA_CID_DESCRIPTOR.id:
-      return processCanadaCidPlan(writer, job, workerId, plan, now, fetchImpl, log, deadlineAt);
-    default:
-      job = await advanceStage(writer, job, workerId, "finalizing", log);
-      await writer.finalize(job, workerId, "completed", "unsupported_coverage", blankResult());
-      log?.(jobDiagnostic("stage_completed", job));
-      return "completed";
+  // Single-provider dispatch — byte-identical to Phase 2A/2B for
+  // FSVP-only US candidates and CID-only CA candidates.
+  if (plans.length === 1) {
+    const plan = plans[0];
+    const providerId = String((plan as { provider_id?: unknown }).provider_id ?? "");
+    switch (providerId) {
+      case FDA_FSVP_DESCRIPTOR.id:
+        return processFdaFsvpPlan(writer, job, workerId, plan, now, fetchImpl, log, deadlineAt);
+      case CANADA_CID_DESCRIPTOR.id:
+        return processCanadaCidPlan(writer, job, workerId, plan, now, fetchImpl, log, deadlineAt);
+      case FDA_VQIP_DESCRIPTOR.id:
+        return processFdaVqipPlan(writer, job, workerId, plan, now, fetchImpl, log, deadlineAt);
+      default:
+        job = await advanceStage(writer, job, workerId, "finalizing", log);
+        await writer.finalize(job, workerId, "completed", "unsupported_coverage", blankResult());
+        log?.(jobDiagnostic("stage_completed", job));
+        return "completed";
+    }
   }
+
+  // BI4F 2C — multi-provider execution. Each provider runs to
+  // completion (or safe checkpoint) independently; per-provider
+  // evidence is preserved and only aggregated at finalize.
+  return processMultiProviderUsPlans(writer, job, workerId, plans, now, fetchImpl, log, deadlineAt);
 }
 
 /**
@@ -785,6 +821,518 @@ async function processCanadaCidPlan(
   }
   log?.(jobDiagnostic("stage_completed", job));
   return "completed";
+}
+
+/**
+ * BI4F Phase 2C — FDA VQIP snapshot loader. HTML page, ~40 KB,
+ * fully in-memory (no streaming needed at this size). Fetch → SHA-256
+ * → parse → save snapshot.
+ */
+export async function loadFdaVqipSnapshot(
+  writer: TradeResearchWriter,
+  now: Date,
+  fetchImpl?: typeof fetch,
+): Promise<{ snapshot: SnapshotRow; cacheHit: boolean }> {
+  const fresh = await writer.getFreshSnapshotByProvider(FDA_VQIP_DESCRIPTOR.id, FDA_VQIP_DATASET_ID, now);
+  if (fresh) return { snapshot: fresh, cacheHit: true };
+  const latest = await writer.getLatestSnapshotByProvider(FDA_VQIP_DESCRIPTOR.id, FDA_VQIP_DATASET_ID);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort("FDA VQIP fetch timeout"), FETCH_TIMEOUT_MS);
+  let fetched;
+  try {
+    fetched = await fetchFdaVqipDataset({
+      etag: latest?.etag, lastModified: latest?.last_modified,
+      fetchImpl, signal: controller.signal,
+    });
+  } catch (error) {
+    if (controller.signal.aborted) throw Object.assign(new Error("FDA VQIP request timed out."), { code: "NETWORK_TIMEOUT" });
+    throw error;
+  } finally { clearTimeout(timeout); }
+  const retrievedAt = now.toISOString();
+  const expiresAt = new Date(now.getTime() + FDA_VQIP_DESCRIPTOR.cacheMaxAgeDays * 86_400_000).toISOString();
+  if (fetched.outcome === "not_modified") {
+    if (!latest) throw new FdaVqipParserError("FDA VQIP returned not-modified without a cached snapshot.");
+    return { snapshot: await writer.refreshSnapshotExpiry(latest.id, retrievedAt, expiresAt), cacheHit: true };
+  }
+  if (!fetched.bytes || !fetched.materialHash) throw new FdaVqipParserError("FDA VQIP response was incomplete.");
+  const parsed = parseFdaVqipHtml(fetched.bytes);
+  const snapshot = await writer.saveSnapshot({
+    provider_id: FDA_VQIP_DESCRIPTOR.id, dataset_id: FDA_VQIP_DATASET_ID,
+    published_period: parsed.publishedPeriod, source_url: FDA_VQIP_SOURCE_URL,
+    etag: fetched.etag ?? null, last_modified: fetched.lastModified ?? null,
+    material_hash: fetched.materialHash, fetched_at: retrievedAt, retrieved_at: retrievedAt, expires_at: expiresAt,
+    row_count: parsed.rows.length,
+    coverage: {
+      fields: ["firm_name", "address", "state_code"],
+      semantics: "voluntary_importer_program_participation_only",
+      attribution: FDA_VQIP_ATTRIBUTION,
+      shipmentLevel: false,
+    },
+    parse_version: FDA_VQIP_PARSE_VERSION, terms_version: FDA_VQIP_DESCRIPTOR.termsVersion,
+    status: "ready", safe_metadata: { malformedRowCount: parsed.malformedRowCount },
+    normalized_rows: parsed.rows,
+  });
+  return { snapshot, cacheHit: false };
+}
+
+/**
+ * Single-provider VQIP path — mirrors FSVP and CID shape.
+ */
+async function processFdaVqipPlan(
+  writer: TradeResearchWriter,
+  claimedJob: InternalJobRow,
+  workerId: string,
+  plan: Record<string, unknown>,
+  now: () => Date,
+  fetchImpl: typeof fetch | undefined,
+  log: TradeResearchLogger | undefined,
+  deadlineAt: number | undefined,
+): Promise<"completed" | "retry" | "failed"> {
+  let job = claimedJob;
+  let previous = await writer.latestAttempt(String(plan.id));
+  let previousStateRaw = previous?.state;
+  let previousState = typeof previousStateRaw === "string" ? previousStateRaw : null;
+  if (previousState === "running" && previous?.id) {
+    await writer.reconcileStaleAttempt(String(previous.id), "STALE_LEASE_RECOVERED");
+    previous = { ...previous, state: "failed_retryable" };
+    previousStateRaw = "failed_retryable";
+    previousState = "failed_retryable";
+  }
+  const attemptAlreadyResolved = previousState === "completed" || previousState === "skipped_cached";
+
+  let snapshot: SnapshotRow;
+  let cacheHit = false;
+  const preloadedFresh = await writer.getFreshSnapshotByProvider(FDA_VQIP_DESCRIPTOR.id, FDA_VQIP_DATASET_ID, now());
+  if (preloadedFresh) { snapshot = preloadedFresh; cacheHit = true; }
+  else { snapshot = undefined as unknown as SnapshotRow; }
+
+  if (!snapshot) {
+    const gate = await checkpointIfBudgetLow(writer, job, workerId, deadlineAt, 5_000, now, log);
+    if (!gate.ok) return "retry";
+  }
+
+  const attemptNumber = attemptAlreadyResolved && snapshot
+    ? Number(previous?.attempt_number ?? 1)
+    : Number(previous?.attempt_number ?? 0) + 1;
+  const attempt = attemptAlreadyResolved && snapshot
+    ? previous as { id: string | number }
+    : await writer.startAttempt(job, String(plan.id), attemptNumber, workerId);
+  if (!(attemptAlreadyResolved && snapshot)) {
+    await writer.appendEvent(job, "provider_attempt_started", { providerId: FDA_VQIP_DESCRIPTOR.id, attempt: attemptNumber });
+  }
+  const started = Date.now();
+  try {
+    if (!snapshot) {
+      const heartbeat = await withHeartbeat(writer, job, workerId, () => loadFdaVqipSnapshot(writer, now(), fetchImpl));
+      job = heartbeat.job;
+      snapshot = heartbeat.value.snapshot;
+      cacheHit = heartbeat.value.cacheHit;
+    }
+  } catch (error) {
+    const status = typeof error === "object" && error && "status" in error ? Number((error as { status?: unknown }).status) : undefined;
+    const code = typeof error === "object" && error && "code" in error ? String((error as { code?: unknown }).code) : undefined;
+    const delay = isRetryableProviderFailure({ status, code }) ? retryDelayMs(attemptNumber) : null;
+    if (delay !== null) {
+      await writer.finishAttempt(String(attempt.id), { state: "retry_wait", safe_error_code: code ?? "TRANSIENT_PROVIDER_ERROR", duration_ms: Date.now() - started });
+      await writer.appendEvent(job, "provider_attempt_completed", { providerId: FDA_VQIP_DESCRIPTOR.id, attempt: attemptNumber, state: "retry_wait" });
+      await writer.release(job, workerId, new Date(now().getTime() + delay).toISOString());
+      log?.(jobDiagnostic("job_requeued", job, { leaseState: "released", safeErrorCode: code ?? "TRANSIENT_PROVIDER_ERROR" }));
+      return "retry";
+    }
+    await writer.finishAttempt(String(attempt.id), { state: "failed_terminal", safe_error_code: code ?? (error instanceof FdaVqipParserError ? error.code : "PROVIDER_FAILURE"), duration_ms: Date.now() - started });
+    await writer.finalize(job, workerId, "failed", "failed", blankResult());
+    log?.(jobDiagnostic("job_failed", job, { leaseState: "released", safeErrorCode: code ?? (error instanceof FdaVqipParserError ? error.code : "PROVIDER_FAILURE") }));
+    return "failed";
+  }
+  if (!attemptAlreadyResolved) {
+    await writer.finishAttempt(String(attempt.id), {
+      state: cacheHit ? "skipped_cached" : "completed", duration_ms: Date.now() - started,
+      record_count: snapshot.row_count, match_count: 0,
+    });
+    await writer.appendEvent(job, "provider_attempt_completed", { providerId: FDA_VQIP_DESCRIPTOR.id, attempt: attemptNumber, state: cacheHit ? "skipped_cached" : "completed", recordCount: snapshot.row_count });
+  }
+  if (await writer.isCancellationRequested(job.batch_id)) {
+    await writer.finalize(job, workerId, "cancelled", "cancelled", blankResult());
+    return "completed";
+  }
+  const matchGate = await checkpointIfBudgetLow(writer, job, workerId, deadlineAt, 5_000, now, log);
+  if (!matchGate.ok) return "retry";
+  job = await advanceStage(writer, job, workerId, "resolving_company_matches", log);
+  const candidate = await writer.getCandidate(job);
+  const match = matchFdaVqipCompany({
+    companyName: candidate.companyName, address: candidate.address, city: candidate.city,
+    rows: snapshot.normalized_rows as unknown as Parameters<typeof matchFdaVqipCompany>[0]["rows"],
+  });
+  await writer.appendEvent(job, "match_resolved", {
+    providerId: FDA_VQIP_DESCRIPTOR.id, identityResult: match.decision,
+    matchCount: match.matchedRows.length, datasetWatermark: snapshot.material_hash,
+  });
+  job = await advanceStage(writer, job, workerId, "checking_trade_activity", log);
+  const result: TradeResearchResultSummary = {
+    ...blankResult(),
+    officialProgramEvidence: match.decision === "strong" ? "verified" : match.decision === "ambiguous" ? "needs_review" : "no_verified_match",
+    sourcesChecked: 1,
+    evidence: {
+      source: "FDA VQIP", datasetPeriod: snapshot.published_period, retrievedAt: snapshot.retrieved_at,
+      matchedSourceName: match.matchedRows[0]?.firmName, matchedState: match.matchedRows[0]?.stateCode,
+      candidateName: candidate.companyName, candidateState: match.candidateState,
+      identityDecision: match.decision, matchReason: match.reason,
+      coverageExplanation: "The FDA VQIP public list contains firm name, address, email, website only. It does not establish shipments, products, origin, suppliers, quantities, values, or CBP importer-of-record status.",
+    },
+  };
+  job = await advanceStage(writer, job, workerId, "finalizing", log);
+  if (await writer.isCancellationRequested(job.batch_id)) {
+    await writer.finalize(job, workerId, "partial", "partial", result);
+  } else if (match.decision === "strong") {
+    await writer.finalize(job, workerId, "completed", "official_importer_program_corroboration", result);
+  } else if (match.decision === "ambiguous") {
+    await writer.finalize(job, workerId, "needs_review", "needs_review", result);
+  } else {
+    await writer.finalize(job, workerId, "completed", "no_verified_evidence", result);
+  }
+  log?.(jobDiagnostic("stage_completed", job));
+  return "completed";
+}
+
+/**
+ * BI4F Phase 2C — multi-provider orchestrator.
+ *
+ * Runs each eligible provider sequentially, allocating deadline
+ * budget across them. Per-provider evidence is preserved verbatim
+ * in `evidence.sources[]`. The top-level `officialProgramEvidence`,
+ * `productEvidence`, `originEvidence`, and `indiaOrigin` fields are
+ * derived deterministically WITHOUT overwriting per-source facts.
+ *
+ * Failure isolation: if one provider transient-fails or budget-times
+ * out, the other provider's evidence is preserved and the job
+ * finalizes as `partial` / `needs_review` / `completed` per the
+ * documented matrix.
+ */
+async function processMultiProviderUsPlans(
+  writer: TradeResearchWriter,
+  claimedJob: InternalJobRow,
+  workerId: string,
+  plans: readonly Record<string, unknown>[],
+  now: () => Date,
+  fetchImpl: typeof fetch | undefined,
+  log: TradeResearchLogger | undefined,
+  deadlineAt: number | undefined,
+): Promise<"completed" | "retry" | "failed"> {
+  let job = claimedJob;
+  const perProvider: TradeResearchSourceEvidence[] = [];
+  let anyEvaluated = false;
+  let anyProviderFailed = false;
+
+  for (const plan of plans) {
+    const providerId = String((plan as { provider_id?: unknown }).provider_id ?? "");
+    // Deadline gate BEFORE starting the provider — skip if budget too low.
+    const providerRequiredMs = providerId === FDA_FSVP_DESCRIPTOR.id ? FDA_COLD_PATH_WORST_CASE_MS : 5_000;
+    const gate = await checkpointIfBudgetLow(writer, job, workerId, deadlineAt, providerRequiredMs, now, log);
+    if (!gate.ok) return "retry";
+    // Cancellation gate.
+    if (await writer.isCancellationRequested(job.batch_id)) {
+      await writer.finalize(job, workerId, "cancelled", "cancelled", blankResult());
+      return "completed";
+    }
+    // Reconcile stale attempts for THIS provider only.
+    let previous = await writer.latestAttempt(String(plan.id));
+    if (previous?.state === "running" && previous?.id) {
+      await writer.reconcileStaleAttempt(String(previous.id), "STALE_LEASE_RECOVERED");
+      previous = { ...previous, state: "failed_retryable" };
+    }
+    // Run per-provider execution.
+    let providerResult: { evidence?: TradeResearchSourceEvidence; failed: boolean } = { failed: false };
+    try {
+      if (providerId === FDA_FSVP_DESCRIPTOR.id) {
+        providerResult = await runFdaFsvpProviderOnly(writer, job, workerId, plan, previous, now, fetchImpl, log);
+      } else if (providerId === FDA_VQIP_DESCRIPTOR.id) {
+        providerResult = await runFdaVqipProviderOnly(writer, job, workerId, plan, previous, now, fetchImpl, log);
+      } else {
+        // Unknown provider in multi-mode — skip (defensive).
+        continue;
+      }
+    } catch (error) {
+      anyProviderFailed = true;
+      const code = typeof error === "object" && error && "code" in error ? String((error as { code?: unknown }).code) : "PROVIDER_FAILURE";
+      log?.(jobDiagnostic("job_failed", job, { safeErrorCode: code, leaseState: "owned" }));
+    }
+    if (providerResult.evidence) {
+      anyEvaluated = true;
+      perProvider.push(providerResult.evidence);
+    }
+    if (providerResult.failed) anyProviderFailed = true;
+  }
+
+  // Aggregate + finalize once.
+  const aggregate = aggregateProviderEvidence(perProvider);
+  const sourcesChecked = perProvider.filter((s) => s.outcome === "completed" || s.outcome === "cache_hit").length;
+
+  // Top-level projection (backwards-compatible for single-source UI):
+  const strongCount = perProvider.filter((s) => s.companyEvidence === "verified").length;
+  const supportingCount = perProvider.filter((s) => s.companyEvidence === "supporting").length;
+  const noMatchCount = perProvider.filter((s) => s.companyEvidence === "no_verified_match").length;
+  const officialProgramEvidence: TradeResearchResultSummary["officialProgramEvidence"] =
+    aggregate.identity === "conflicting_evidence" ? "needs_review" :
+    strongCount > 0 ? "verified" :
+    supportingCount > 0 ? "needs_review" :
+    noMatchCount > 0 ? "no_verified_match" :
+    "not_checked";
+
+  const primary = perProvider[0];
+  const result: TradeResearchResultSummary = {
+    ...blankResult(),
+    officialProgramEvidence,
+    sourcesChecked,
+    evidence: primary ? {
+      source: primary.source, datasetPeriod: primary.datasetPeriod, retrievedAt: primary.retrievedAt,
+      matchedSourceName: primary.matchedSourceName, matchedState: primary.matchedState,
+      candidateName: primary.candidateName, candidateState: primary.candidateState,
+      identityDecision: primary.identityDecision, matchReason: primary.matchReason,
+      coverageExplanation: primary.coverageExplanation,
+    } : undefined,
+    sources: perProvider,
+    aggregate,
+  };
+
+  job = await advanceStage(writer, job, workerId, "finalizing", log);
+  if (await writer.isCancellationRequested(job.batch_id)) {
+    await writer.finalize(job, workerId, "partial", "partial", result);
+  } else if (!anyEvaluated) {
+    await writer.finalize(job, workerId, "failed", "failed", result);
+  } else if (aggregate.identity === "conflicting_evidence") {
+    await writer.finalize(job, workerId, "needs_review", "needs_review", result);
+  } else if (strongCount > 0) {
+    // Any strong identity match finalizes as corroboration.
+    const outcome = anyProviderFailed ? "partial" : "official_importer_program_corroboration";
+    const status = anyProviderFailed ? "partial" : "completed";
+    await writer.finalize(job, workerId, status, outcome, result);
+  } else if (supportingCount > 0) {
+    await writer.finalize(job, workerId, "needs_review", "needs_review", result);
+  } else {
+    await writer.finalize(job, workerId, "completed", "no_verified_evidence", result);
+  }
+  log?.(jobDiagnostic("stage_completed", job));
+  return "completed";
+}
+
+/**
+ * Per-provider FSVP runner used by the multi-provider orchestrator.
+ * Does NOT finalize — returns per-source evidence for aggregation.
+ */
+async function runFdaFsvpProviderOnly(
+  writer: TradeResearchWriter,
+  job: InternalJobRow,
+  workerId: string,
+  plan: Record<string, unknown>,
+  previous: Record<string, unknown> | undefined,
+  now: () => Date,
+  fetchImpl: typeof fetch | undefined,
+  log: TradeResearchLogger | undefined,
+): Promise<{ evidence?: TradeResearchSourceEvidence; failed: boolean }> {
+  const previousState = typeof previous?.state === "string" ? previous.state as string : null;
+  const attemptAlreadyResolved = previousState === "completed" || previousState === "skipped_cached";
+  const preloadedFresh = await writer.getFreshSnapshot(now());
+  let snapshot = preloadedFresh;
+  let cacheHit = Boolean(preloadedFresh);
+  const attemptNumber = attemptAlreadyResolved && snapshot
+    ? Number(previous?.attempt_number ?? 1)
+    : Number(previous?.attempt_number ?? 0) + 1;
+  const attempt = attemptAlreadyResolved && snapshot
+    ? previous as { id: string | number }
+    : await writer.startAttempt(job, String(plan.id), attemptNumber, workerId);
+  if (!(attemptAlreadyResolved && snapshot)) {
+    await writer.appendEvent(job, "provider_attempt_started", { providerId: FDA_FSVP_DESCRIPTOR.id, attempt: attemptNumber });
+  }
+  const started = Date.now();
+  try {
+    if (!snapshot) {
+      const heartbeat = await withHeartbeat(writer, job, workerId, () => loadFdaFsvpSnapshot(writer, now(), fetchImpl));
+      snapshot = heartbeat.value.snapshot; cacheHit = heartbeat.value.cacheHit;
+    }
+  } catch (error) {
+    const code = typeof error === "object" && error && "code" in error ? String((error as { code?: unknown }).code) : (error instanceof FdaFsvpParserError ? error.code : "PROVIDER_FAILURE");
+    await writer.finishAttempt(String(attempt.id), { state: "failed_terminal", safe_error_code: code, duration_ms: Date.now() - started });
+    await writer.appendEvent(job, "provider_attempt_completed", { providerId: FDA_FSVP_DESCRIPTOR.id, attempt: attemptNumber, state: "failed_terminal" });
+    log?.(jobDiagnostic("job_failed", job, { safeErrorCode: code }));
+    return { failed: true };
+  }
+  if (!attemptAlreadyResolved) {
+    await writer.finishAttempt(String(attempt.id), {
+      state: cacheHit ? "skipped_cached" : "completed", duration_ms: Date.now() - started,
+      record_count: snapshot!.row_count, match_count: 0,
+    });
+    await writer.appendEvent(job, "provider_attempt_completed", { providerId: FDA_FSVP_DESCRIPTOR.id, attempt: attemptNumber, state: cacheHit ? "skipped_cached" : "completed", recordCount: snapshot!.row_count });
+  }
+  const candidate = await writer.getCandidate(job);
+  const match = matchFdaFsvpCompany({ companyName: candidate.companyName, address: candidate.address, city: candidate.city, rows: snapshot!.normalized_rows });
+  await writer.appendEvent(job, "match_resolved", { providerId: FDA_FSVP_DESCRIPTOR.id, identityResult: match.decision, matchCount: match.matchedRows.length, datasetWatermark: snapshot!.material_hash });
+  const companyEvidence: TradeResearchSourceEvidence["companyEvidence"] =
+    match.decision === "strong" ? "verified" :
+    match.decision === "ambiguous" ? "supporting" :
+    match.decision === "none" || match.decision === "rejected" ? "no_verified_match" : "not_available";
+  return {
+    failed: false,
+    evidence: {
+      providerId: "fda-fsvp",
+      outcome: cacheHit ? "cache_hit" : "completed",
+      source: "FDA FSVP",
+      datasetPeriod: snapshot!.published_period, retrievedAt: snapshot!.retrieved_at,
+      matchedSourceName: match.matchedRows[0]?.companyName, matchedState: match.matchedRows[0]?.stateCode,
+      candidateName: candidate.companyName, candidateState: match.candidateState,
+      identityDecision: match.decision, matchReason: match.reason,
+      coverageExplanation: "The FDA FSVP participant list contains name and U.S. state only. It does not establish shipments, products, origin, suppliers, quantities, values, or CBP importer-of-record status.",
+      companyEvidence, productEvidence: "not_available", originEvidence: "not_available",
+      shipmentEvidence: "not_verified",
+      attribution: "Source: U.S. Food & Drug Administration — Foreign Supplier Verification Programs participant list.",
+    },
+  };
+}
+
+async function runFdaVqipProviderOnly(
+  writer: TradeResearchWriter,
+  job: InternalJobRow,
+  workerId: string,
+  plan: Record<string, unknown>,
+  previous: Record<string, unknown> | undefined,
+  now: () => Date,
+  fetchImpl: typeof fetch | undefined,
+  log: TradeResearchLogger | undefined,
+): Promise<{ evidence?: TradeResearchSourceEvidence; failed: boolean }> {
+  const previousState = typeof previous?.state === "string" ? previous.state as string : null;
+  const attemptAlreadyResolved = previousState === "completed" || previousState === "skipped_cached";
+  const preloadedFresh = await writer.getFreshSnapshotByProvider(FDA_VQIP_DESCRIPTOR.id, FDA_VQIP_DATASET_ID, now());
+  let snapshot = preloadedFresh;
+  let cacheHit = Boolean(preloadedFresh);
+  const attemptNumber = attemptAlreadyResolved && snapshot
+    ? Number(previous?.attempt_number ?? 1)
+    : Number(previous?.attempt_number ?? 0) + 1;
+  const attempt = attemptAlreadyResolved && snapshot
+    ? previous as { id: string | number }
+    : await writer.startAttempt(job, String(plan.id), attemptNumber, workerId);
+  if (!(attemptAlreadyResolved && snapshot)) {
+    await writer.appendEvent(job, "provider_attempt_started", { providerId: FDA_VQIP_DESCRIPTOR.id, attempt: attemptNumber });
+  }
+  const started = Date.now();
+  try {
+    if (!snapshot) {
+      const heartbeat = await withHeartbeat(writer, job, workerId, () => loadFdaVqipSnapshot(writer, now(), fetchImpl));
+      snapshot = heartbeat.value.snapshot; cacheHit = heartbeat.value.cacheHit;
+    }
+  } catch (error) {
+    const code = typeof error === "object" && error && "code" in error ? String((error as { code?: unknown }).code) : (error instanceof FdaVqipParserError ? error.code : "PROVIDER_FAILURE");
+    await writer.finishAttempt(String(attempt.id), { state: "failed_terminal", safe_error_code: code, duration_ms: Date.now() - started });
+    await writer.appendEvent(job, "provider_attempt_completed", { providerId: FDA_VQIP_DESCRIPTOR.id, attempt: attemptNumber, state: "failed_terminal" });
+    log?.(jobDiagnostic("job_failed", job, { safeErrorCode: code }));
+    return { failed: true };
+  }
+  if (!attemptAlreadyResolved) {
+    await writer.finishAttempt(String(attempt.id), {
+      state: cacheHit ? "skipped_cached" : "completed", duration_ms: Date.now() - started,
+      record_count: snapshot!.row_count, match_count: 0,
+    });
+    await writer.appendEvent(job, "provider_attempt_completed", { providerId: FDA_VQIP_DESCRIPTOR.id, attempt: attemptNumber, state: cacheHit ? "skipped_cached" : "completed", recordCount: snapshot!.row_count });
+  }
+  const candidate = await writer.getCandidate(job);
+  const match = matchFdaVqipCompany({
+    companyName: candidate.companyName, address: candidate.address, city: candidate.city,
+    rows: snapshot!.normalized_rows as unknown as Parameters<typeof matchFdaVqipCompany>[0]["rows"],
+  });
+  await writer.appendEvent(job, "match_resolved", { providerId: FDA_VQIP_DESCRIPTOR.id, identityResult: match.decision, matchCount: match.matchedRows.length, datasetWatermark: snapshot!.material_hash });
+  const companyEvidence: TradeResearchSourceEvidence["companyEvidence"] =
+    match.decision === "strong" ? "verified" :
+    match.decision === "ambiguous" ? "supporting" :
+    match.decision === "none" || match.decision === "rejected" ? "no_verified_match" : "not_available";
+  return {
+    failed: false,
+    evidence: {
+      providerId: "fda-vqip",
+      outcome: cacheHit ? "cache_hit" : "completed",
+      source: "FDA VQIP",
+      datasetPeriod: snapshot!.published_period, retrievedAt: snapshot!.retrieved_at,
+      matchedSourceName: match.matchedRows[0]?.firmName, matchedState: match.matchedRows[0]?.stateCode,
+      candidateName: candidate.companyName, candidateState: match.candidateState,
+      identityDecision: match.decision, matchReason: match.reason,
+      coverageExplanation: "The FDA VQIP public list contains firm name, address, email, website only. It does not establish shipments, products, origin, suppliers, quantities, values, or CBP importer-of-record status.",
+      companyEvidence, productEvidence: "not_available", originEvidence: "not_available",
+      shipmentEvidence: "not_verified",
+      attribution: FDA_VQIP_ATTRIBUTION,
+    },
+  };
+}
+
+/**
+ * BI4F 2C — deterministic aggregation. Per-source facts are NEVER
+ * overwritten. Aggregate identity is derived conservatively:
+ *   • ≥2 sources verified & no geography conflict → verified_identity
+ *   • 1 source verified, others no_match/supporting → single_source_support
+ *   • ≥2 sources supporting → multi_source_support
+ *   • Verified sources with conflicting matched-state → conflicting_evidence
+ *   • Only no_match across all sources → no_evidence
+ *   • Any supporting-only combo → needs_review
+ */
+export function aggregateProviderEvidence(sources: readonly TradeResearchSourceEvidence[]): TradeResearchAggregateSummary {
+  const evaluated = sources.filter((s) => s.outcome === "completed" || s.outcome === "cache_hit" || s.outcome === "no_match");
+  const sourcesEvaluated = evaluated.length;
+  const verifiedSources = sources.filter((s) => s.companyEvidence === "verified");
+  const supportingSources = sources.filter((s) => s.companyEvidence === "supporting");
+  const noMatchSources = sources.filter((s) => s.companyEvidence === "no_verified_match");
+
+  // Conflict check: verified rows disagree on matchedState.
+  const verifiedStates = new Set(verifiedSources.map((s) => s.matchedState).filter((s): s is string => Boolean(s)));
+  if (verifiedSources.length >= 2 && verifiedStates.size >= 2) {
+    return {
+      identity: "conflicting_evidence",
+      reason: "Multiple providers verified identity but reported conflicting geography — flagged for review.",
+      sourcesEvaluated, sourcesCorroborating: verifiedSources.length,
+    };
+  }
+  if (verifiedSources.length >= 2) {
+    return {
+      identity: "verified_identity",
+      reason: "Multiple official sources independently verified company identity.",
+      sourcesEvaluated, sourcesCorroborating: verifiedSources.length,
+    };
+  }
+  if (verifiedSources.length === 1 && (supportingSources.length + noMatchSources.length) > 0) {
+    return {
+      identity: "single_source_support",
+      reason: "One official source verified identity; other providers did not corroborate.",
+      sourcesEvaluated, sourcesCorroborating: 1,
+    };
+  }
+  if (verifiedSources.length === 1) {
+    return {
+      identity: "single_source_support",
+      reason: "One official source verified identity.",
+      sourcesEvaluated, sourcesCorroborating: 1,
+    };
+  }
+  if (supportingSources.length >= 2) {
+    return {
+      identity: "multi_source_support",
+      reason: "Two or more sources matched by name only; identity requires review.",
+      sourcesEvaluated, sourcesCorroborating: supportingSources.length,
+    };
+  }
+  if (supportingSources.length === 1) {
+    return {
+      identity: "needs_review",
+      reason: "One source matched by name only; identity requires review.",
+      sourcesEvaluated, sourcesCorroborating: 1,
+    };
+  }
+  if (noMatchSources.length > 0) {
+    return {
+      identity: "no_evidence",
+      reason: "No official source verified identity in the checked datasets. This is not evidence that the company does not import.",
+      sourcesEvaluated, sourcesCorroborating: 0,
+    };
+  }
+  return {
+    identity: "no_evidence",
+    reason: "No provider produced evaluated evidence.",
+    sourcesEvaluated, sourcesCorroborating: 0,
+  };
 }
 
 export async function drainTradeResearch(deps: WorkerDependencies): Promise<TradeResearchDrainResult> {

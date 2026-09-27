@@ -177,9 +177,40 @@ function JobContent({ job }: { job: TradeResearchJobSnapshot }) {
       </dl>
       {r.officialProgramEvidence === "not_checked" && <p className="mt-3 text-[11px] leading-relaxed text-text-muted">No eligible free official source was evaluated for this candidate&apos;s scope. This is not evidence for or against import activity.</p>}
       {r.officialProgramEvidence === "no_verified_match" && <p className="mt-3 text-[11px] leading-relaxed text-text-muted">This means no match was found in the checked dataset. It does not prove the company has no import activity.</p>}
-      {r.evidence && <details className="mt-3"><summary className="cursor-pointer text-text-secondary">View evidence</summary><dl className="mt-2 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-[11px]">
-        <dt className="text-text-muted">Source</dt><dd data-evidence-source={source}>{source}</dd><dt className="text-text-muted">Dataset period</dt><dd>{r.evidence.datasetPeriod}</dd><dt className="text-text-muted">Retrieved</dt><dd>{new Date(r.evidence.retrievedAt).toLocaleDateString()}</dd><dt className="text-text-muted">Matched name</dt><dd>{r.evidence.matchedSourceName ?? "—"}</dd><dt className="text-text-muted">{matchedLocationDt}</dt><dd>{r.evidence.matchedState ?? "—"}</dd><dt className="text-text-muted">Identity decision</dt><dd>{r.evidence.identityDecision}</dd><dt className="text-text-muted">Reason</dt><dd>{r.evidence.matchReason}</dd><dt className="text-text-muted">Coverage</dt><dd>{r.evidence.coverageExplanation}</dd>
-      </dl></details>}
+      {/* BI4F 2C — multi-source view when `sources[]` has 2+ entries. */}
+      {r.sources && r.sources.length > 1 ? (
+        <details className="mt-3" data-multi-source="true">
+          <summary className="cursor-pointer text-text-secondary">View evidence ({r.sources.length} sources)</summary>
+          {r.aggregate && (
+            <p className="mt-2 text-[11px] text-text-muted" data-aggregate-identity={r.aggregate.identity}>
+              <strong>Aggregate:</strong> {r.aggregate.identity.replace(/_/g, " ")} — {r.aggregate.reason}
+            </p>
+          )}
+          {r.sources.map((src) => (
+            <section key={src.providerId} className="mt-3 rounded border border-app-border p-2" data-source={src.providerId}>
+              <h3 className="text-[12px] font-semibold text-text-primary">{src.source}</h3>
+              <dl className="mt-1 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-[11px]">
+                <dt className="text-text-muted">Dataset period</dt><dd>{src.datasetPeriod}</dd>
+                <dt className="text-text-muted">Retrieved</dt><dd>{new Date(src.retrievedAt).toLocaleDateString()}</dd>
+                <dt className="text-text-muted">Matched name</dt><dd>{src.matchedSourceName ?? "—"}</dd>
+                <dt className="text-text-muted">Matched location</dt><dd>{src.matchedState ?? "—"}</dd>
+                <dt className="text-text-muted">Identity decision</dt><dd data-source-identity={src.identityDecision}>{src.identityDecision}</dd>
+                <dt className="text-text-muted">Company evidence</dt><dd data-source-company={src.companyEvidence}>{src.companyEvidence}</dd>
+                <dt className="text-text-muted">Product evidence</dt><dd>{src.productEvidence}</dd>
+                <dt className="text-text-muted">Origin evidence</dt><dd>{src.originEvidence}</dd>
+                <dt className="text-text-muted">Shipment evidence</dt><dd>Not verified</dd>
+                <dt className="text-text-muted">Reason</dt><dd>{src.matchReason}</dd>
+                <dt className="text-text-muted">Coverage</dt><dd>{src.coverageExplanation}</dd>
+                <dt className="text-text-muted">Attribution</dt><dd>{src.attribution}</dd>
+              </dl>
+            </section>
+          ))}
+        </details>
+      ) : r.evidence && (
+        <details className="mt-3"><summary className="cursor-pointer text-text-secondary">View evidence</summary><dl className="mt-2 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-[11px]">
+          <dt className="text-text-muted">Source</dt><dd data-evidence-source={source}>{source}</dd><dt className="text-text-muted">Dataset period</dt><dd>{r.evidence.datasetPeriod}</dd><dt className="text-text-muted">Retrieved</dt><dd>{new Date(r.evidence.retrievedAt).toLocaleDateString()}</dd><dt className="text-text-muted">Matched name</dt><dd>{r.evidence.matchedSourceName ?? "—"}</dd><dt className="text-text-muted">{matchedLocationDt}</dt><dd>{r.evidence.matchedState ?? "—"}</dd><dt className="text-text-muted">Identity decision</dt><dd>{r.evidence.identityDecision}</dd><dt className="text-text-muted">Reason</dt><dd>{r.evidence.matchReason}</dd><dt className="text-text-muted">Coverage</dt><dd>{r.evidence.coverageExplanation}</dd>
+        </dl></details>
+      )}
     </div>
   );
 }

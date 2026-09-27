@@ -113,12 +113,46 @@ export const CANADA_CID_DESCRIPTOR: TradeResearchProviderDescriptor = {
 };
 
 /**
+ * BI4F Phase 2C — FDA VQIP as a second US free provider.
+ *
+ * VQIP is the FDA's voluntary US importer program with a public
+ * fiscal-year participant list. Row-grain: (firm name, address,
+ * email, website). Small universe (~10 rows). No product / origin /
+ * shipment fields — VQIP corroborates COMPANY identity + FDA
+ * program participation only.
+ *
+ * Kept gated at `costClass: "unsupported"` in the source registry
+ * until the SAME reviewed change lands the adapter + worker branch
+ * + multi-provider execution + aggregation model + UI. Flipping to
+ * `"free"` while any prerequisite is missing would emit an
+ * eligible plan the worker cannot execute.
+ */
+export const FDA_VQIP_DESCRIPTOR: TradeResearchProviderDescriptor = {
+  id: "fda-vqip",
+  displayName: "FDA VQIP",
+  version: "fda-vqip-v1",
+  costClass: "free",
+  countries: ["US"],
+  roles: ["COMPANY_MATCH", "OFFICIAL_CORROBORATION"],
+  automationAllowed: true,
+  termsApproved: true,
+  termsVersion: "public-fda-list-v1",
+  datasetCadence: "annual",
+  cacheMaxAgeDays: 200,
+  compatiblePlannerVersions: [TRADE_RESEARCH_PLANNER_VERSION],
+};
+
+/**
  * Default descriptor registry — every production planner call site
  * should use this. Callers may still pass a custom `descriptors`
- * array in tests to isolate a single provider.
+ * array in tests to isolate a single provider. Order is deterministic
+ * and reflects planner sequence for multi-provider execution:
+ *   US : FDA FSVP (sequence 1) → FDA VQIP (sequence 2)
+ *   CA : Canada CID (sequence 3; only CA)
  */
 export const DEFAULT_TRADE_RESEARCH_DESCRIPTORS: readonly TradeResearchProviderDescriptor[] = [
   FDA_FSVP_DESCRIPTOR,
+  FDA_VQIP_DESCRIPTOR,
   CANADA_CID_DESCRIPTOR,
 ];
 

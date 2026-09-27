@@ -403,6 +403,24 @@ export class TradeResearchWriter {
     if (error) throw error;
     return data as Row | undefined;
   }
+  /**
+   * BI4F Phase 2C — plural-safe version. Returns ALL eligible
+   * provider plans for a job in deterministic (sequence) order. The
+   * worker iterates providers in this order, allocating deadline
+   * budget across them.
+   */
+  async getEligiblePlans(jobId: string): Promise<Row[]> {
+    requireUuid(jobId, "buyer_trade_research_provider_plans.job_id");
+    const { data, error } = await this.client
+      .from("buyer_trade_research_provider_plans").select("*")
+      .eq("job_id", jobId).eq("eligibility", "eligible")
+      .order("sequence");
+    if (error) throw error;
+    return (data ?? []) as Row[];
+  }
+  async latestAttemptForPlan(planId: string): Promise<Row | undefined> {
+    return this.latestAttempt(planId);
+  }
   async latestAttempt(planId: string): Promise<Row | undefined> {
     requireUuid(planId, "buyer_trade_research_attempts.provider_plan_id");
     const { data, error } = await this.client.from("buyer_trade_research_attempts").select("*").eq("provider_plan_id", planId).order("attempt_number", { ascending: false }).limit(1).maybeSingle();

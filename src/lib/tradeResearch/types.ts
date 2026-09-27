@@ -61,7 +61,7 @@ export interface TradeResearchBatchSnapshot {
 }
 
 export interface TradeResearchEvidenceDetail {
-  source: "FDA FSVP" | "Canadian Importers Database";
+  source: "FDA FSVP" | "Canadian Importers Database" | "FDA VQIP";
   datasetPeriod: string;
   retrievedAt: string;
   matchedSourceName?: string;
@@ -126,7 +126,62 @@ export interface TradeResearchResultSummary {
   shipmentEvidence: "not_verified";
   sourcesChecked: number;
   automaticSpendRupees: 0;
+  /**
+   * Backwards-compatible singular evidence. For Phase 2A/2B rows
+   * (single provider), this carries the primary provider's block.
+   * For Phase 2C multi-source rows, this is the FIRST source in
+   * `sources[]` — do NOT read as authoritative when multiple
+   * providers are present.
+   */
   evidence?: TradeResearchEvidenceDetail;
+  /**
+   * BI4F Phase 2C — per-source evidence array. Each entry is the
+   * verbatim per-provider observation. Consumers MUST read this
+   * array (not `evidence`) when it has more than one entry.
+   */
+  sources?: TradeResearchSourceEvidence[];
+  /**
+   * BI4F Phase 2C — deterministic multi-source aggregate. Never
+   * overwrites per-source facts. May carry `"conflicting_source_evidence"`
+   * when providers disagree on identity/geography.
+   */
+  aggregate?: TradeResearchAggregateSummary;
+}
+
+export interface TradeResearchSourceEvidence extends TradeResearchEvidenceDetail {
+  providerId: "fda-fsvp" | "canada-cid" | "fda-vqip";
+  outcome: "completed" | "cache_hit" | "no_match" | "provider_failed" | "not_evaluated";
+  companyEvidence:
+    | "verified"
+    | "supporting"
+    | "no_verified_match"
+    | "not_available";
+  productEvidence:
+    | "verified"
+    | "supporting"
+    | "no_verified_match"
+    | "not_available";
+  originEvidence:
+    | "verified"
+    | "supporting"
+    | "no_verified_match"
+    | "not_available"
+    | "not_verified";
+  shipmentEvidence: "not_verified";
+  attribution: string;
+}
+
+export interface TradeResearchAggregateSummary {
+  identity:
+    | "no_evidence"
+    | "single_source_support"
+    | "multi_source_support"
+    | "verified_identity"
+    | "conflicting_evidence"
+    | "needs_review";
+  reason: string;
+  sourcesEvaluated: number;
+  sourcesCorroborating: number;
 }
 
 export interface TradeResearchJobSnapshot {
