@@ -207,6 +207,16 @@ select w.id, u.id, 'member', true
   where w.slug = 'mdf'
     and lower(u.email) = lower('<NEW_MDF_USER_EMAIL>')
 on conflict (workspace_id, user_id) do update set active = true;
+
+insert into mdf.user_workspace_selection(user_id, workspace_id)
+select u.id, w.id
+  from public.workspaces w, auth.users u
+  where w.slug = 'mdf'
+    and lower(u.email) = lower('<NEW_MDF_USER_EMAIL>')
+on conflict (user_id) do update
+  set workspace_id = excluded.workspace_id,
+      selected_at = now(),
+      updated_at = now();
 ```
 
 Never expose a "create user" button in the app. All provisioning happens

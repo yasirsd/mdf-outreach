@@ -35,6 +35,7 @@ export class SupabaseBuyerCandidateProductMatchRepository
     const { data, error } = await this.supabase
       .from("buyer_candidate_product_matches")
       .select("*")
+      .eq("workspace_id", this.workspaceId)
       .eq("candidate_id", candidateId)
       .order("relevance", { ascending: false });
     if (error) throw error;
@@ -49,6 +50,7 @@ export class SupabaseBuyerCandidateProductMatchRepository
       const { data, error } = await this.supabase
         .from("buyer_candidate_product_matches")
         .select("*")
+        .eq("workspace_id", this.workspaceId)
         .in("candidate_id", ids.slice(offset, offset + 200))
         .order("relevance", { ascending: false });
       if (error) throw error;
@@ -77,6 +79,7 @@ export class SupabaseBuyerCandidateProductMatchRepository
     const { data, error } = await this.supabase
       .from("buyer_candidate_product_matches")
       .update(fields)
+      .eq("workspace_id", this.workspaceId)
       .eq("id", id)
       .select("*")
       .single();
@@ -89,6 +92,7 @@ export class SupabaseBuyerCandidateProductMatchRepository
     const { error } = await this.supabase
       .from("buyer_candidate_product_matches")
       .delete()
+      .eq("workspace_id", this.workspaceId)
       .eq("id", id);
     if (error) throw error;
   }
@@ -102,6 +106,7 @@ export class SupabaseBuyerCandidateProductMatchRepository
     const { data, error } = await this.supabase
       .from("buyer_candidate_product_matches")
       .select("*")
+      .eq("workspace_id", this.workspaceId)
       .eq("candidate_id", candidateId)
       .eq("product_key", key)
       .maybeSingle();

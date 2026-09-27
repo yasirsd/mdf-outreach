@@ -159,6 +159,18 @@ describe("BF2 server-action safety guardrails", () => {
     expect(loadFn).toContain("toSafeContacts(contacts)");
   });
 
+  it("candidate detail fails before loading child records when the selected-workspace repository rejects the id", () => {
+    const loadFn = ACTIONS.match(
+      /export async function loadBuyerCandidateAction[\s\S]+?^}/m,
+    )?.[0] ?? "";
+    const candidateLookup = loadFn.indexOf("repos.buyerCandidates.get(id)");
+    const notFound = loadFn.indexOf("if (!candidate) return null");
+    const childReads = loadFn.indexOf("repos.buyerCandidateContacts.listByCandidate(id)");
+    expect(candidateLookup).toBeGreaterThan(-1);
+    expect(notFound).toBeGreaterThan(candidateLookup);
+    expect(childReads).toBeGreaterThan(notFound);
+  });
+
   it("candidate ids are validated against a strict UUID pattern (BF2.1)", () => {
     // BF2 accepted the broad mock-era [A-Za-z0-9_-]{1,80}. BF2.1 tightens
     // to a real UUID so a malformed browser id fails safely before PostgREST.

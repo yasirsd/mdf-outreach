@@ -26,6 +26,7 @@ export class SupabaseBuyerCandidateContactRepository implements BuyerCandidateCo
     const { data, error } = await this.supabase
       .from("buyer_candidate_contacts")
       .select("*")
+      .eq("workspace_id", this.workspaceId)
       .eq("candidate_id", candidateId)
       .order("is_primary", { ascending: false });
     if (error) throw error;
@@ -40,6 +41,7 @@ export class SupabaseBuyerCandidateContactRepository implements BuyerCandidateCo
       const { data, error } = await this.supabase
         .from("buyer_candidate_contacts")
         .select("*")
+        .eq("workspace_id", this.workspaceId)
         .in("candidate_id", ids.slice(offset, offset + 200))
         .order("is_primary", { ascending: false });
       if (error) throw error;
@@ -53,6 +55,7 @@ export class SupabaseBuyerCandidateContactRepository implements BuyerCandidateCo
     const { data, error } = await this.supabase
       .from("buyer_candidate_contacts")
       .select("*")
+      .eq("workspace_id", this.workspaceId)
       .eq("id", id)
       .maybeSingle();
     if (error) throw error;
@@ -76,6 +79,7 @@ export class SupabaseBuyerCandidateContactRepository implements BuyerCandidateCo
     const { data, error } = await this.supabase
       .from("buyer_candidate_contacts")
       .update(fields)
+      .eq("workspace_id", this.workspaceId)
       .eq("id", id)
       .select("*")
       .single();
@@ -85,7 +89,11 @@ export class SupabaseBuyerCandidateContactRepository implements BuyerCandidateCo
 
   async delete(id: string): Promise<void> {
     if (!isEntityUuid(id)) return;
-    const { error } = await this.supabase.from("buyer_candidate_contacts").delete().eq("id", id);
+    const { error } = await this.supabase
+      .from("buyer_candidate_contacts")
+      .delete()
+      .eq("workspace_id", this.workspaceId)
+      .eq("id", id);
     if (error) throw error;
   }
 
@@ -95,6 +103,7 @@ export class SupabaseBuyerCandidateContactRepository implements BuyerCandidateCo
     const { data, error } = await this.supabase
       .from("buyer_candidate_contacts")
       .select("*")
+      .eq("workspace_id", this.workspaceId)
       .eq("business_email", normalized)
       .limit(1)
       .maybeSingle();
@@ -109,6 +118,7 @@ export class SupabaseBuyerCandidateContactRepository implements BuyerCandidateCo
     const { data, error } = await this.supabase
       .from("buyer_candidate_contacts")
       .select("*")
+      .eq("workspace_id", this.workspaceId)
       .eq("source", src)
       .eq("provider_ref", ref)
       .limit(1)

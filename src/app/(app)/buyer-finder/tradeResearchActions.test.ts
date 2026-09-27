@@ -181,6 +181,21 @@ describe("BI4F 2A createTradeResearchBatchAction — inline kick", () => {
     expect(drainMock).not.toHaveBeenCalled();
   });
 
+  it("does not pass a candidate absent from the selected workspace to the service-role writer", async () => {
+    requireMdfSessionMock.mockResolvedValue(OWNER_SESSION);
+    serverReposMock.mockResolvedValueOnce({
+      repos: {
+        buyerCandidates: { list: async () => [] },
+        buyerCandidateProductMatches: { listByCandidate: async () => [] },
+      },
+    });
+    const { createTradeResearchBatchAction } = await import("./tradeResearchActions");
+    const result = await createTradeResearchBatchAction([CANDIDATE_ID]);
+    expect(result).toMatchObject({ outcome: "candidate_not_found" });
+    expect(createBatchMock).not.toHaveBeenCalled();
+    expect(drainMock).not.toHaveBeenCalled();
+  });
+
   it("automatic spend enforcement — the kick's drain callsite forbids paid providers via the shared worker", async () => {
     requireMdfSessionMock.mockResolvedValue(OWNER_SESSION);
     createBatchMock.mockResolvedValueOnce(BATCH);

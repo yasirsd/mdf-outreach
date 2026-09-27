@@ -23,6 +23,7 @@ export class SupabaseBuyerCandidatePublicEmailRepository
     const { data, error } = await this.supabase
       .from("buyer_candidate_public_emails")
       .select("*")
+      .eq("workspace_id", this.workspaceId)
       .eq("candidate_id", candidateId)
       .order("is_primary", { ascending: false });
     if (error) throw error;
@@ -34,6 +35,7 @@ export class SupabaseBuyerCandidatePublicEmailRepository
     const { data, error } = await this.supabase
       .from("buyer_candidate_public_emails")
       .select("*")
+      .eq("workspace_id", this.workspaceId)
       .eq("id", id)
       .maybeSingle();
     if (error) throw error;
@@ -60,6 +62,7 @@ export class SupabaseBuyerCandidatePublicEmailRepository
     const { data, error } = await this.supabase
       .from("buyer_candidate_public_emails")
       .update(fields)
+      .eq("workspace_id", this.workspaceId)
       .eq("id", id)
       .select("*")
       .single();
@@ -69,7 +72,11 @@ export class SupabaseBuyerCandidatePublicEmailRepository
 
   async delete(id: string): Promise<void> {
     if (!isEntityUuid(id)) return;
-    const { error } = await this.supabase.from("buyer_candidate_public_emails").delete().eq("id", id);
+    const { error } = await this.supabase
+      .from("buyer_candidate_public_emails")
+      .delete()
+      .eq("workspace_id", this.workspaceId)
+      .eq("id", id);
     if (error) throw error;
   }
 }

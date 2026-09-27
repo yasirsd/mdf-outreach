@@ -102,6 +102,7 @@ class SupabaseBuyerRepository implements BuyerRepository {
     const { data, error } = await this.supabase
       .from("buyers")
       .select("*")
+      .eq("workspace_id", this.workspaceId)
       .order("updated_at", { ascending: false });
     if (error) throw error;
     return (data ?? []).map(buyerFromRow);
@@ -121,6 +122,7 @@ class SupabaseBuyerRepository implements BuyerRepository {
     let q = this.supabase
       .from("buyers")
       .select("*", { count: "exact" })
+      .eq("workspace_id", this.workspaceId)
       .order("updated_at", { ascending: false })
       .range(from, to);
 
@@ -156,6 +158,7 @@ class SupabaseBuyerRepository implements BuyerRepository {
     const { data, error } = await this.supabase
       .from("buyers")
       .select("*")
+      .eq("workspace_id", this.workspaceId)
       .eq("id", id)
       .maybeSingle();
     if (error) throw error;
@@ -184,6 +187,7 @@ class SupabaseBuyerRepository implements BuyerRepository {
     const { data, error } = await this.supabase
       .from("buyers")
       .update(updateFields)
+      .eq("workspace_id", this.workspaceId)
       .eq("id", id)
       .select("*")
       .single();
@@ -192,7 +196,11 @@ class SupabaseBuyerRepository implements BuyerRepository {
   }
 
   async delete(id: string): Promise<void> {
-    const { error } = await this.supabase.from("buyers").delete().eq("id", id);
+    const { error } = await this.supabase
+      .from("buyers")
+      .delete()
+      .eq("workspace_id", this.workspaceId)
+      .eq("id", id);
     if (error) throw error;
   }
 
@@ -212,6 +220,7 @@ class SupabaseBuyerRepository implements BuyerRepository {
     const { data, error } = await this.supabase
       .from("buyers")
       .select("*")
+      .eq("workspace_id", this.workspaceId)
       .ilike("email", email)
       .limit(1)
       .maybeSingle();
@@ -234,6 +243,7 @@ class SupabaseBuyerRepository implements BuyerRepository {
       const { data, error } = await this.supabase
         .from("buyers")
         .select("*")
+        .eq("workspace_id", this.workspaceId)
         .in("id", slice);
       if (error) throw error;
       for (const row of data ?? []) results.push(buyerFromRow(row));

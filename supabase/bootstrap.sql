@@ -36,6 +36,13 @@ begin
   on conflict (workspace_id, user_id)
   do update set role = 'owner', active = true;
 
+  insert into mdf.user_workspace_selection(user_id, workspace_id)
+  values (v_user_id, v_workspace)
+  on conflict (user_id) do update
+    set workspace_id = excluded.workspace_id,
+        selected_at = now(),
+        updated_at = now();
+
   insert into public.workspace_settings (workspace_id, onboarding_complete)
   values (v_workspace, true)
   on conflict (workspace_id) do nothing;

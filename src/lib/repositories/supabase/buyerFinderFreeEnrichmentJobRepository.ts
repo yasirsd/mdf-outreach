@@ -63,6 +63,7 @@ export class SupabaseBuyerFinderFreeEnrichmentJobRepository
     const { data, error } = await this.supabase
       .from("buyer_finder_free_enrichment_jobs")
       .select("*")
+      .eq("workspace_id", this.workspaceId)
       .eq("id", id)
       .maybeSingle();
     if (error) throw error;
@@ -77,6 +78,7 @@ export class SupabaseBuyerFinderFreeEnrichmentJobRepository
     const { data, error } = await this.supabase
       .from("buyer_finder_free_enrichment_jobs")
       .select("*")
+      .eq("workspace_id", this.workspaceId)
       .eq("candidate_id", candidateId)
       .eq("capability", capability)
       .maybeSingle();
@@ -89,6 +91,7 @@ export class SupabaseBuyerFinderFreeEnrichmentJobRepository
     const { data, error } = await this.supabase
       .from("buyer_finder_free_enrichment_jobs")
       .select("*")
+      .eq("workspace_id", this.workspaceId)
       .eq("candidate_id", candidateId);
     if (error) throw error;
     return (data ?? []).map((row) => freeEnrichmentJobFromRow(row as FreeEnrichmentJobRow));
@@ -98,6 +101,7 @@ export class SupabaseBuyerFinderFreeEnrichmentJobRepository
     const { data, error } = await this.supabase
       .from("buyer_finder_free_enrichment_jobs")
       .select("*")
+      .eq("workspace_id", this.workspaceId)
       .order("updated_at", { ascending: false });
     if (error) throw error;
     return (data ?? []).map((row) => freeEnrichmentJobFromRow(row as FreeEnrichmentJobRow));
@@ -111,6 +115,7 @@ export class SupabaseBuyerFinderFreeEnrichmentJobRepository
     const { data: processing, error: processingError } = await this.supabase
       .from("buyer_finder_free_enrichment_jobs")
       .select("id")
+      .eq("workspace_id", this.workspaceId)
       .eq("capability", capability)
       .eq("status", "processing")
       .limit(1);
@@ -120,6 +125,7 @@ export class SupabaseBuyerFinderFreeEnrichmentJobRepository
     const { data: queued, error: queuedError } = await this.supabase
       .from("buyer_finder_free_enrichment_jobs")
       .select("id, attempt_count, next_attempt_at")
+      .eq("workspace_id", this.workspaceId)
       .eq("capability", capability)
       .eq("status", "queued")
       .order("created_at", { ascending: true })
@@ -129,6 +135,7 @@ export class SupabaseBuyerFinderFreeEnrichmentJobRepository
     const { data: retrying, error: retryError } = await this.supabase
       .from("buyer_finder_free_enrichment_jobs")
       .select("id, attempt_count, next_attempt_at")
+      .eq("workspace_id", this.workspaceId)
       .eq("capability", capability)
       .eq("status", "retry_wait")
       .lte("next_attempt_at", nowIso)
@@ -147,6 +154,7 @@ export class SupabaseBuyerFinderFreeEnrichmentJobRepository
           attempt_count: (row.attempt_count ?? 0) + 1,
           updated_at: nowIso,
         })
+        .eq("workspace_id", this.workspaceId)
         .eq("id", row.id)
         .in("status", [...FREE_ENRICHMENT_CLAIMABLE_STATUSES])
         .select("*")
@@ -173,6 +181,7 @@ export class SupabaseBuyerFinderFreeEnrichmentJobRepository
       const { data, error } = await this.supabase
         .from("buyer_finder_free_enrichment_jobs")
         .update({ next_attempt_at: nowIso, updated_at: nowIso })
+        .eq("workspace_id", this.workspaceId)
         .eq("id", id)
         .in("status", [...FREE_ENRICHMENT_CLAIMABLE_STATUSES])
         .select("*")
@@ -191,6 +200,7 @@ export class SupabaseBuyerFinderFreeEnrichmentJobRepository
         completed_at: null,
         updated_at: nowIso,
       })
+      .eq("workspace_id", this.workspaceId)
       .eq("id", id)
       .in("status", [...FREE_ENRICHMENT_TERMINAL_STATUSES])
       .select("*")
@@ -207,6 +217,7 @@ export class SupabaseBuyerFinderFreeEnrichmentJobRepository
     const { data: processing, error: processingError } = await this.supabase
       .from("buyer_finder_free_enrichment_jobs")
       .select("id")
+      .eq("workspace_id", this.workspaceId)
       .eq("capability", existing.capability)
       .eq("status", "processing")
       .limit(1);
@@ -221,6 +232,7 @@ export class SupabaseBuyerFinderFreeEnrichmentJobRepository
         attempt_count: existing.attemptCount + 1,
         updated_at: nowIso,
       })
+      .eq("workspace_id", this.workspaceId)
       .eq("id", id)
       .in("status", [...FREE_ENRICHMENT_CLAIMABLE_STATUSES])
       .select("*")
@@ -245,6 +257,7 @@ export class SupabaseBuyerFinderFreeEnrichmentJobRepository
         error_code: "stale_processing",
         updated_at: now.toISOString(),
       })
+      .eq("workspace_id", this.workspaceId)
       .eq("status", "processing")
       .lt("started_at", cutoff)
       .select("id");
@@ -268,6 +281,7 @@ export class SupabaseBuyerFinderFreeEnrichmentJobRepository
     const { data, error } = await this.supabase
       .from("buyer_finder_free_enrichment_jobs")
       .update(fields)
+      .eq("workspace_id", this.workspaceId)
       .eq("id", id)
       .select("*")
       .single();
@@ -289,6 +303,7 @@ export class SupabaseBuyerFinderFreeEnrichmentJobRepository
         completed_at: null,
         updated_at: now,
       })
+      .eq("workspace_id", this.workspaceId)
       .eq("id", id)
       .in("status", ["failed", "cancelled", "retry_wait"])
       .select("*")
@@ -308,6 +323,7 @@ export class SupabaseBuyerFinderFreeEnrichmentJobRepository
         updated_at: now,
         error_code: "candidate_ineligible",
       })
+      .eq("workspace_id", this.workspaceId)
       .eq("candidate_id", candidateId)
       .in("status", ["queued", "retry_wait", "processing"])
       .select("id");

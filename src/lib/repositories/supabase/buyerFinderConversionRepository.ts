@@ -102,6 +102,7 @@ export class SupabaseBuyerFinderCandidateConversionRepository
     const { data, error } = await this.supabase
       .from("buyer_finder_candidate_conversions")
       .select("*")
+      .eq("workspace_id", this.workspaceId)
       .eq("candidate_id", candidateId)
       .maybeSingle();
     if (error) throw error;
@@ -118,6 +119,7 @@ export class SupabaseBuyerFinderCandidateConversionRepository
       const { data, error } = await this.supabase
         .from("buyer_finder_candidate_conversions")
         .select("*")
+        .eq("workspace_id", this.workspaceId)
         .in("candidate_id", slice);
       if (error) throw error;
       for (const row of data ?? []) {
@@ -162,6 +164,7 @@ export class SupabaseBuyerFinderCandidateConversionRepository
       const { data: buyerRow, error: buyerError } = await this.supabase
         .from("buyers")
         .select("*")
+        .eq("workspace_id", this.workspaceId)
         .eq("id", payload.buyer_id)
         .maybeSingle();
       if (buyerError) throw buyerError;

@@ -139,6 +139,14 @@ afterEach(() => {
 });
 
 describe("BF5A conversion actions", () => {
+  it("preview treats a candidate outside the selected workspace as not found", async () => {
+    candidates.delete(natureland.id);
+    const preview = await previewCandidateConversionAction({ candidateId: natureland.id });
+    expect(preview.eligibility).toBe("not_found");
+    expect(buyers).toHaveLength(0);
+    expect(conversions.size).toBe(0);
+  });
+
   it("preview does not insert a Buyer", async () => {
     const preview = await previewCandidateConversionAction({ candidateId: natureland.id });
     expect(preview.eligibility).toBe("ok");

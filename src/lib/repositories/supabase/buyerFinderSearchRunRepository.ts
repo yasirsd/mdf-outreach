@@ -42,6 +42,7 @@ export class SupabaseBuyerFinderSearchRunRepository implements BuyerFinderSearch
     const { data, error } = await this.supabase
       .from("buyer_finder_search_runs")
       .select("*")
+      .eq("workspace_id", this.workspaceId)
       .eq("id", id)
       .maybeSingle();
     if (error) throw error;
@@ -55,6 +56,7 @@ export class SupabaseBuyerFinderSearchRunRepository implements BuyerFinderSearch
     const { data, error } = await this.supabase
       .from("buyer_finder_search_runs")
       .update(fields)
+      .eq("workspace_id", this.workspaceId)
       .eq("id", id)
       .select("*")
       .single();
@@ -66,6 +68,7 @@ export class SupabaseBuyerFinderSearchRunRepository implements BuyerFinderSearch
     const { data, error } = await this.supabase
       .from("buyer_finder_search_runs")
       .select("*")
+      .eq("workspace_id", this.workspaceId)
       .in("status", ["queued", "running"])
       .order("created_at", { ascending: false })
       .limit(1)
@@ -88,6 +91,7 @@ export class SupabaseBuyerFinderSearchRunRepository implements BuyerFinderSearch
         stage: "preparing",
         started_at: startedAt,
       })
+      .eq("workspace_id", this.workspaceId)
       .eq("id", id)
       .eq("status", "queued")
       .select("*")
@@ -113,6 +117,7 @@ export class SupabaseBuyerFinderSearchRunRepository implements BuyerFinderSearch
         error_message: input.errorMessage,
         completed_at: input.completedAt,
       })
+      .eq("workspace_id", this.workspaceId)
       .eq("id", input.id)
       .in("status", ["queued", "running"])
       .lte("updated_at", input.staleBefore)

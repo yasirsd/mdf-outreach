@@ -80,6 +80,14 @@ export async function middleware(request: NextRequest) {
     return redirectResponse(request, loginRedirect("expired", pathname), true);
   }
 
+  // This endpoint establishes the canonical selected workspace and must be
+  // reachable by an authenticated member whose selection is currently absent.
+  // The route repeats auth + app-session validation and the RPC verifies active
+  // membership before changing the caller's own selection.
+  if (pathname === "/api/workspace/selection") {
+    return getResponse();
+  }
+
   const membership = await getActiveMembership(supabase, user.id);
   if (!membership) {
     return redirectResponse(request, "/access-denied");

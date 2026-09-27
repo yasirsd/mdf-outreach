@@ -3,7 +3,7 @@
 import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { createClient } from "@/utils/supabase/server";
-import { getActiveMembership } from "@/lib/auth/membership";
+import { getActiveMembership, hasAnyActiveMembership } from "@/lib/auth/membership";
 import { buildLastActivityCookie, buildStartCookie } from "@/lib/auth/session";
 import { performSignOut } from "@/lib/auth/signOut";
 
@@ -71,10 +71,22 @@ export async function signInAction(
 
   const membership = await getActiveMembership(supabase, data.user.id);
   if (!membership) {
-    // Auth succeeded but no MDF membership. End the Supabase session immediately
-    // so the browser cannot hold an authenticated-but-unauthorized token.
-    await performSignOut();
-    redirect("/access-denied");
+    const hasMembership = await hasAnyActiveMembership(supabase, data.user.id);
+    if (!hasMembership) {
+      // Auth succeeded but no MDF membership. End the Supabase session immediately
+      // so the browser cannot hold an authenticated-but-unauthorized token.
+      await performSignOut();
+      redirect("/access-denied");
+    }
+
+    // A multi-workspace user without a persisted selection remains signed in
+    // only long enough to select one through the guarded selection endpoint.
+    // Business routes still fail closed until that succeeds.
+    const now = Date.now();
+    const secure = isSecure();
+    cookieStore.set(buildStartCookie(now, secure));
+    cookieStore.set(buildLastActivityCookie(now, secure));
+    redirect("/access-denied?reason=workspace-selection");
   }
 
   const now = Date.now();

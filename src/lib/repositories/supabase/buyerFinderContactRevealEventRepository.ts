@@ -114,6 +114,7 @@ export class SupabaseBuyerFinderContactRevealEventRepository
     const { data, error } = await this.supabase
       .from("buyer_finder_contact_reveal_events")
       .select("*")
+      .eq("workspace_id", this.workspaceId)
       .eq("id", id)
       .maybeSingle();
     if (error) throw error;
@@ -125,6 +126,7 @@ export class SupabaseBuyerFinderContactRevealEventRepository
     const { data, error } = await this.supabase
       .from("buyer_finder_contact_reveal_events")
       .select("*")
+      .eq("workspace_id", this.workspaceId)
       .eq("contact_id", contactId)
       .in("status", [...CONTACT_REVEAL_UNRESOLVED_STATUSES])
       .order("created_at", { ascending: false })
@@ -139,6 +141,7 @@ export class SupabaseBuyerFinderContactRevealEventRepository
     const { data, error } = await this.supabase
       .from("buyer_finder_contact_reveal_events")
       .select("*")
+      .eq("workspace_id", this.workspaceId)
       .eq("contact_id", contactId)
       .order("created_at", { ascending: false })
       .limit(1)
@@ -152,6 +155,7 @@ export class SupabaseBuyerFinderContactRevealEventRepository
     const { data, error } = await this.supabase
       .from("buyer_finder_contact_reveal_events")
       .update({ status: "processing", started_at: new Date().toISOString() })
+      .eq("workspace_id", this.workspaceId)
       .eq("id", id)
       .eq("status", "pending")
       .select("*")
@@ -172,6 +176,7 @@ export class SupabaseBuyerFinderContactRevealEventRepository
         provider_outcome: null,
         credits_charged: null,
       })
+      .eq("workspace_id", this.workspaceId)
       .eq("id", id)
       .eq("status", "reconciliation_required")
       .select("*")
@@ -189,6 +194,7 @@ export class SupabaseBuyerFinderContactRevealEventRepository
         completed_at: new Date().toISOString(),
         error_code: "stale_processing",
       })
+      .eq("workspace_id", this.workspaceId)
       .eq("id", id)
       .select("*")
       .single();
@@ -208,6 +214,7 @@ export class SupabaseBuyerFinderContactRevealEventRepository
     const { data, error } = await this.supabase
       .from("buyer_finder_contact_reveal_events")
       .update(fields)
+      .eq("workspace_id", this.workspaceId)
       .eq("id", id)
       .select("*")
       .single();

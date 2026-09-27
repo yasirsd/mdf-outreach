@@ -55,6 +55,7 @@ describe("Supabase Search Run claim SQL shape", () => {
     expect(capture[0]?.op).toBe("update");
     expect(capture[0]?.payload).toMatchObject({ status: "running", stage: "preparing" });
     expect(capture[0]?.filters).toEqual([
+      ["eq", "workspace_id", "ws-a"],
       ["eq", "id", "00000000-0000-4000-8000-000000000001"],
       ["eq", "status", "queued"],
     ]);
@@ -85,6 +86,7 @@ describe("Supabase Search Run claim SQL shape", () => {
     });
     expect(capture[0]?.payload).toMatchObject({ status: "failed", stage: "complete" });
     expect(capture[0]?.filters).toEqual([
+      ["eq", "workspace_id", "ws-a"],
       ["eq", "id", "00000000-0000-4000-8000-000000000001"],
       ["in", "status", ["queued", "running"]],
       ["lte", "updated_at", "2026-08-28T00:00:00.000Z"],

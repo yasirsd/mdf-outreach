@@ -54,6 +54,10 @@ begin
   insert into public.workspace_members (workspace_id, user_id, role, active)
     values (v_other_workspace, v_other_user, 'member', true);
 
+  insert into mdf.user_workspace_selection(user_id, workspace_id)
+    values (v_other_user, v_other_workspace)
+    on conflict (user_id) do update set workspace_id = excluded.workspace_id, updated_at = now();
+
   insert into public.buyer_candidates (workspace_id, company_name, country, domain, discovery_status, review_status)
     values (v_mdf_workspace, 'RLS Candidate Co', 'Thailand', 'rls-candidate.example', 'ready', 'pending')
   returning id into v_seed_candidate;

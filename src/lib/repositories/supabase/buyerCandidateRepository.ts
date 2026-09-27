@@ -25,6 +25,7 @@ export class SupabaseBuyerCandidateRepository implements BuyerCandidateRepositor
     const { data, error } = await this.supabase
       .from("buyer_candidates")
       .select("*")
+      .eq("workspace_id", this.workspaceId)
       .order("updated_at", { ascending: false });
     if (error) throw error;
     return (data ?? []).map(candidateFromRow);
@@ -35,6 +36,7 @@ export class SupabaseBuyerCandidateRepository implements BuyerCandidateRepositor
     const { data, error } = await this.supabase
       .from("buyer_candidates")
       .select("*")
+      .eq("workspace_id", this.workspaceId)
       .eq("id", id)
       .maybeSingle();
     if (error) throw error;
@@ -58,6 +60,7 @@ export class SupabaseBuyerCandidateRepository implements BuyerCandidateRepositor
     const { data, error } = await this.supabase
       .from("buyer_candidates")
       .update(fields)
+      .eq("workspace_id", this.workspaceId)
       .eq("id", id)
       .select("*")
       .single();
@@ -67,7 +70,11 @@ export class SupabaseBuyerCandidateRepository implements BuyerCandidateRepositor
 
   async delete(id: string): Promise<void> {
     if (!isEntityUuid(id)) return;
-    const { error } = await this.supabase.from("buyer_candidates").delete().eq("id", id);
+    const { error } = await this.supabase
+      .from("buyer_candidates")
+      .delete()
+      .eq("workspace_id", this.workspaceId)
+      .eq("id", id);
     if (error) throw error;
   }
 
@@ -77,6 +84,7 @@ export class SupabaseBuyerCandidateRepository implements BuyerCandidateRepositor
     const { data, error } = await this.supabase
       .from("buyer_candidates")
       .select("*")
+      .eq("workspace_id", this.workspaceId)
       .eq("domain", normalized)
       .limit(1)
       .maybeSingle();
