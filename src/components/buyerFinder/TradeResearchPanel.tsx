@@ -133,23 +133,44 @@ function JobContent({ job }: { job: TradeResearchJobSnapshot }) {
     );
   }
   const r = job.result;
-  // BI4F Phase 2A source-count / evidence copy fix: distinguish
-  // `not_checked` (no eligible source was evaluated for this scope)
-  // from `no_verified_match` (the source was checked and did not
-  // match). Both currently share the same visual line — that is
-  // misleading because `sources checked = 0` may sit next to a
-  // "No verified match" line that implies a check happened.
-  const evidenceLabel =
+  // BI4F Phase 2B UI semantics fix: labels and source strings are
+  // driven by `result_summary.evidence.source`, not hard-coded to
+  // FDA FSVP. Widened `productEvidence` and new `originEvidence`
+  // literals are mapped honestly for CID's company + HS6 + origin
+  // evidence grain.
+  const source = r.evidence?.source ?? "FDA FSVP";
+  const isCid = source === "Canadian Importers Database";
+  const officialProgramLabelDt = isCid
+    ? "Official importer-directory evidence"
+    : "Official importer-program evidence";
+  const officialLabel =
     r.officialProgramEvidence === "verified" ? "Verified" :
     r.officialProgramEvidence === "needs_review" ? "Needs review" :
     r.officialProgramEvidence === "no_verified_match" ? "No verified match found" :
     "Not evaluated";
+  const productEvidenceLabel =
+    r.productEvidence === "verified" ? "Verified" :
+    r.productEvidence === "supporting" ? "Supporting evidence" :
+    r.productEvidence === "no_verified_match" ? "No verified match found" :
+    "Not available from this source";
+  const originEvidenceLabel =
+    r.originEvidence === "verified" ? "Verified" :
+    r.originEvidence === "supporting" ? "Supporting evidence" :
+    r.originEvidence === "no_verified_match" ? "No verified match found" :
+    r.originEvidence === "not_verified" ? "Not verified" :
+    "Not available from this source";
+  const indiaOriginLabel =
+    r.indiaOrigin === "verified" ? "Verified" :
+    r.indiaOrigin === "supporting" ? "Supporting evidence" :
+    "Not verified";
+  const matchedLocationDt = isCid ? "Matched province" : "Matched state";
   return (
     <div className="mt-3 text-[12px]">
       <dl className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-4 gap-y-2">
-        <dt className="text-text-muted">Official importer-program evidence</dt><dd className="text-text-primary" data-evidence-status={r.officialProgramEvidence}>{evidenceLabel}</dd>
-        <dt className="text-text-muted">Product evidence</dt><dd className="text-text-primary">Not available from this source</dd>
-        <dt className="text-text-muted">India origin</dt><dd className="text-text-primary">Not verified</dd>
+        <dt className="text-text-muted">{officialProgramLabelDt}</dt><dd className="text-text-primary" data-evidence-status={r.officialProgramEvidence}>{officialLabel}</dd>
+        <dt className="text-text-muted">Product evidence</dt><dd className="text-text-primary" data-product-evidence={r.productEvidence}>{productEvidenceLabel}</dd>
+        <dt className="text-text-muted">Origin evidence</dt><dd className="text-text-primary" data-origin-evidence={r.originEvidence}>{originEvidenceLabel}</dd>
+        <dt className="text-text-muted">India origin</dt><dd className="text-text-primary" data-india-origin={r.indiaOrigin}>{indiaOriginLabel}</dd>
         <dt className="text-text-muted">Shipment evidence</dt><dd className="text-text-primary">Not verified</dd>
         <dt className="text-text-muted">Sources checked</dt><dd className="text-text-primary tabular-nums" data-testid="sources-checked">{r.sourcesChecked}</dd>
         <dt className="text-text-muted">Cost</dt><dd className="text-text-primary">₹{r.automaticSpendRupees} spent</dd>
@@ -157,7 +178,7 @@ function JobContent({ job }: { job: TradeResearchJobSnapshot }) {
       {r.officialProgramEvidence === "not_checked" && <p className="mt-3 text-[11px] leading-relaxed text-text-muted">No eligible free official source was evaluated for this candidate&apos;s scope. This is not evidence for or against import activity.</p>}
       {r.officialProgramEvidence === "no_verified_match" && <p className="mt-3 text-[11px] leading-relaxed text-text-muted">This means no match was found in the checked dataset. It does not prove the company has no import activity.</p>}
       {r.evidence && <details className="mt-3"><summary className="cursor-pointer text-text-secondary">View evidence</summary><dl className="mt-2 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-[11px]">
-        <dt className="text-text-muted">Source</dt><dd>FDA FSVP</dd><dt className="text-text-muted">Dataset period</dt><dd>{r.evidence.datasetPeriod}</dd><dt className="text-text-muted">Retrieved</dt><dd>{new Date(r.evidence.retrievedAt).toLocaleDateString()}</dd><dt className="text-text-muted">Matched name</dt><dd>{r.evidence.matchedSourceName ?? "—"}</dd><dt className="text-text-muted">Matched state</dt><dd>{r.evidence.matchedState ?? "—"}</dd><dt className="text-text-muted">Identity decision</dt><dd>{r.evidence.identityDecision}</dd><dt className="text-text-muted">Reason</dt><dd>{r.evidence.matchReason}</dd><dt className="text-text-muted">Coverage</dt><dd>{r.evidence.coverageExplanation}</dd>
+        <dt className="text-text-muted">Source</dt><dd data-evidence-source={source}>{source}</dd><dt className="text-text-muted">Dataset period</dt><dd>{r.evidence.datasetPeriod}</dd><dt className="text-text-muted">Retrieved</dt><dd>{new Date(r.evidence.retrievedAt).toLocaleDateString()}</dd><dt className="text-text-muted">Matched name</dt><dd>{r.evidence.matchedSourceName ?? "—"}</dd><dt className="text-text-muted">{matchedLocationDt}</dt><dd>{r.evidence.matchedState ?? "—"}</dd><dt className="text-text-muted">Identity decision</dt><dd>{r.evidence.identityDecision}</dd><dt className="text-text-muted">Reason</dt><dd>{r.evidence.matchReason}</dd><dt className="text-text-muted">Coverage</dt><dd>{r.evidence.coverageExplanation}</dd>
       </dl></details>}
     </div>
   );
