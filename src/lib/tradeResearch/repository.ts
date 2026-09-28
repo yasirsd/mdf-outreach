@@ -4,6 +4,14 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { BuyerCandidate } from "@/lib/buyerFinder/types";
 import { canonicalizeResearchContext, fingerprintResearchContext } from "./context";
 import {
+  projectProviderOutcomes,
+  validateProviderResultSnapshots,
+  withProviderOutcomeProjection,
+  type ProviderOutcomeAttempt,
+  type ProviderOutcomePlan,
+  type ProviderOutcomeSnapshot,
+} from "./providerOutcomes";
+import {
   AUTOMATIC_SPEND_RUPEES,
   type ResearchContext,
   type TradeResearchBatchSnapshot,
@@ -505,9 +513,41 @@ export class TradeResearchWriter {
     requireConstrainedText(outcome, "p_outcome", TRADE_RESEARCH_OUTCOMES);
     requireJson(result, "p_result");
     if (result.automaticSpendRupees !== 0) throw new Error("AUTOMATIC_SPEND_MUST_REMAIN_ZERO");
+    const [plansResponse, attemptsResponse] = await Promise.all([
+      this.client.from("buyer_trade_research_provider_plans").select("*")
+        .eq("job_id", job.id).eq("workspace_id", job.workspace_id).order("sequence"),
+      this.client.from("buyer_trade_research_attempts").select("*")
+        .eq("job_id", job.id).eq("workspace_id", job.workspace_id).order("attempt_number"),
+    ]);
+    if (plansResponse.error) throw plansResponse.error;
+    if (attemptsResponse.error) throw attemptsResponse.error;
+    const submitted = result.providerResults ?? [];
+    const evaluated = submitted.filter((provider) =>
+      provider.execution.status === "completed"
+      || provider.execution.status === "no_match"
+      || provider.execution.status === "cached",
+    );
+    if (evaluated.length > 0) {
+      const versions = evaluated.map((provider) => provider.datasetVersion).filter((value): value is string => Boolean(value));
+      if (versions.length !== evaluated.length) validateProviderResultSnapshots(evaluated, []);
+      const { data: snapshots, error: snapshotsError } = await this.client
+        .from("buyer_trade_source_snapshots")
+        .select("provider_id,dataset_id,material_hash,published_period,retrieved_at,parse_version")
+        .in("provider_id", [...new Set(evaluated.map((provider) => provider.providerId))])
+        .in("material_hash", [...new Set(versions)]);
+      if (snapshotsError) throw snapshotsError;
+      validateProviderResultSnapshots(evaluated, (snapshots ?? []) as ProviderOutcomeSnapshot[]);
+    }
+    const projection = projectProviderOutcomes({
+      plans: (plansResponse.data ?? []) as ProviderOutcomePlan[],
+      attempts: (attemptsResponse.data ?? []) as ProviderOutcomeAttempt[],
+      submitted,
+      jobCancelled: status === "cancelled" || job.status === "cancel_requested",
+    });
+    const authoritativeResult = withProviderOutcomeProjection(result, projection);
     const { data, error } = await this.client.rpc("finalize_buyer_trade_research_job_v2", {
       p_job_id: job.id, p_worker_id: worker, p_revision: job.revision,
-      p_status: status, p_outcome: outcome, p_result_summary: result,
+      p_status: status, p_outcome: outcome, p_result_summary: authoritativeResult,
     });
     return authoritativeJobMutation(data, error);
   }

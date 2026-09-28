@@ -131,6 +131,7 @@ describe("BI4F 2C — multi-provider execution (US: FSVP + VQIP)", () => {
     expect(aggregate.sourcesCorroborating).toBe(2);
     // Job finalized as corroboration.
     expect(state.finalized[0]).toMatchObject({ status: "completed", outcome: "official_importer_program_corroboration" });
+    expect((result.providerResults as Array<{ execution: { status: string } }>).map((item) => item.execution.status)).toEqual(["cached", "cached"]);
   });
 
   it("US candidate: FSVP no-match + VQIP verified → single_source_support, sourcesChecked=2, evidence preserved per source", async () => {
@@ -153,6 +154,36 @@ describe("BI4F 2C — multi-provider execution (US: FSVP + VQIP)", () => {
     expect((result.aggregate as { identity: string }).identity).toBe("single_source_support");
     // Top-level projection: strong from VQIP → officialProgramEvidence verified.
     expect(result.officialProgramEvidence).toBe("verified");
+    expect((result.providerResults as Array<{ execution: { status: string } }>).map((item) => item.execution.status)).toEqual(["cached", "cached"]);
+  });
+
+  it("keeps a terminal VQIP failure beside completed FSVP evidence", async () => {
+    const { writer, state } = makeFixture({
+      plans: [{ provider_id: "fda-fsvp", id: "plan-fsvp" }, { provider_id: "fda-vqip", id: "plan-vqip" }],
+      fdaFresh: fsvpSnapshot(), vqipFresh: undefined,
+    });
+    const fetchImpl = vi.fn(async () => new Response("missing", { status: 404 })) as unknown as typeof fetch;
+    await processTradeResearchJob(writer, job(), "worker-a", () => NOW, fetchImpl);
+    const result = state.finalized[0]!.result as Record<string, unknown>;
+    const typed = result.providerResults as Array<{ providerId: string; execution: { status: string; safeErrorCode: string | null } }>;
+    expect(typed).toHaveLength(2);
+    expect(typed[0]).toMatchObject({ providerId: "fda-fsvp", execution: { status: "cached" } });
+    expect(typed[1]).toMatchObject({ providerId: "fda-vqip", execution: { status: "failed_terminal", safeErrorCode: "HTTP_ERROR" } });
+    expect(state.finalized[0]).toMatchObject({ status: "partial", outcome: "partial" });
+  });
+
+  it("keeps a retryable FSVP failure beside completed VQIP evidence", async () => {
+    const { writer, state } = makeFixture({
+      plans: [{ provider_id: "fda-fsvp", id: "plan-fsvp" }, { provider_id: "fda-vqip", id: "plan-vqip" }],
+      fdaFresh: undefined, vqipFresh: vqipSnapshot(),
+    });
+    const fetchImpl = vi.fn(async () => new Response("unavailable", { status: 503 })) as unknown as typeof fetch;
+    await processTradeResearchJob(writer, job(), "worker-a", () => NOW, fetchImpl);
+    const result = state.finalized[0]!.result as Record<string, unknown>;
+    const typed = result.providerResults as Array<{ providerId: string; execution: { status: string; safeErrorCode: string | null } }>;
+    expect(typed).toHaveLength(2);
+    expect(typed[0]).toMatchObject({ providerId: "fda-fsvp", execution: { status: "failed_retryable", safeErrorCode: "TRANSIENT_HTTP" } });
+    expect(typed[1]).toMatchObject({ providerId: "fda-vqip", execution: { status: "cached" } });
   });
 
   it("US candidate: both providers no-match → no_evidence aggregate, sourcesChecked=2, outcome=no_verified_evidence", async () => {

@@ -151,7 +151,8 @@ describe("BI4F 2B — worker dispatch by plan.provider_id", () => {
       finalize: ReturnType<typeof vi.fn>;
     };
     expect(calls.heartbeat).toHaveBeenCalledWith(expect.objectContaining({ revision: 3 }), "worker-a");
-    expect(calls.finishAttempt.mock.calls[0][0]).toMatchObject({ revision: 4 });
+    // Attempt completion now follows matching so completed/no-match is durable.
+    expect(calls.finishAttempt.mock.calls[0][0]).toMatchObject({ revision: 5 });
     expect(calls.finalize.mock.calls[0][0]).toMatchObject({ revision: 7 });
   });
 

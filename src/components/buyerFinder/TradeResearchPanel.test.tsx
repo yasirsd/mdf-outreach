@@ -466,4 +466,28 @@ describe("T06 legacy result rendering compatibility", () => {
     expect(document.querySelector('[data-source="fda-fsvp"]')).not.toBeNull();
     expect(document.querySelector('[data-source="fda-vqip"]')).not.toBeNull();
   });
+
+  it("renders every typed provider status and only the safe error code", () => {
+    const completed = job("complete", "partial");
+    completed.result.sourcesPlanned = 2;
+    completed.result.sourcesFailed = 1;
+    completed.result.providerResults = [
+      {
+        providerId: "fda-fsvp", datasetId: "fsvp-participant-list", datasetVersion: null,
+        parserVersion: null, sourceRecordIds: [], sourcePeriod: null, retrievedAt: null,
+        execution: { status: "not_started", safeErrorCode: null }, evidence: null,
+      },
+      {
+        providerId: "fda-vqip", datasetId: "fda-vqip-participant-list", datasetVersion: null,
+        parserVersion: null, sourceRecordIds: [], sourcePeriod: null, retrievedAt: null,
+        execution: { status: "failed_terminal", safeErrorCode: "SOURCE_UNAVAILABLE" }, evidence: null,
+      },
+    ];
+    render(<CandidatePanel candidateId={completed.candidateId} initialJob={completed} />);
+    expect(document.querySelectorAll("[data-provider-result]")).toHaveLength(2);
+    expect(document.querySelector('[data-provider-status="not_started"]')?.textContent).toBe("Not started");
+    expect(document.querySelector('[data-provider-status="failed_terminal"]')?.textContent).toBe("Failed terminal");
+    expect(screen.getByText("Source status: source unavailable")).toBeTruthy();
+    expect(screen.getByText("Sources planned").nextSibling?.textContent).toBe("2");
+  });
 });

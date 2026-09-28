@@ -277,8 +277,9 @@ describe("bounded trade research worker", () => {
         Date.now() + 8_000,   // ~8 s < 5 s (match) + 8 s (reserve) → checkpoint at match gate
       );
       expect(outcome).toBe("retry");
-      // FDA attempt was recorded (cache-hit path completed).
-      expect(state.attempts[0]).toMatchObject({ state: "skipped_cached" });
+      // The snapshot was available, but evaluation did not run. Preserve the
+      // attempt as retryable instead of falsely recording a cached evaluation.
+      expect(state.attempts[0]).toMatchObject({ state: "retry_wait", safe_error_code: "RUNTIME_BUDGET_CHECKPOINT" });
       // Then the match gate fired → released + no finalize.
       expect(state.released).toHaveLength(1);
       expect(state.finalized).toHaveLength(0);

@@ -296,6 +296,11 @@ function JobContent({ job }: { job: TradeResearchJobSnapshot }) {
     r.indiaOrigin === "supporting" ? "Supporting evidence" :
     "Not verified";
   const matchedLocationDt = isCid ? "Matched province" : "Matched state";
+  const providerLabel = (providerId: string) =>
+    providerId === "fda-fsvp" ? "FDA FSVP" :
+    providerId === "fda-vqip" ? "FDA VQIP" :
+    providerId === "canada-cid" ? "Canadian Importers Database" : providerId;
+  const executionLabel = (status: string) => status.replace(/_/g, " ").replace(/^./, (value) => value.toUpperCase());
   return (
     <div className="mt-3 text-[12px]">
       <dl className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-4 gap-y-2">
@@ -305,12 +310,36 @@ function JobContent({ job }: { job: TradeResearchJobSnapshot }) {
         <dt className="text-text-muted">India origin</dt><dd className="text-text-primary" data-india-origin={r.indiaOrigin}>{indiaOriginLabel}</dd>
         <dt className="text-text-muted">Shipment evidence</dt><dd className="text-text-primary">Not verified</dd>
         <dt className="text-text-muted">Sources checked</dt><dd className="text-text-primary tabular-nums" data-testid="sources-checked">{r.sourcesChecked}</dd>
+        {r.sourcesPlanned !== undefined && <><dt className="text-text-muted">Sources planned</dt><dd className="text-text-primary tabular-nums">{r.sourcesPlanned}</dd></>}
+        {r.sourcesFailed !== undefined && r.sourcesFailed > 0 && <><dt className="text-text-muted">Sources failed</dt><dd className="text-text-primary tabular-nums">{r.sourcesFailed}</dd></>}
         <dt className="text-text-muted">Cost</dt><dd className="text-text-primary">₹{r.automaticSpendRupees} spent</dd>
       </dl>
       {r.officialProgramEvidence === "not_checked" && <p className="mt-3 text-[11px] leading-relaxed text-text-muted">No eligible free official source was evaluated for this candidate&apos;s scope. This is not evidence for or against import activity.</p>}
       {r.officialProgramEvidence === "no_verified_match" && <p className="mt-3 text-[11px] leading-relaxed text-text-muted">This means no match was found in the checked dataset. It does not prove the company has no import activity.</p>}
-      {/* BI4F 2C — multi-source view when `sources[]` has 2+ entries. */}
-      {r.sources && r.sources.length > 1 ? (
+      {r.providerResults ? (
+        <details className="mt-3" data-provider-results="true">
+          <summary className="cursor-pointer text-text-secondary">View evidence ({r.providerResults.length} sources)</summary>
+          {r.providerResults.map((provider) => (
+            <section key={provider.providerId} className="mt-3 rounded border border-app-border p-2" data-provider-result={provider.providerId}>
+              <div className="flex items-center justify-between gap-3">
+                <h3 className="text-[12px] font-semibold text-text-primary">{providerLabel(provider.providerId)}</h3>
+                <span className="text-[11px] text-text-secondary" data-provider-status={provider.execution.status}>{executionLabel(provider.execution.status)}</span>
+              </div>
+              {provider.execution.safeErrorCode && <p className="mt-1 text-[11px] text-text-muted">Source status: {provider.execution.safeErrorCode.replace(/_/g, " ").toLowerCase()}</p>}
+              {provider.evidence && (
+                <dl className="mt-1 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-[11px]">
+                  <dt className="text-text-muted">Dataset period</dt><dd>{provider.sourcePeriod ?? "—"}</dd>
+                  <dt className="text-text-muted">Retrieved</dt><dd>{provider.retrievedAt ? new Date(provider.retrievedAt).toLocaleDateString() : "—"}</dd>
+                  <dt className="text-text-muted">Identity decision</dt><dd>{provider.evidence.matchDecision}</dd>
+                  <dt className="text-text-muted">Coverage</dt><dd>{provider.evidence.coverage.explanation}</dd>
+                  <dt className="text-text-muted">Limitations</dt><dd>{provider.evidence.limitations.join(" ")}</dd>
+                  <dt className="text-text-muted">Attribution</dt><dd>{provider.evidence.attribution}</dd>
+                </dl>
+              )}
+            </section>
+          ))}
+        </details>
+      ) : r.sources && r.sources.length > 1 ? (
         <details className="mt-3" data-multi-source="true">
           <summary className="cursor-pointer text-text-secondary">View evidence ({r.sources.length} sources)</summary>
           {r.aggregate && (

@@ -299,6 +299,13 @@ export interface TradeResearchResultSummary {
    */
   shipmentEvidence: "not_verified";
   sourcesChecked: number;
+  /** T08 explicit provider accounting. Present on newly finalized typed results. */
+  sourcesPlanned?: number;
+  sourcesAttempted?: number;
+  sourcesEvaluated?: number;
+  sourcesSucceeded?: number;
+  sourcesFailed?: number;
+  sourcesCached?: number;
   automaticSpendRupees: 0;
   /** T06 context. Missing means legacy/unknown and is never inferred on read. */
   context?: ResearchContext;

@@ -26,7 +26,11 @@ const claimed: InternalJobRow = {
 };
 
 function clientWithRpc(rpc: ReturnType<typeof vi.fn>): SupabaseClient {
-  return { rpc } as unknown as SupabaseClient;
+  const chain: Record<string, unknown> = {};
+  chain.select = () => chain;
+  chain.eq = () => chain;
+  chain.order = async () => ({ data: [], error: null });
+  return { rpc, from: vi.fn(() => chain) } as unknown as SupabaseClient;
 }
 
 describe("T06 additive result_summary mapping", () => {
@@ -314,6 +318,43 @@ describe("TradeResearchWriter RPC contract", () => {
       p_revision: 1,
     }));
     expect(result).toEqual(finalized);
+  });
+
+  it("adds an omitted failed provider from durable plans and attempts before finalization", async () => {
+    const finalized: InternalJobRow = { ...claimed, status: "partial", stage: "complete", revision: 2, lease_owner: null };
+    const rpc = vi.fn(async () => ({ data: finalized, error: null }));
+    const rows: Record<string, unknown[]> = {
+      buyer_trade_research_provider_plans: [{
+        id: "plan-1", provider_id: "fda-vqip", sequence: 1,
+        eligibility: "eligible", decision_reason: "eligible", dataset_version: null,
+      }],
+      buyer_trade_research_attempts: [{
+        provider_plan_id: "plan-1", attempt_number: 1, state: "failed_terminal", safe_error_code: "SOURCE_UNAVAILABLE",
+      }],
+    };
+    const from = vi.fn((table: string) => {
+      const chain: Record<string, unknown> = {};
+      chain.select = () => chain;
+      chain.eq = () => chain;
+      chain.order = async () => ({ data: rows[table] ?? [], error: null });
+      return chain;
+    });
+    const writer = new TradeResearchWriter({ rpc, from } as unknown as SupabaseClient);
+    await writer.finalize(claimed, "worker-a", "partial", "partial", {
+      automaticSpendRupees: 0, officialProgramEvidence: "not_checked", productEvidence: "not_available",
+      indiaOrigin: "not_verified", originEvidence: "not_available", shipmentEvidence: "not_verified", sourcesChecked: 0,
+      providerResults: [],
+    });
+    expect(rpc).toHaveBeenCalledWith("finalize_buyer_trade_research_job_v2", expect.objectContaining({
+      p_result_summary: expect.objectContaining({
+        sourcesPlanned: 1, sourcesAttempted: 1, sourcesFailed: 1,
+        providerResults: [expect.objectContaining({
+          providerId: "fda-vqip",
+          execution: { status: "failed_terminal", safeErrorCode: "SOURCE_UNAVAILABLE" },
+          evidence: null,
+        })],
+      }),
+    }));
   });
 
   it.each([
