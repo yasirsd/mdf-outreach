@@ -180,7 +180,7 @@ export async function researchCandidateWebsiteAction(
             rawValue: { excerpt: claim.excerpt, sourceUrl: page.finalUrl, pageKind: page.kind },
             normalizedValue: claim.normalized,
             retrievedAt: now,
-            normalizationVersion: "bi3-website-v1",
+            normalizationVersion: "bi3-website-v2",
           };
           const claimResult: IntelligenceIngestionResult = await repos.buyerIntelligenceWriter.ingestClaim(
             claimInput,

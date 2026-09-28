@@ -43,8 +43,10 @@ export interface DiscoveredCompany {
   companyName: string;
   website?: string;
   domain?: string;
+  /** Observed row-level company country. Empty when the provider did not return one. */
   country: string;
   city?: string;
+  /** FACT-only provider metadata; never copied from the query industry hint. */
   industry?: string;
   /**
    * FACT-only. The provider populates this only when its own evidence
@@ -57,9 +59,15 @@ export interface DiscoveredCompany {
   companyLinkedinUrl?: string;
   generalEmail?: string;
   evidence: CandidateEvidence[];
+  /**
+   * Observed product evidence, separate from company/discovery evidence.
+   * A provider return or query-keyword match must leave this empty.
+   * `productRelevance` is ignored unless this contains at least one item.
+   */
+  productEvidence?: CandidateEvidence[];
   source: CandidateSource;
   sourceUrl?: string;
-  /** Relevance of this company to the query product (0–100). */
+  /** Evidence-backed relevance of this company to the query product (0–100). */
   productRelevance?: number;
 }
 

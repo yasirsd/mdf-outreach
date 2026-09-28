@@ -61,7 +61,7 @@ import { BuyerIntelligenceWebsiteResearch } from "@/components/buyerFinder/Buyer
 import { hasUsableEmailForConversion } from "@/lib/buyerFinder/conversion";
 import { emptyBuyerIntelligenceViewModel } from "@/lib/buyerIntelligence/viewModel";
 import { CandidateTradeResearchPanel } from "@/components/buyerFinder/TradeResearchPanel";
-import type { TradeResearchJobSnapshot } from "@/lib/tradeResearch/types";
+import { codeForCountryName, findCountryByCode } from "@/lib/catalogue/countries";
 
 function productName(id: string): string {
   return findBusinessProductById(id)?.displayName ?? id;
@@ -75,7 +75,6 @@ export function CandidateView({
   publicJobStatus,
   peopleJobStatus,
   isOwner = false,
-  initialTradeResearchJob,
 }: {
   record: CandidateDetailRecord;
   hunterDiscovery?: HunterDiscoveryAvailability;
@@ -84,7 +83,6 @@ export function CandidateView({
   publicJobStatus?: FreeEnrichmentJobStatus;
   peopleJobStatus?: FreeEnrichmentJobStatus;
   isOwner?: boolean;
-  initialTradeResearchJob?: TradeResearchJobSnapshot;
 }) {
   const router = useRouter();
   const { candidate, contacts, productMatches, publicEmails = [], conversion, convertedBuyer } = record;
@@ -107,6 +105,14 @@ export function CandidateView({
   });
   const companySide = scored.companyFit + scored.completeness;
   const companySideMax = COMPANY_FIT_MAX + COMPLETENESS_MAX;
+  const tradeResearchProducts = [...new Map(
+    productMatches.map((match) => [match.productId, {
+      id: match.productId,
+      label: productName(match.productId),
+    }]),
+  ).values()];
+  const tradeResearchMarket = findCountryByCode(candidate.country);
+  const tradeResearchMarketCode = tradeResearchMarket?.code ?? codeForCountryName(candidate.country);
   const isFinal =
     candidate.reviewStatus === "approved" ||
     candidate.reviewStatus === "rejected" ||
@@ -236,7 +242,9 @@ export function CandidateView({
 
           <CandidateTradeResearchPanel
             candidateId={candidate.id}
-            initialJob={initialTradeResearchJob}
+            productOptions={tradeResearchProducts}
+            marketCountryCode={tradeResearchMarketCode}
+            marketLabel={tradeResearchMarket?.name ?? candidate.country}
             isOwner={isOwner}
           />
 
@@ -347,6 +355,7 @@ export function CandidateView({
             candidateId={candidate.id}
             companyName={candidate.companyName}
             approved={candidate.reviewStatus === "approved"}
+            archived={candidate.discoveryStatus === "archived"}
             convertedBuyer={convertedBuyer ?? (conversion ? { id: conversion.buyerId, email: "", company: candidate.companyName } : undefined)}
             convertedAt={conversion?.createdAt}
             contactUsedName={
@@ -358,7 +367,11 @@ export function CandidateView({
                   })()
                 : undefined
             }
-            hasUsableEmail={hasUsableEmailForConversion({ contacts, publicEmails })}
+            hasUsableEmail={hasUsableEmailForConversion({
+              candidateId: candidate.id,
+              contacts,
+              publicEmails,
+            })}
           />
 
           {/* BF5B — after conversion, Approve/Reject are hidden. The

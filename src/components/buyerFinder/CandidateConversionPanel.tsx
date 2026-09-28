@@ -12,12 +12,13 @@ import {
 } from "@/app/(app)/buyer-finder/conversionActions";
 import type { ConversionPreviewResult } from "@/app/(app)/buyer-finder/conversionActions";
 import type { ConversionOption, ConversionSelectionInput } from "@/lib/buyerFinder/conversion";
-import { buyerOpenHref } from "@/lib/buyerFinder/conversion";
+import { buyerOpenHref, conversionPreviewReasonMessage } from "@/lib/buyerFinder/conversion";
 
 export function CandidateConversionPanel({
   candidateId,
   companyName,
   approved,
+  archived = false,
   convertedBuyer,
   convertedAt,
   contactUsedName,
@@ -26,6 +27,7 @@ export function CandidateConversionPanel({
   candidateId: string;
   companyName: string;
   approved: boolean;
+  archived?: boolean;
   convertedBuyer?: { id: string; email: string; company: string };
   /** BF5B — persisted conversion timestamp, if known. */
   convertedAt?: string;
@@ -82,6 +84,17 @@ export function CandidateConversionPanel({
   }
 
   if (!approved) return null;
+
+  if (archived) {
+    return (
+      <div className="px-4 py-3" style={{ borderTop: "1px solid var(--app-border)" }}>
+        <div className="text-[11px] font-medium text-text-muted mb-1">NOT ELIGIBLE</div>
+        <p className="text-[13px] text-text-primary leading-relaxed">
+          This archived Candidate cannot be converted to a Buyer.
+        </p>
+      </div>
+    );
+  }
 
   // BF5B-final — approved but no usable email: Buyer creation is blocked
   // at the DB layer (migration 0019 rejects company_only outcomes and
@@ -297,9 +310,15 @@ function PreviewBody({
 
       <DuplicateState preview={preview} />
 
+      {!preview.canConvert ? (
+        <p role="alert" className="text-text-primary">
+          {conversionPreviewReasonMessage(preview.reason)}
+        </p>
+      ) : null}
+
       {preview.missingEmail && preview.duplicate === "none" && preview.eligibility === "ok" ? (
         <p>
-          No contact email selected. This Buyer will require contact enrichment before email outreach.
+          A Buyer cannot be created until a verified conversion-eligible email is available.
         </p>
       ) : null}
 
@@ -370,7 +389,7 @@ function ContactChoice({
           <>
             <span className="block text-text-primary">{option.label}</span>
             {option.title ? <span className="block">{option.title}</span> : null}
-            <span className="block">Personal email not revealed</span>
+            <span className="block">{option.reason}</span>
             <span className="block text-[12px] text-text-muted">NOT selectable as personal email source</span>
           </>
         )}

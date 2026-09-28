@@ -26,8 +26,10 @@ describe("trade research security and evidence isolation", () => {
   });
 
   it("does not accept provider, cost, quota, paid, or source URL controls from the browser", () => {
-    expect(actions).toMatch(/createTradeResearchBatchAction\(candidateIds: readonly string\[\]\)/);
+    expect(actions).toMatch(/createTradeResearchBatchAction\([\s\S]*?requests: readonly TradeResearchRequest\[\]/);
     expect(actions).not.toMatch(/export async function createTradeResearchBatchAction\([^)]*(provider|cost|quota|paid|sourceUrl)/i);
+    expect(actions).toContain("providerPlanVersion: TRADE_RESEARCH_PLANNER_VERSION");
+    expect(actions).toContain("interpretationVersion: TRADE_RESEARCH_INTERPRETATION_VERSION");
   });
 
   it("keeps the modern Supabase secret server-only and rejects public/legacy credentials", () => {

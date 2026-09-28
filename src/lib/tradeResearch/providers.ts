@@ -6,7 +6,7 @@ import {
   TRADE_RESEARCH_PLANNER_VERSION,
   type ProviderCostClass,
   type ProviderRole,
-  type TradeResearchGoal,
+  type ResearchContext,
 } from "./types";
 
 /**
@@ -219,24 +219,22 @@ function foodImportRelevant(candidate: BuyerCandidate, productId?: string): bool
 
 export function planTradeResearch(input: {
   candidate: BuyerCandidate;
-  countryCode: string;
-  goal: TradeResearchGoal;
-  productId?: string;
+  context: ResearchContext;
   hasFreshCache: boolean;
   descriptors?: readonly TradeResearchProviderDescriptor[];
 }): PlannedProvider[] {
   const descriptors = input.descriptors ?? [FDA_FSVP_DESCRIPTOR];
   return descriptors.map((descriptor): PlannedProvider => {
     let reason: PlanDecisionReason = "eligible";
-    if (!descriptor.compatiblePlannerVersions.includes(TRADE_RESEARCH_PLANNER_VERSION)) reason = "unsupported";
+    if (!descriptor.compatiblePlannerVersions.includes(input.context.providerPlanVersion)) reason = "unsupported";
     else if (descriptor.costClass === "paid") reason = "paid";
     else if (descriptor.costClass === "manual_free") reason = "manual_only";
     else if (descriptor.costClass === "unsupported") reason = "unsupported";
     else if (descriptor.costClass === "free_quota") reason = "quota_unknown";
     else if (!descriptor.termsApproved) reason = "terms_unapproved";
-    else if (!descriptor.countries.includes(input.countryCode)) reason = "wrong_country";
-    else if (input.goal !== "screen_trade_activity") reason = "wrong_role";
-    else if (!foodImportRelevant(input.candidate, input.productId)) reason = "not_food_import_relevant";
+    else if (!descriptor.countries.includes(input.context.marketCountryCode)) reason = "wrong_country";
+    else if (input.context.researchGoal !== "screen_trade_activity") reason = "wrong_role";
+    else if (!foodImportRelevant(input.candidate, input.context.productId)) reason = "not_food_import_relevant";
     else if (input.hasFreshCache) reason = "cache_hit";
     return {
       descriptor,

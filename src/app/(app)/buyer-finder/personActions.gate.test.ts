@@ -128,7 +128,7 @@ describe("findCandidateDecisionMakersAction gates", () => {
     expect(r.contacts.every((c) => !contactContainsProviderRef(c))).toBe(true);
     expect(JSON.stringify(r)).not.toMatch(/server-only-reveal-handle|providerRef|reveal_handle/);
     expect(r.contacts[0]?.businessEmail).toBe("");
-    expect(r.overallScore).toBeGreaterThan(23);
+    expect(r.overallScore).toBe(23);
   });
 
   it("returns no_result when no same-domain people exist", async () => {

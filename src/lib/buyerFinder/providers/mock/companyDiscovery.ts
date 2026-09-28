@@ -231,6 +231,13 @@ function toHit(seed: MockCompanySeed, seedKey: LegacySeedKey): DiscoveredCompany
         url: `${seed.website}/products`,
       },
     ],
+    productEvidence: [
+      {
+        note: seed.evidenceNote,
+        confidence: seed.relevanceByProduct[seedKey] ?? 50,
+        url: `${seed.website}/products`,
+      },
+    ],
   };
 }
 

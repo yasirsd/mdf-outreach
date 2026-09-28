@@ -85,14 +85,14 @@ describe("CandidateView provenance and score copy", () => {
 
   it("does not present directory placeholder as 50% relevance", () => {
     render(<CandidateView record={hunterRecord()} />);
-    expect(screen.getByText("Directory signal")).toBeTruthy();
+    expect(screen.getByText("Directory signal · context only")).toBeTruthy();
     expect(screen.queryByText(/50% relevance/)).toBeNull();
   });
 
   it("distinguishes overall score from unevaluated contact quality", () => {
     render(<CandidateView record={hunterRecord()} />);
-    expect(screen.getByText(/Overall 23/)).toBeTruthy();
-    expect(screen.getByText(/Company fit 23/)).toBeTruthy();
+    expect(screen.getByText(/Overall 4/)).toBeTruthy();
+    expect(screen.getByText(/Company fit 4/)).toBeTruthy();
     expect(screen.getByText("Contact quality not evaluated")).toBeTruthy();
     expect(screen.queryByText(/Buyer 23/)).toBeNull();
   });
@@ -193,8 +193,8 @@ describe("CandidateView provenance and score copy", () => {
       },
     ];
     render(<CandidateView record={hunterRecord({ contacts: people })} />);
-    expect(screen.getByText(/Overall 42/)).toBeTruthy();
-    expect(screen.getByText(/Company fit 23/)).toBeTruthy();
+    expect(screen.getByText(/Overall 23/)).toBeTruthy();
+    expect(screen.getByText(/Company fit 4/)).toBeTruthy();
     expect(screen.getByText(/Candidate contact quality 19/)).toBeTruthy();
     expect(screen.queryByText("Best role: Head of Procurement")).toBeNull();
     expect(screen.getByText("Amina K.")).toBeTruthy();
@@ -344,7 +344,7 @@ describe("CandidateView provenance and score copy", () => {
     expect(screen.getByText("Accounts Team")).toBeTruthy();
     expect(screen.getByText("Personal email locked")).toBeTruthy();
     expect(screen.getByText("LinkedIn ✓")).toBeTruthy();
-    expect(screen.getByText("Directory signal")).toBeTruthy();
+    expect(screen.getByText("Directory signal · context only")).toBeTruthy();
     expect(screen.getByText("View discovery details")).toBeTruthy();
     expect(screen.getByText("Scoring details")).toBeTruthy();
     expect(screen.getByText(/Approving does NOT create a Buyer/)).toBeTruthy();
@@ -365,9 +365,29 @@ describe("BF5A conversion UX", () => {
     expect(screen.getByRole("button", { name: "Approve for Buyer review" })).toBeTruthy();
   });
 
+  it("does not present an approved archived Candidate as ready for conversion", () => {
+    render(
+      <CandidateView
+        record={hunterRecord({
+          candidate: {
+            ...hunterRecord().candidate,
+            reviewStatus: "approved",
+            discoveryStatus: "archived",
+          },
+        })}
+      />,
+    );
+    expect(screen.getByText("NOT ELIGIBLE")).toBeTruthy();
+    expect(screen.getByText(/archived Candidate cannot be converted/i)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Convert to Buyer" })).toBeNull();
+    expect(screen.queryByText("READY FOR BUYER CONVERSION")).toBeNull();
+  });
+
   it("opens a preview on Convert to Buyer for a public-company-email flow and does not create a Buyer", async () => {
     const PUB_ID = "00000000-0000-4000-8000-0000000000e1";
     vi.mocked(previewCandidateConversionAction).mockResolvedValue({
+      canConvert: true,
+      reason: "ready",
       eligibility: "ok",
       candidateId: "00000000-0000-4000-8000-0000000000aa",
       companyName: "Mahmood & Sons",
@@ -479,7 +499,7 @@ describe("BF5A conversion UX", () => {
     expect(screen.getByText("CONVERTED TO BUYER")).toBeTruthy();
     expect(screen.getByRole("link", { name: "Open Buyer" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Convert to Buyer" })).toBeNull();
-    expect(screen.getByText("Directory signal")).toBeTruthy();
+    expect(screen.getByText("Directory signal · context only")).toBeTruthy();
     expect(approveCandidateAction).not.toHaveBeenCalled();
   });
 

@@ -52,7 +52,8 @@ describe("BF2.2C candidate source provenance", () => {
 
     const matches = await repos.productMatches.listByCandidate(stored.id);
     expect(matches[0]?.source).toBe("hunter");
-    expect(matches[0]?.relevance).toBe(50);
+    expect(matches[0]?.relevance).toBe(0);
+    expect(matches[0]?.evidence).toEqual([]);
   });
 
   it("keeps hunter on a repeat Hunter search of the same company", async () => {

@@ -223,20 +223,20 @@ function extractDescription(html: string): string | undefined {
  * excerpted verbatim so an operator can verify the wording.
  */
 const IMPORTER_PATTERNS: RegExp[] = [
-  /\bwe\s+(?:are\s+(?:an?\s+)?)?(?:leading\s+|specialist\s+)?importers?\b/i,
-  /\bwe\s+import\s+[a-z][a-z\s,&'\-]{2,80}/i,
-  /\b(?:leading|specialist|premier|primary)\s+importers?\s+(?:of|in)\s+[a-z][a-z\s,&'\-]{2,80}/i,
-  /\bimporters?\s+and\s+distributors?\s+(?:of|in)\s+[a-z][a-z\s,&'\-]{2,80}/i,
-  /\bimporters?\s+of\s+[a-z][a-z\s,&'\-]{2,80}/i,
+  /\bwe\s+are\s+(?:(?:an?|the|leading|specialist|premier|primary)\s+){0,4}importers?\b/i,
+  /\bwe\s+(?:(?:currently|directly|regularly)\s+){0,2}import\b/i,
+  /\bour\s+(?:company|business|group)\s+(?:is|acts\s+as|serves\s+as)\s+(?:(?:an?|the|leading|specialist)\s+){0,3}importers?\b/i,
+  /\bour\s+(?:company|business|group)\s+(?:(?:currently|directly|regularly)\s+){0,2}imports\b/i,
 ];
 
 const DISTRIBUTOR_PATTERNS: RegExp[] = [
-  /\bwe\s+(?:are\s+(?:an?\s+)?)?(?:leading\s+|authorised\s+|authorized\s+)?distributors?\b/i,
-  /\bwe\s+distribute\s+[a-z][a-z\s,&'\-]{2,80}/i,
-  /\b(?:leading|authorised|authorized|primary|wholesale)\s+distributors?\s+(?:of|in|for)\s+[a-z][a-z\s,&'\-]{2,80}/i,
-  /\bdistributors?\s+(?:of|for)\s+[a-z][a-z\s,&'\-]{2,80}/i,
-  /\bdistributors?\s+and\s+importers?\s+(?:of|in)\s+[a-z][a-z\s,&'\-]{2,80}/i,
+  /\bwe\s+are\s+(?:(?:an?|the|leading|authorised|authorized|primary|wholesale)\s+){0,4}distributors?\b/i,
+  /\bwe\s+(?:(?:currently|directly|regularly)\s+){0,2}distribute\b/i,
+  /\bour\s+(?:company|business|group)\s+(?:is|acts\s+as|serves\s+as)\s+(?:(?:an?|the|leading|authorised|authorized)\s+){0,3}distributors?\b/i,
+  /\bour\s+(?:company|business|group)\s+(?:(?:currently|directly|regularly)\s+){0,2}distributes\b/i,
 ];
+
+const NEGATION = /\b(?:not|never|no\s+longer|do\s+not|does\s+not|isn['’]t|aren['’]t|without)\b/i;
 
 /**
  * Split visible text into short candidate sentences. Overlong sentences
@@ -260,21 +260,33 @@ function firstMatch(patterns: RegExp[], sentence: string): boolean {
   return false;
 }
 
+function supportsRoleClaim(patterns: RegExp[], sentence: string): boolean {
+  // Conservative by design: any explicit negation in the short sentence
+  // suppresses a positive company-role claim.
+  return !NEGATION.test(sentence) && firstMatch(patterns, sentence);
+}
+
 /** Business-catalogue mentions whose display name or short name appears verbatim in a sentence. */
 function matchedCatalogueProduct(
   sentence: string,
 ): { productId: string; displayName: string } | undefined {
   const lower = sentence.toLowerCase();
-  // Product catalogue is small; a linear scan is fine.
-  for (const id of ["guntur-dry-red-chilli", "banganapalli-mango", "indian-pomegranate", "indian-apples"]) {
-    const product = findBusinessProductById(id);
-    if (!product) continue;
-    const names = [product.displayName, product.shortName].filter(Boolean).map((s) => s.toLowerCase());
-    for (const name of names) {
-      if (name && lower.includes(name)) {
-        return { productId: id, displayName: product.displayName };
-      }
-    }
+  // Exact catalogue mapping requires every narrowing term. Generic
+  // category/product wording remains useful page context but cannot be
+  // promoted to a variety/origin/form-specific MDF product claim.
+  const exact: Array<{ id: string; terms: RegExp[] }> = [
+    {
+      id: "guntur-dry-red-chilli",
+      terms: [/\bguntur\b/i, /\b(?:dry|dried)\b/i, /\bred\b/i, /\bchill(?:i|ies)|\bchili(?:s|es)?\b/i],
+    },
+    { id: "banganapalli-mango", terms: [/\bbanganapalli\b/i, /\bmango(?:es|s)?\b/i] },
+    { id: "indian-pomegranate", terms: [/\bindian?\b/i, /\bpomegranates?\b/i] },
+    { id: "indian-apples", terms: [/\bindian?\b/i, /\bapples?\b/i] },
+  ];
+  for (const entry of exact) {
+    if (!entry.terms.every((term) => term.test(lower))) continue;
+    const product = findBusinessProductById(entry.id);
+    if (product) return { productId: entry.id, displayName: product.displayName };
   }
   return undefined;
 }
@@ -310,7 +322,7 @@ export function extractBusinessClaims(input: {
 
   // company_is_importer / company_is_distributor — first supporting
   // sentence wins so the excerpt is compact and stable.
-  const importerSentence = sentences.find((s) => firstMatch(IMPORTER_PATTERNS, s));
+  const importerSentence = sentences.find((s) => supportsRoleClaim(IMPORTER_PATTERNS, s));
   if (importerSentence) {
     claims.push({
       claimType: "company_is_importer",
@@ -319,7 +331,7 @@ export function extractBusinessClaims(input: {
       excerpt: truncate(importerSentence, 320),
     });
   }
-  const distributorSentence = sentences.find((s) => firstMatch(DISTRIBUTOR_PATTERNS, s));
+  const distributorSentence = sentences.find((s) => supportsRoleClaim(DISTRIBUTOR_PATTERNS, s));
   if (distributorSentence) {
     claims.push({
       claimType: "company_is_distributor",
@@ -333,7 +345,7 @@ export function extractBusinessClaims(input: {
   // catalogue product mention co-occur in the same sentence. Never
   // fabricate a product from a product listing alone.
   for (const sentence of sentences) {
-    if (!firstMatch(IMPORTER_PATTERNS, sentence)) continue;
+    if (!supportsRoleClaim(IMPORTER_PATTERNS, sentence)) continue;
     if (!/\b(we\s+import|import(?:ers?)?\s+of)\b/i.test(sentence)) continue;
     const product = matchedCatalogueProduct(sentence);
     if (!product) continue;

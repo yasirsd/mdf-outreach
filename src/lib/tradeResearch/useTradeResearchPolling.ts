@@ -28,7 +28,7 @@ export function useTradeResearchPolling<T>(input: {
       inFlight = true;
       try {
         const next = await fetchRef.current();
-        if (next) updateRef.current(next);
+        if (!stopped && next) updateRef.current(next);
         transientFailures = 0;
       } catch { transientFailures += 1; }
       finally { inFlight = false; schedule(); }
@@ -39,4 +39,3 @@ export function useTradeResearchPolling<T>(input: {
     return () => { stopped = true; if (timer) clearTimeout(timer); document.removeEventListener("visibilitychange", visible); };
   }, [input.enabled]);
 }
-

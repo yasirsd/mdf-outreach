@@ -53,6 +53,7 @@ function ahmed(over: Partial<BuyerCandidateContact> = {}): BuyerCandidateContact
     contactScore: 18,
     source: "hunter",
     emailType: "personal",
+    revealedAt: NOW,
     ...over,
   };
 }
@@ -825,5 +826,155 @@ describe("BF5B-final email-required conversion — eligibility matrix", () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       selectionFromBrowserInput({ companyOnly: true } as any),
     ).toBeUndefined();
+  });
+});
+
+describe("T04 authoritative conversion-preview contract", () => {
+  it("reports ready only for an approved Candidate with an accepted persisted source", () => {
+    const personal = buildConversionPreview({
+      candidate: candidate(),
+      contacts: [ahmed()],
+      publicEmails: [],
+      productMatches: [],
+      existingBuyers: [],
+    });
+    expect(personal).toMatchObject({ canConvert: true, reason: "ready" });
+
+    const company = buildConversionPreview({
+      candidate: ksons(),
+      contacts: [chandan()],
+      publicEmails: [infoMail()],
+      productMatches: [],
+      existingBuyers: [],
+    });
+    expect(company).toMatchObject({ canConvert: true, reason: "ready" });
+  });
+
+  it.each([
+    ["unrevealed Hunter email", { revealedAt: undefined }],
+    ["generic revealed email", { emailType: "generic" as const }],
+    ["empty email", { businessEmail: "" }],
+    ["whitespace-only email", { businessEmail: "   " }],
+    ["null email", { businessEmail: null as unknown as string }],
+  ])("blocks an unsupported personal source: %s", (_label, patch) => {
+    const contact = ahmed(patch);
+    const preview = buildConversionPreview({
+      candidate: candidate(),
+      contacts: [contact],
+      publicEmails: [],
+      productMatches: [],
+      existingBuyers: [],
+      requested: { kind: "revealed_personal_contact", contactId: contact.id },
+    });
+    expect(preview.canConvert).toBe(false);
+    expect(preview.reason).toBe("unsupported_email_source");
+  });
+
+  it("distinguishes a missing email from unsupported legacy or inferred fields", () => {
+    const missing = buildConversionPreview({
+      candidate: candidate(),
+      contacts: [],
+      publicEmails: [],
+      productMatches: [],
+      existingBuyers: [],
+    });
+    expect(missing).toMatchObject({ canConvert: false, reason: "missing_email" });
+
+    const legacy = buildConversionPreview({
+      candidate: candidate({ generalEmail: "guessed@example.test" }),
+      contacts: [],
+      publicEmails: [],
+      productMatches: [],
+      existingBuyers: [],
+    });
+    expect(legacy).toMatchObject({
+      canConvert: false,
+      reason: "unsupported_email_source",
+    });
+  });
+
+  it("rejects a public-email identity belonging to another Candidate", () => {
+    const foreign = infoMail({ candidateId: ksons().id });
+    const preview = buildConversionPreview({
+      candidate: candidate(),
+      contacts: [],
+      publicEmails: [foreign],
+      productMatches: [],
+      existingBuyers: [],
+      requested: { kind: "public_company_email", publicEmailId: foreign.id },
+    });
+    expect(preview).toMatchObject({ canConvert: false, reason: "invalid_selection" });
+  });
+
+  it("maps approval, terminal state, prior conversion, and duplicate outcomes deterministically", () => {
+    const pending = buildConversionPreview({
+      candidate: candidate({ reviewStatus: "pending" }),
+      contacts: [ahmed()],
+      publicEmails: [],
+      productMatches: [],
+      existingBuyers: [],
+    });
+    expect(pending).toMatchObject({ canConvert: false, reason: "not_approved" });
+
+    const archived = buildConversionPreview({
+      candidate: candidate({ discoveryStatus: "archived" }),
+      contacts: [ahmed()],
+      publicEmails: [],
+      productMatches: [],
+      existingBuyers: [],
+    });
+    expect(archived).toMatchObject({ canConvert: false, reason: "invalid_candidate_state" });
+
+    const conversion: CandidateConversion = {
+      id: "00000000-0000-4000-8000-0000000000d1",
+      candidateId: candidate().id,
+      buyerId: "00000000-0000-4000-8000-0000000000d2",
+      sourceKind: "revealed_personal_contact",
+      contactId: ahmed().id,
+      createdAt: NOW,
+    };
+    const converted = buildConversionPreview({
+      candidate: candidate(),
+      contacts: [ahmed()],
+      publicEmails: [],
+      productMatches: [],
+      existingBuyers: [],
+      conversion,
+    });
+    expect(converted).toMatchObject({ canConvert: false, reason: "already_converted" });
+
+    const duplicate = buildConversionPreview({
+      candidate: candidate(),
+      contacts: [ahmed()],
+      publicEmails: [],
+      productMatches: [],
+      existingBuyers: [
+        existingBuyer({ id: "buyer-existing", company: "Other", email: ahmed().businessEmail }),
+      ],
+    });
+    expect(duplicate).toMatchObject({ canConvert: false, reason: "duplicate_buyer" });
+  });
+
+  it("preserves the accepted source identity in the conversion history row", async () => {
+    let history: CandidateConversion | undefined;
+    const result = await convertCandidateToBuyer({
+      workspaceKey: "ws-history",
+      candidate: ksons(),
+      contacts: [],
+      publicEmails: [infoMail()],
+      productMatches: [],
+      requested: { kind: "public_company_email", publicEmailId: infoMail().id },
+      loadExistingBuyers: async () => [],
+      loadConversion: async () => history,
+      insertAtomic: async (_buyer, conversion) => {
+        history = conversion;
+      },
+    });
+    expect(result.outcome).toBe("created");
+    expect(history).toMatchObject({
+      sourceKind: "public_company_email",
+      publicEmailId: infoMail().id,
+      candidateId: ksons().id,
+    });
   });
 });

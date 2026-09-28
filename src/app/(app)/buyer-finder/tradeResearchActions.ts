@@ -4,17 +4,27 @@ import { randomUUID } from "node:crypto";
 import { cookies } from "next/headers";
 import { revalidatePath } from "next/cache";
 import { requireMdfSession } from "@/lib/auth/require";
-import { codeForCountryName, findCountryByCode } from "@/lib/catalogue/countries";
+import { findCountryByCode } from "@/lib/catalogue/countries";
+import { isActiveBusinessProductId } from "@/lib/buyerFinder/businessCatalogue";
 import { serverRepositories } from "@/lib/repositories/server";
 import { createClient } from "@/utils/supabase/server";
 import { CANADA_CID_DESCRIPTOR, DEFAULT_TRADE_RESEARCH_DESCRIPTORS, FDA_FSVP_DESCRIPTOR, FDA_VQIP_DESCRIPTOR, planTradeResearch } from "@/lib/tradeResearch/providers";
 import { CANADA_CID_DATASET_ID } from "@/lib/tradeResearch/canadaCid";
 import { FDA_VQIP_DATASET_ID } from "@/lib/tradeResearch/fdaVqip";
 import { createTradeResearchReadRepository, TradeResearchWriter } from "@/lib/tradeResearch/repository";
+import { canonicalizeResearchContext, fingerprintResearchContext } from "@/lib/tradeResearch/context";
 import { logTradeResearchDiagnostic, safeTradeResearchErrorCode } from "@/lib/tradeResearch/server/diagnostics";
 import { getTradeResearchServiceRoleClient } from "@/lib/tradeResearch/server/serviceRoleClient";
 import { createTradeResearchDeadline, drainTradeResearch, TradeResearchDrainExecutionError } from "@/lib/tradeResearch/server/worker";
-import { TRADE_RESEARCH_PLANNER_VERSION, isTerminalTradeResearchStatus, type TradeResearchBatchSnapshot, type TradeResearchJobSnapshot } from "@/lib/tradeResearch/types";
+import {
+  TRADE_RESEARCH_INTERPRETATION_VERSION,
+  TRADE_RESEARCH_PLANNER_VERSION,
+  isTerminalTradeResearchStatus,
+  type ResearchContext,
+  type TradeResearchBatchSnapshot,
+  type TradeResearchJobSnapshot,
+  type TradeResearchRequest,
+} from "@/lib/tradeResearch/types";
 
 /**
  * BI4F 2A Hobby-plan adaptation. After a batch is committed, the server
@@ -57,15 +67,59 @@ export type CreateTradeResearchBatchResult =
   | { outcome: "created"; batch: TradeResearchBatchSnapshot }
   | { outcome: "forbidden" | "invalid_input" | "candidate_not_found" | "already_active"; message: string };
 
-export async function createTradeResearchBatchAction(candidateIds: readonly string[]): Promise<CreateTradeResearchBatchResult> {
+function canonicalRequest(input: TradeResearchRequest): TradeResearchRequest | undefined {
+  if (!input || typeof input !== "object") return undefined;
+  if (!UUID.test(input.candidateId)) return undefined;
+  const market = findCountryByCode(input.marketCountryCode);
+  const productId = typeof input.productId === "string" ? input.productId.trim().toLowerCase() : "";
+  if (!market || !productId || !isActiveBusinessProductId(productId)) return undefined;
+  // The current catalogue has no independent form selector. Null is explicit
+  // and prevents website/history text from becoming an inferred form.
+  if (input.productForm !== null) return undefined;
+  if (input.researchGoal !== "screen_trade_activity") return undefined;
+  return {
+    candidateId: input.candidateId.toLowerCase(),
+    marketCountryCode: market.code,
+    productId,
+    productForm: null,
+    researchGoal: input.researchGoal,
+  };
+}
+
+function serverResearchContext(
+  request: TradeResearchRequest,
+  workspaceId: string,
+): ResearchContext {
+  return canonicalizeResearchContext({
+    workspaceId,
+    candidateId: request.candidateId,
+    marketCountryCode: request.marketCountryCode,
+    productId: request.productId,
+    productForm: request.productForm,
+    researchGoal: request.researchGoal,
+    providerPlanVersion: TRADE_RESEARCH_PLANNER_VERSION,
+    interpretationVersion: TRADE_RESEARCH_INTERPRETATION_VERSION,
+  });
+}
+
+export async function createTradeResearchBatchAction(
+  requests: readonly TradeResearchRequest[],
+): Promise<CreateTradeResearchBatchResult> {
   const session = await requireMdfSession();
   if (session.membership.role !== "owner") return { outcome: "forbidden", message: "Only a workspace owner can start trade research." };
-  const ids = [...new Set(candidateIds)].slice(0, 500);
-  if (!ids.length || ids.some((id) => !UUID.test(id))) return { outcome: "invalid_input", message: "Select between 1 and 500 valid candidates." };
+  if (!Array.isArray(requests) || requests.length === 0 || requests.length > 500) {
+    return { outcome: "invalid_input", message: "Select between 1 and 500 valid research contexts." };
+  }
+  const normalized = requests.map(canonicalRequest);
+  if (normalized.some((request) => !request)) {
+    return { outcome: "invalid_input", message: "Choose a valid market and associated product before starting research." };
+  }
+  const normalizedRequests = normalized as TradeResearchRequest[];
+  const ids = [...new Set(normalizedRequests.map((request) => request.candidateId))];
   const { repos } = await serverRepositories();
   const writer = new TradeResearchWriter(getTradeResearchServiceRoleClient());
   const read = createTradeResearchReadRepository(createClient(cookies()), session.membership.workspaceId);
-  const [freshFdaCache, freshCanadaCache, freshVqipCache, allCandidates, productMatches, latestJobs] = await Promise.all([
+  const [freshFdaCache, freshCanadaCache, freshVqipCache, allCandidates, productMatches] = await Promise.all([
     writer.getFreshSnapshot().then(Boolean),
     writer.getFreshSnapshotByProvider(CANADA_CID_DESCRIPTOR.id, CANADA_CID_DATASET_ID).then(Boolean),
     writer.getFreshSnapshotByProvider(FDA_VQIP_DESCRIPTOR.id, FDA_VQIP_DATASET_ID).then(Boolean),
@@ -73,7 +127,6 @@ export async function createTradeResearchBatchAction(candidateIds: readonly stri
     repos.buyerCandidateProductMatches.listByCandidateIds
       ? repos.buyerCandidateProductMatches.listByCandidateIds(ids)
       : Promise.all(ids.map((id) => repos.buyerCandidateProductMatches.listByCandidate(id))).then((rows) => rows.flat()),
-    read.getLatestJobsForCandidates(ids),
   ]);
   const freshCacheByProviderId = new Map<string, boolean>([
     [FDA_FSVP_DESCRIPTOR.id, freshFdaCache],
@@ -81,16 +134,38 @@ export async function createTradeResearchBatchAction(candidateIds: readonly stri
     [FDA_VQIP_DESCRIPTOR.id, freshVqipCache],
   ]);
   const candidates = new Map(allCandidates.filter((candidate) => ids.includes(candidate.id)).map((candidate) => [candidate.id, candidate]));
+  for (const request of normalizedRequests) {
+    const candidate = candidates.get(request.candidateId);
+    if (!candidate) {
+      return { outcome: "candidate_not_found", message: "A selected candidate is not available in this workspace." };
+    }
+    const ownsProductContext = productMatches.some((match) =>
+      match.candidateId === request.candidateId && match.productId === request.productId
+    );
+    if (!ownsProductContext) {
+      return { outcome: "invalid_input", message: `${candidate.companyName} is not associated with the selected product context.` };
+    }
+  }
+  const contexts = normalizedRequests.map((request) => serverResearchContext(
+    request,
+    session.membership.workspaceId,
+  ));
+  const uniqueContexts = new Map(contexts.map((context) => [fingerprintResearchContext(context), context]));
+  const requestedContexts = [...uniqueContexts.entries()].map(([contextFingerprint, context]) => ({
+    context,
+    contextFingerprint,
+  }));
+  const latestJobs = await read.getLatestJobsForContexts(
+    requestedContexts.map(({ context, contextFingerprint }) => ({
+      candidateId: context.candidateId,
+      contextFingerprint,
+    })),
+  );
   const jobs = [];
-  for (const candidateId of ids) {
-    const candidate = candidates.get(candidateId);
-    const candidateProductMatches = productMatches.filter((match) => match.candidateId === candidateId);
-    const latest = latestJobs.get(candidateId);
-    if (!candidate) return { outcome: "candidate_not_found", message: "A selected candidate is not available in this workspace." };
+  for (const { context, contextFingerprint } of requestedContexts) {
+    const candidate = candidates.get(context.candidateId)!;
+    const latest = latestJobs.get(contextFingerprint);
     if (latest && !isTerminalTradeResearchStatus(latest.status)) return { outcome: "already_active", message: `${candidate.companyName} already has active trade research.` };
-    const countryCode = findCountryByCode(candidate.country)?.code ?? codeForCountryName(candidate.country);
-    if (!countryCode) return { outcome: "invalid_input", message: `${candidate.companyName} does not have a canonical country.` };
-    const productId = candidateProductMatches[0]?.productId;
     // Phase 2B — evaluate BOTH FDA FSVP and Canada CID descriptors
     // for every candidate. `planTradeResearch` refuses the wrong-
     // country provider (`wrong_country` reason), so US candidates get
@@ -100,14 +175,19 @@ export async function createTradeResearchBatchAction(candidateIds: readonly stri
     // sequencing.
     const perProviderPlans = DEFAULT_TRADE_RESEARCH_DESCRIPTORS.map((descriptor) => {
       const [only] = planTradeResearch({
-        candidate, countryCode, goal: "screen_trade_activity", productId,
+        candidate, context,
         hasFreshCache: freshCacheByProviderId.get(descriptor.id) ?? false,
         descriptors: [descriptor],
       });
       return only!;
     });
     jobs.push({
-      candidateId, productId: productId ?? "", countryCode, supersedesJobId: latest?.id ?? "",
+      candidateId: context.candidateId,
+      productId: context.productId,
+      countryCode: context.marketCountryCode,
+      context,
+      contextFingerprint,
+      supersedesJobId: latest?.id ?? "",
       plans: perProviderPlans.map((plan, index) => ({
         providerId: plan.descriptor.id, providerDescriptorVersion: plan.descriptor.version,
         role: plan.role, sequence: index + 1, eligibility: plan.eligible ? "eligible" : "ineligible",
@@ -119,9 +199,13 @@ export async function createTradeResearchBatchAction(candidateIds: readonly stri
   }
   let batch: TradeResearchBatchSnapshot;
   try {
+    const singleProduct = new Set(jobs.map((job) => job.productId));
+    const singleCountry = new Set(jobs.map((job) => job.countryCode));
     batch = await writer.createBatch({
       workspaceId: session.membership.workspaceId, createdBy: session.userId,
-      requestedGoal: "screen_trade_activity", productId: "", countryCode: "",
+      requestedGoal: "screen_trade_activity",
+      productId: singleProduct.size === 1 ? jobs[0]!.productId : "",
+      countryCode: singleCountry.size === 1 ? jobs[0]!.countryCode : "",
       plannerVersion: TRADE_RESEARCH_PLANNER_VERSION, jobs,
     });
   } catch (error) {
@@ -230,4 +314,18 @@ export async function getLatestTradeResearchJobForCandidateAction(candidateId: s
   const session = await requireMdfSession();
   if (!UUID.test(candidateId)) return null;
   return await createTradeResearchReadRepository(createClient(cookies()), session.membership.workspaceId).getLatestJobForCandidate(candidateId) ?? null;
+}
+
+export async function getLatestTradeResearchJobForContextAction(
+  request: TradeResearchRequest,
+): Promise<TradeResearchJobSnapshot | null> {
+  const session = await requireMdfSession();
+  const normalized = canonicalRequest(request);
+  if (!normalized) return null;
+  const context = serverResearchContext(normalized, session.membership.workspaceId);
+  const contextFingerprint = fingerprintResearchContext(context);
+  return await createTradeResearchReadRepository(
+    createClient(cookies()),
+    session.membership.workspaceId,
+  ).getLatestJobForContext(context.candidateId, contextFingerprint) ?? null;
 }

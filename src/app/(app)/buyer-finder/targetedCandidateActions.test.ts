@@ -168,6 +168,19 @@ describe("BI4F 2C — targeted company discovery: happy paths", () => {
     });
   });
 
+  it("keeps requested buyer type out of factual candidate fields", async () => {
+    const repos = fakeRepos();
+    installRepos(repos);
+    await createTargetedCandidateAction({
+      companyName: "Intent Only Foods",
+      countryCode: "US",
+      productId: "guntur-dry-red-chilli",
+      buyerType: "Importer",
+    });
+    expect(repos.state.candidates[0]?.buyerType).toBeUndefined();
+    expect(repos.state.candidates[0]?.isImporter).toBeUndefined();
+  });
+
   it("domain-only input derives a display name and normalizes host", async () => {
     const repos = fakeRepos();
     installRepos(repos);

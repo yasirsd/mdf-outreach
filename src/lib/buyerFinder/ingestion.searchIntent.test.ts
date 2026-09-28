@@ -93,6 +93,81 @@ describe("BF2.1 search intent ≠ candidate fact", () => {
     }
   });
 
+  it("keeps the target product row as zero-relevance context with no observed evidence", async () => {
+    const repos = createMemoryBuyerFinderRepos();
+    await discoverAndIngestCandidates({
+      query: { country: "UAE", productId: "guntur-dry-red-chilli" },
+      companyProvider: provider([hitFromHunter({ productRelevance: 99 })]),
+      repositories: repos,
+    });
+    const [stored] = await repos.candidates.list();
+    const [match] = await repos.productMatches.listByCandidate(stored.id);
+    expect(match).toMatchObject({
+      productId: "guntur-dry-red-chilli",
+      relevance: 0,
+      evidence: [],
+    });
+    expect(match.query).toContain("UAE");
+  });
+
+  it("does not persist requested country as verified Hunter company location", async () => {
+    const repos = createMemoryBuyerFinderRepos();
+    await discoverAndIngestCandidates({
+      query: { country: "United States", productId: "guntur-dry-red-chilli" },
+      companyProvider: provider([hitFromHunter({ country: "" })]),
+      repositories: repos,
+    });
+    const [stored] = await repos.candidates.list();
+    expect(stored.country).toBe("");
+  });
+
+  it("awards no product, country, evidence, multi-match, or source points for query context", async () => {
+    const repos = createMemoryBuyerFinderRepos();
+    await discoverAndIngestCandidates({
+      query: { country: "UAE", productId: "guntur-dry-red-chilli" },
+      companyProvider: provider([hitFromHunter()]),
+      repositories: repos,
+    });
+    const [stored] = await repos.candidates.list();
+    const matches = await repos.productMatches.listByCandidate(stored.id);
+    const scored = scoreBuyerCandidate({
+      candidate: stored,
+      contacts: [],
+      productMatches: matches,
+      targetProductId: "guntur-dry-red-chilli",
+      targetCountry: "UAE",
+    });
+    for (const code of ["product-relevance", "country-match", "evidence", "evidence-multiple", "product-matches-multiple", "source"]) {
+      expect(scored.reasons.some((r) => r.code === code)).toBe(false);
+    }
+  });
+
+  it("still accepts separately supplied observed product evidence", async () => {
+    const repos = createMemoryBuyerFinderRepos();
+    await discoverAndIngestCandidates({
+      query: { country: "UAE", productId: "guntur-dry-red-chilli" },
+      companyProvider: provider([
+        hitFromHunter({
+          country: "UAE",
+          source: "website",
+          productRelevance: 80,
+          productEvidence: [{
+            note: "Company catalogue explicitly lists Guntur dry red chilli.",
+            confidence: 80,
+            url: "https://neutral-co.example/products",
+          }],
+        }),
+      ]),
+      repositories: repos,
+    });
+    const [stored] = await repos.candidates.list();
+    const matches = await repos.productMatches.listByCandidate(stored.id);
+    const scored = scoreBuyerCandidate({ candidate: stored, contacts: [], productMatches: matches });
+    expect(matches[0]).toMatchObject({ relevance: 80 });
+    expect(matches[0]?.evidence).toHaveLength(1);
+    expect(scored.reasons.some((r) => r.code === "product-relevance")).toBe(true);
+  });
+
   it("when the PROVIDER factually says isImporter=true, THEN the candidate carries it and scoring credits it", async () => {
     // Contrast: if the provider itself supplies the factual signal, we
     // honour it. Real Hunter never does — but the mock provider does.

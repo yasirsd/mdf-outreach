@@ -1,6 +1,9 @@
 import { normalizeValidBuyerEmail } from "@/lib/buyerEmail";
 import type { Buyer } from "@/lib/types";
-import type { CandidateConversion } from "@/lib/buyerFinder/conversion";
+import {
+  contactHasUsablePersonalEmail,
+  type CandidateConversion,
+} from "@/lib/buyerFinder/conversion";
 import type {
   BuyerCandidate,
   BuyerCandidateContact,
@@ -20,12 +23,7 @@ export interface OutreachReadinessInput {
 
 function hasUsableCandidateEmail(input: OutreachReadinessInput): boolean {
   return (
-    input.contacts.some(
-      (row) =>
-        Boolean(row.revealedAt) &&
-        row.emailType === "personal" &&
-        Boolean(normalizeValidBuyerEmail(row.businessEmail)),
-    ) ||
+    input.contacts.some(contactHasUsablePersonalEmail) ||
     input.publicEmails.some((row) => Boolean(normalizeValidBuyerEmail(row.email)))
   );
 }

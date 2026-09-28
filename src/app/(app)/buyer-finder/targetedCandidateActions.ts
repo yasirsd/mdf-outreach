@@ -46,6 +46,7 @@ export type TargetedCandidateInput = {
   countryCode?: string;
   countryName?: string;
   productId: string;
+  /** Operator targeting context only; never persisted as a company fact. */
   buyerType?: string;
 };
 
@@ -73,7 +74,6 @@ export async function createTargetedCandidateAction(input: TargetedCandidateInpu
   const rawCountryCode = typeof input.countryCode === "string" ? input.countryCode.trim() : "";
   const rawCountryName = typeof input.countryName === "string" ? input.countryName.trim() : "";
   const productId = typeof input.productId === "string" ? input.productId.trim() : "";
-  const buyerType = typeof input.buyerType === "string" ? input.buyerType.trim() : "";
 
   if (!rawName && !rawDomain) {
     return { outcome: "invalid_input", message: "Provide at least a company name or a company domain." };
@@ -137,7 +137,8 @@ export async function createTargetedCandidateAction(input: TargetedCandidateInpu
       domain: normalizedDomain,
       website: rawDomain && normalizedDomain ? (rawDomain.startsWith("http") ? rawDomain : `https://${normalizedDomain}`) : undefined,
       country: countryDisplay,
-      buyerType: buyerType || undefined,
+      // buyerType is search/operator intent and is not an observed fact.
+      buyerType: undefined,
       source: "other",
       sourceUrl: undefined,
       isImporter: undefined,

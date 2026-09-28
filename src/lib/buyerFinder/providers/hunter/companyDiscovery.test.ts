@@ -93,7 +93,8 @@ describe("HunterCompanyDiscoveryProvider", () => {
       "Third Ok Imports",
     ]);
     expect(hits.every((h) => h.source === "hunter")).toBe(true);
-    expect(hits.every((h) => h.country === "Thailand")).toBe(true);
+    expect(hits.every((h) => h.country === "")).toBe(true);
+    expect(hits[0]?.evidence[0]?.note).toMatch(/Target market SEARCH INTENT/i);
     expect(hits[0]?.domain).toBe("siam-foods.example");
     expect(hits[0]?.website).toBe("https://siam-foods.example");
     expect(hits[0]?.isImporter).toBeUndefined();

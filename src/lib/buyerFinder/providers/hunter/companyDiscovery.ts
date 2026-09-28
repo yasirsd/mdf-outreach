@@ -38,8 +38,8 @@ function evidenceFor(query: CompanyDiscoveryQuery, isoCountry: string, keywords:
   const types = (query.buyerTypes ?? []).join(", ") || "none";
   return [
     {
-      note: `Hunter Discover company match. Country ${query.country} (${isoCountry}). Product ${query.productId}. Keywords (match any): ${keywords.join(", ")}. Buyer type SEARCH INTENT (not fact): ${types}. Directory match only — not proof of import or distribution.`,
-      confidence: 40,
+      note: `Hunter Discover company match. Target market SEARCH INTENT (not verified company location): ${query.country} (${isoCountry}). Product SEARCH INTENT (not observed evidence): ${query.productId}. Keywords (match any): ${keywords.join(", ")}. Buyer type SEARCH INTENT (not fact): ${types}. Directory match only — not proof of product, import, or distribution.`,
+      confidence: 0,
     },
   ];
 }
@@ -57,7 +57,9 @@ function mapHunterRecord(
   if (!companyName || !domain) return undefined;
   const website = normalizeOptionalUrl(`https://${domain}`);
   // Free Discover fields we persist: organization → companyName, domain,
-  // synthesized website. Country is the search query, not a Hunter row field.
+  // synthesized website. Hunter does not return a row-level country in
+  // this response, so the requested market is retained only in the
+  // discovery note and is not promoted to candidate location.
   // Fixture `emails_count` is discarded — no persisted column and it is not
   // a buyer-quality signal. Industry, headcount, description, city, and
   // company type are not present in our mapped Discover records.
@@ -66,7 +68,7 @@ function mapHunterRecord(
     companyName,
     domain,
     website,
-    country: query.country,
+    country: "",
     evidence: evidenceFor(query, isoCountry, keywords),
     source: "hunter",
   };

@@ -16,7 +16,6 @@ import { createClient } from "@/utils/supabase/server";
 import { createMarketReadRepository } from "@/lib/marketIntelligence/marketReadRepository";
 import { getMarketIntelligenceHandoffContext } from "@/lib/marketIntelligence/read/overview";
 import { resolveMarketIntelligenceBuyerFinderHandoff } from "@/lib/marketIntelligence/buyerFinderHandoff";
-import { createTradeResearchReadRepository } from "@/lib/tradeResearch/repository";
 
 export const dynamic = "force-dynamic";
 // BI4F 2A Hobby-plan headroom: the server action awaits a bounded
@@ -46,12 +45,11 @@ export default async function BuyerFinderPage({
         createMarketReadRepository(supabase),
       )
     : Promise.resolve(undefined);
-  const [initial, activeRun, enrichmentSummary, marketContext, researchBatch] = await Promise.all([
+  const [initial, activeRun, enrichmentSummary, marketContext] = await Promise.all([
     handoff ? loadBuyerCandidateQueueReadOnlyAction() : loadBuyerCandidateQueueAction(),
     getLatestActiveBuyerFinderSearchRunAction(),
     getFreeEnrichmentSummaryAction(),
     marketContextPromise,
-    createTradeResearchReadRepository(supabase, session.membership.workspaceId).getLatestBatch(),
   ]);
   return (
     <BuyerFinderView
@@ -67,7 +65,6 @@ export default async function BuyerFinderPage({
       marketHandoff={handoff}
       marketContext={marketContext}
       isOwner={session.membership.role === "owner"}
-      initialResearchBatch={researchBatch}
     />
   );
 }

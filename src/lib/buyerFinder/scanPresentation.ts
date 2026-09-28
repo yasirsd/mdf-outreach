@@ -17,6 +17,6 @@ export function countryScanLabel(country: string | null | undefined): string {
 
 export function productMatchScanLabel(match: BuyerCandidateProductMatch): string {
   const full = productMatchStrengthLabel(match);
-  if (full === "Directory keyword match") return "Directory signal";
+  if (full.startsWith("Directory keyword match")) return "Directory signal · context only";
   return full;
 }

@@ -3,6 +3,7 @@ import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 import type { BuyerCandidate } from "@/lib/buyerFinder/types";
+import type { ResearchContext } from "./types";
 import {
   CANADA_CID_ATTRIBUTION,
   CANADA_CID_DATASET_ID,
@@ -60,6 +61,19 @@ function usCandidate(): BuyerCandidate {
   };
 }
 
+function researchContext(marketCountryCode: string, productId = "guntur-dry-red-chilli"): ResearchContext {
+  return {
+    workspaceId: "00000000-0000-4000-8000-000000000001",
+    candidateId: "00000000-0000-4000-8000-000000000002",
+    marketCountryCode,
+    productId,
+    productForm: null,
+    researchGoal: "screen_trade_activity",
+    providerPlanVersion: "trade-planner-v1",
+    interpretationVersion: "trade-interpretation-v1",
+  };
+}
+
 const CID_CSV_HEADER =
   "HS6-SH6,COMPANY-ENTREPRISE,COUNTRY,PAYS,PROVINCE_ENG,PROVINCE_FRA,CITY-VILLE,POSTAL_CODE-CODE_POSTAL,DATA_YEAR-ANNÉE_DES_DONNÉES";
 
@@ -82,8 +96,7 @@ describe("BI4F 2B — descriptor is enabled + planner routes correctly", () => {
 
   it("CA candidate + Canada CID → eligible", () => {
     const [plan] = planTradeResearch({
-      candidate: caCandidate(), countryCode: "CA", goal: "screen_trade_activity",
-      productId: "guntur-dry-red-chilli", hasFreshCache: false,
+      candidate: caCandidate(), context: researchContext("CA"), hasFreshCache: false,
       descriptors: [CANADA_CID_DESCRIPTOR],
     });
     expect(plan.eligible).toBe(true);
@@ -92,8 +105,7 @@ describe("BI4F 2B — descriptor is enabled + planner routes correctly", () => {
 
   it("US candidate + Canada CID → wrong_country (regression)", () => {
     const [plan] = planTradeResearch({
-      candidate: usCandidate(), countryCode: "US", goal: "screen_trade_activity",
-      productId: "guntur-dry-red-chilli", hasFreshCache: false,
+      candidate: usCandidate(), context: researchContext("US"), hasFreshCache: false,
       descriptors: [CANADA_CID_DESCRIPTOR],
     });
     expect(plan.eligible).toBe(false);
@@ -102,8 +114,7 @@ describe("BI4F 2B — descriptor is enabled + planner routes correctly", () => {
 
   it("CA candidate + FDA → wrong_country (regression)", () => {
     const [plan] = planTradeResearch({
-      candidate: caCandidate(), countryCode: "CA", goal: "screen_trade_activity",
-      productId: "guntur-dry-red-chilli", hasFreshCache: false,
+      candidate: caCandidate(), context: researchContext("CA"), hasFreshCache: false,
       descriptors: [FDA_FSVP_DESCRIPTOR],
     });
     expect(plan.eligible).toBe(false);
@@ -112,8 +123,7 @@ describe("BI4F 2B — descriptor is enabled + planner routes correctly", () => {
 
   it("US candidate + FDA → eligible (Phase 2A regression)", () => {
     const [plan] = planTradeResearch({
-      candidate: usCandidate(), countryCode: "US", goal: "screen_trade_activity",
-      productId: "guntur-dry-red-chilli", hasFreshCache: false,
+      candidate: usCandidate(), context: researchContext("US"), hasFreshCache: false,
       descriptors: [FDA_FSVP_DESCRIPTOR],
     });
     expect(plan.eligible).toBe(true);
@@ -121,8 +131,7 @@ describe("BI4F 2B — descriptor is enabled + planner routes correctly", () => {
 
   it("CA + both descriptors → exactly ONE eligible (Canada CID)", () => {
     const plans = planTradeResearch({
-      candidate: caCandidate(), countryCode: "CA", goal: "screen_trade_activity",
-      productId: "guntur-dry-red-chilli", hasFreshCache: false,
+      candidate: caCandidate(), context: researchContext("CA"), hasFreshCache: false,
       descriptors: DEFAULT_TRADE_RESEARCH_DESCRIPTORS,
     });
     const eligible = plans.filter((p) => p.eligible);

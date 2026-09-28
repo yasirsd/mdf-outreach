@@ -4,6 +4,7 @@
  */
 
 import type { BuyerCandidateProductMatch } from "./types";
+import { hasObservedProductEvidence, isDiscoveryContextEvidence } from "./evidenceSemantics";
 
 export function isDirectoryKeywordMatch(match: BuyerCandidateProductMatch): boolean {
   if (match.source === "hunter") return true;
@@ -12,7 +13,7 @@ export function isDirectoryKeywordMatch(match: BuyerCandidateProductMatch): bool
 }
 
 export function isDirectoryMatchEvidenceNote(note: string): boolean {
-  return /Hunter Discover company match|Directory match only/i.test(note);
+  return isDiscoveryContextEvidence({ note, confidence: 0 });
 }
 
 export function shouldShowEvidenceConfidence(note: string, confidence: number): boolean {
@@ -22,7 +23,8 @@ export function shouldShowEvidenceConfidence(note: string, confidence: number): 
 }
 
 export function productMatchStrengthLabel(match: BuyerCandidateProductMatch): string {
-  if (isDirectoryKeywordMatch(match)) return "Directory keyword match";
+  if (isDirectoryKeywordMatch(match)) return "Directory keyword match · context only";
+  if (!hasObservedProductEvidence(match)) return "Search target · context only";
   if (match.relevance == null || !Number.isFinite(match.relevance)) return "Product match";
   return `${Math.round(match.relevance)}% relevance`;
 }

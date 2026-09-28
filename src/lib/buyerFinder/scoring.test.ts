@@ -298,6 +298,16 @@ describe("scoreBuyerCandidate", () => {
     expect(mango.companyFit).toBeGreaterThan(chilli.companyFit);
   });
 
+  it("does not award points merely because observed company country matches requested country", () => {
+    const result = scoreBuyerCandidate({
+      candidate: candidate({ country: "United States" }),
+      contacts: [],
+      productMatches: [],
+      targetCountry: "United States",
+    });
+    expect(reasonCodes(result)).not.toContain("country-match");
+  });
+
   it("never exceeds 100 or goes below 0", () => {
     const strong = scoreBuyerCandidate({
       candidate: candidate({
@@ -363,7 +373,7 @@ describe("scoreBuyerCandidate", () => {
     expect(result.reasons.length).toBeGreaterThan(0);
   });
 
-  it("decomposes a typical free Hunter Discover candidate to 23/100", () => {
+  it("awards no fit or evidence points to a Hunter query return", () => {
     const hunterEvidence = [
       {
         note: "Hunter Discover company match. Country United Arab Emirates (AE). Product guntur-dry-red-chilli. Directory match only — not proof of import or distribution.",
@@ -397,11 +407,13 @@ describe("scoreBuyerCandidate", () => {
       targetCountry: "United Arab Emirates",
     });
     expect(result.contactQuality).toBe(0);
-    expect(result.companyFit).toBe(15);
-    expect(result.completeness).toBe(8);
-    expect(result.total).toBe(23);
-    expect(pointsFor(result, "product-relevance")).toBe(11);
-    expect(pointsFor(result, "country-match")).toBe(4);
+    expect(result.companyFit).toBe(0);
+    expect(result.completeness).toBe(4);
+    expect(result.total).toBe(4);
+    expect(pointsFor(result, "product-relevance")).toBe(0);
+    expect(pointsFor(result, "country-match")).toBe(0);
+    expect(reasonCodes(result)).not.toContain("evidence");
+    expect(reasonCodes(result)).not.toContain("source");
     expect(reasonCodes(result)).not.toContain("importer");
     expect(reasonCodes(result)).not.toContain("distributor");
     expect(reasonCodes(result)).not.toContain("buyer-type");
@@ -446,10 +458,10 @@ describe("scoreBuyerCandidate", () => {
       ...base,
       candidate: { ...base.candidate, generalEmail: "imports@mahmoodsons.com" },
     });
-    expect(without.total).toBe(23);
+    expect(without.total).toBe(4);
     expect(withMail.contactQuality).toBe(0);
     expect(withMail.completeness).toBe(without.completeness + 1);
-    expect(withMail.total).toBe(24);
+    expect(withMail.total).toBe(5);
     expect(reasonCodes(withMail)).toContain("general-email");
   });
 
@@ -504,12 +516,12 @@ describe("scoreBuyerCandidate", () => {
       targetProductId: "guntur-dry-red-chilli",
       targetCountry: "United Arab Emirates",
     });
-    expect(before.total).toBe(23);
+    expect(before.total).toBe(4);
     expect(before.contactQuality).toBe(0);
     expect(after.companyFit).toBe(before.companyFit);
     expect(after.completeness).toBe(before.completeness);
     expect(after.contactQuality).toBe(19);
-    expect(after.total).toBe(42);
+    expect(after.total).toBe(23);
     expect(after.contactQuality).toBeLessThanOrEqual(40);
     expect(reasonCodes(after)).toContain("contact-role");
     expect(reasonCodes(after)).toContain("decision-maker");

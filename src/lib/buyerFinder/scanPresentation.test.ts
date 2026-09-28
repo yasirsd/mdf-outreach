@@ -17,6 +17,6 @@ describe("scanPresentation", () => {
         source: "hunter",
         evidence: [],
       }),
-    ).toBe("Directory signal");
+    ).toBe("Directory signal · context only");
   });
 });

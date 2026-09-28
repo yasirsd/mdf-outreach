@@ -3,10 +3,12 @@ import { isEntityUuid } from "@/lib/buyerFinder/ids";
 import type {
   CandidateConversion,
   ConversionDuplicateMatch,
+  ConversionPreviewReason,
   ConversionSourceKind,
   ConvertOutcome,
   ConvertResult,
 } from "@/lib/buyerFinder/conversion";
+import { conversionPreviewReasonMessage } from "@/lib/buyerFinder/conversion";
 import type {
   BuyerFinderCandidateConversionRepository,
   ConversionRpcInput,
@@ -131,7 +133,11 @@ export class SupabaseBuyerFinderCandidateConversionRepository
 
   async convert(input: ConversionRpcInput): Promise<ConvertResult> {
     if (!isEntityUuid(input.candidateId)) {
-      return { outcome: "invalid_selection", message: "Invalid candidate id." };
+      return {
+        outcome: "invalid_selection",
+        reason: "invalid_selection",
+        message: "Invalid Candidate selection.",
+      };
     }
     const { data, error } = await this.supabase.rpc("convert_buyer_finder_candidate", {
       p_candidate_id: input.candidateId,
@@ -146,8 +152,9 @@ export class SupabaseBuyerFinderCandidateConversionRepository
     const duplicateMatch = duplicateFromRpc(payload);
     const result: ConvertResult = {
       outcome,
+      reason: reasonFromRpc(payload, outcome),
       duplicateMatch,
-      message: messageFor(outcome),
+      message: messageFor(payload, outcome),
     };
     if (payload.conversion_id && payload.buyer_id) {
       result.conversion = {
@@ -174,20 +181,39 @@ export class SupabaseBuyerFinderCandidateConversionRepository
   }
 }
 
-function messageFor(outcome: ConvertOutcome): string | undefined {
+function reasonFromRpc(
+  payload: RpcPayload,
+  outcome: ConvertOutcome,
+): ConvertResult["reason"] {
+  switch (outcome) {
+    case "already_converted":
+      return "already_converted";
+    case "duplicate":
+      return "duplicate_buyer";
+    case "not_found":
+      return "not_found";
+    case "not_eligible":
+      return payload.reason === "not_approved" ? "not_approved" : "invalid_candidate_state";
+    case "invalid_selection":
+      return payload.reason === "unsupported_product" ? "unsupported_product" : "invalid_selection";
+    case "conflict":
+      return "conflict";
+    default:
+      return undefined;
+  }
+}
+
+function messageFor(payload: RpcPayload, outcome: ConvertOutcome): string | undefined {
+  const reason = reasonFromRpc(payload, outcome);
+  if (reason && reason !== "unsupported_product" && reason !== "conflict") {
+    return conversionPreviewReasonMessage(reason as ConversionPreviewReason);
+  }
+  if (reason === "unsupported_product") {
+    return "The selected product cannot be used for Buyer conversion.";
+  }
   switch (outcome) {
     case "created":
       return "Buyer created.";
-    case "already_converted":
-      return "This candidate is already a Buyer.";
-    case "duplicate":
-      return "A matching Buyer already exists.";
-    case "not_eligible":
-      return "This candidate cannot be converted.";
-    case "not_found":
-      return "Candidate not found.";
-    case "invalid_selection":
-      return "Choose a valid contact source.";
     default:
       return "Could not convert this candidate.";
   }

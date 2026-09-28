@@ -1,20 +1,28 @@
 "use client";
 
-import { useCallback, useState, useTransition } from "react";
+import { useCallback, useEffect, useMemo, useState, useTransition } from "react";
 import { Check, Circle, Loader2 } from "lucide-react";
 import { toast } from "@/components/ui/Toast";
 import {
   cancelTradeResearchBatchAction,
   createTradeResearchBatchAction,
-  getLatestTradeResearchJobForCandidateAction,
+  getLatestTradeResearchJobForContextAction,
   getTradeResearchBatchAction,
 } from "@/app/(app)/buyer-finder/tradeResearchActions";
-import { PHASE_2A_STAGES, isTerminalTradeResearchStatus, type TradeResearchBatchSnapshot, type TradeResearchJobSnapshot } from "@/lib/tradeResearch/types";
+import {
+  PHASE_2A_STAGES,
+  TRADE_RESEARCH_INTERPRETATION_VERSION,
+  TRADE_RESEARCH_PLANNER_VERSION,
+  isTerminalTradeResearchStatus,
+  type TradeResearchBatchSnapshot,
+  type TradeResearchJobSnapshot,
+  type TradeResearchRequest,
+} from "@/lib/tradeResearch/types";
 import { phase2AStageState, TRADE_RESEARCH_STAGE_LABELS } from "@/lib/tradeResearch/stateMachine";
 import { useTradeResearchPolling } from "@/lib/tradeResearch/useTradeResearchPolling";
 
-export function TradeResearchBatchPanel({ candidateIds, initialBatch, isOwner }: {
-  candidateIds: readonly string[];
+export function TradeResearchBatchPanel({ requests, initialBatch, isOwner }: {
+  requests: readonly TradeResearchRequest[];
   initialBatch?: TradeResearchBatchSnapshot;
   isOwner: boolean;
 }) {
@@ -30,16 +38,19 @@ export function TradeResearchBatchPanel({ candidateIds, initialBatch, isOwner }:
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
           <h2 className="text-[13.5px] font-semibold text-text-primary">Trade research</h2>
-          <p className="mt-1 text-[11.5px] text-text-muted">Official free-source screening. No shipment, product, or origin claim is inferred.</p>
+          <p className="mt-1 text-[11.5px] text-text-muted">Official free-source screening for the selected product and market. No shipment, product, or origin claim is inferred.</p>
         </div>
         {isOwner && !active && (
-          <button className="btn-secondary" disabled={pending || candidateIds.length === 0} onClick={() => startTransition(async () => {
-            const result = await createTradeResearchBatchAction(candidateIds);
+          <button className="btn-secondary" disabled={pending || requests.length === 0} onClick={() => startTransition(async () => {
+            const result = await createTradeResearchBatchAction(requests);
             if (result.outcome === "created") { setBatch(result.batch); toast.success("Trade research queued"); }
             else toast.error(result.message);
           })}>Research trade activity</button>
         )}
       </div>
+      {requests.length === 0 && (
+        <p className="mt-2 text-[11px] text-text-muted">Choose a market and product with matching candidates before starting trade research.</p>
+      )}
       {batch && (
         <div className="mt-3">
           <div className="grid grid-cols-2 sm:grid-cols-6 gap-3 text-[11.5px]">
@@ -71,27 +82,148 @@ function Metric({ label, value }: { label: string; value: number }) {
   return <div><div className="text-text-muted">{label}</div><div className="mt-0.5 text-[15px] tabular-nums text-text-primary">{value}</div></div>;
 }
 
-export function CandidateTradeResearchPanel({ candidateId, initialJob, isOwner }: {
+export interface TradeResearchProductOption {
+  id: string;
+  label: string;
+}
+
+function requestKey(request: TradeResearchRequest): string {
+  return [
+    request.candidateId,
+    request.marketCountryCode,
+    request.productId,
+    request.productForm ?? "",
+    request.researchGoal,
+  ].join("|");
+}
+
+function jobMatchesRequest(job: TradeResearchJobSnapshot | undefined, request: TradeResearchRequest): boolean {
+  const context = job?.context;
+  return Boolean(
+    context
+      && job?.contextFingerprint
+      && context.candidateId === request.candidateId
+      && context.marketCountryCode === request.marketCountryCode
+      && context.productId === request.productId
+      && context.productForm === request.productForm
+      && context.researchGoal === request.researchGoal
+      && context.providerPlanVersion === TRADE_RESEARCH_PLANNER_VERSION
+      && context.interpretationVersion === TRADE_RESEARCH_INTERPRETATION_VERSION,
+  );
+}
+
+export function CandidateTradeResearchPanel({
+  candidateId,
+  productOptions,
+  marketCountryCode,
+  marketLabel,
+  initialJob,
+  isOwner,
+}: {
   candidateId: string;
+  productOptions: readonly TradeResearchProductOption[];
+  marketCountryCode?: string;
+  marketLabel: string;
   initialJob?: TradeResearchJobSnapshot;
   isOwner: boolean;
 }) {
-  const [job, setJob] = useState(initialJob);
+  const [selectedProductId, setSelectedProductId] = useState(
+    productOptions.length === 1 ? productOptions[0]!.id : "",
+  );
+  const selectedRequest = useMemo<TradeResearchRequest | undefined>(
+    () => selectedProductId && marketCountryCode
+      ? {
+          candidateId,
+          marketCountryCode,
+          productId: selectedProductId,
+          productForm: null,
+          researchGoal: "screen_trade_activity",
+        }
+      : undefined,
+    [candidateId, marketCountryCode, selectedProductId],
+  );
+  const selectedKey = selectedRequest ? requestKey(selectedRequest) : "";
+  const initialMatches = selectedRequest ? jobMatchesRequest(initialJob, selectedRequest) : false;
+  const [job, setJob] = useState(initialMatches ? initialJob : undefined);
+  const [loadedKey, setLoadedKey] = useState(initialMatches ? selectedKey : "");
+  const [loading, setLoading] = useState(false);
   const [pending, startTransition] = useTransition();
   const active = job && !isTerminalTradeResearchStatus(job.status);
-  const fetchJob = useCallback(() => getLatestTradeResearchJobForCandidateAction(candidateId), [candidateId]);
+  const fetchJob = useCallback(
+    () => selectedRequest
+      ? getLatestTradeResearchJobForContextAction(selectedRequest)
+      : Promise.resolve(null),
+    [selectedRequest],
+  );
+
+  useEffect(() => {
+    if (!selectedRequest || loadedKey === selectedKey) return;
+    let cancelled = false;
+    setLoading(true);
+    void fetchJob()
+      .then((latest) => {
+        if (cancelled) return;
+        setJob(latest ?? undefined);
+        setLoading(false);
+        setLoadedKey(selectedKey);
+      })
+      .catch(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [fetchJob, loadedKey, selectedKey, selectedRequest]);
+
   useTradeResearchPolling({ enabled: Boolean(active), fetchSnapshot: fetchJob, onSnapshot: setJob });
   return (
     <section className="rounded-[12px] border border-app-border bg-app-surface p-4" aria-labelledby="trade-intelligence-heading">
       <div className="flex items-start justify-between gap-3">
         <div><h2 id="trade-intelligence-heading" className="text-[13.5px] font-semibold text-text-primary">Trade Intelligence</h2><p className="mt-1 text-[11px] text-text-muted">Free official-source screening</p></div>
-        {isOwner && !active && <button className="btn-secondary" disabled={pending} onClick={() => startTransition(async () => {
-          const result = await createTradeResearchBatchAction([candidateId]);
+        {isOwner && !active && <button className="btn-secondary" disabled={pending || !selectedRequest} onClick={() => startTransition(async () => {
+          if (!selectedRequest) return;
+          const result = await createTradeResearchBatchAction([selectedRequest]);
           if (result.outcome === "created") { toast.success("Trade research queued"); const latest = await fetchJob(); if (latest) setJob(latest); }
           else toast.error(result.message);
         })}>Research trade activity</button>}
       </div>
-      {job ? <JobContent job={job} /> : <p className="mt-3 text-[12px] text-text-muted">No trade research has been run for this candidate.</p>}
+      <div className="mt-3 grid gap-2 sm:grid-cols-2">
+        <div>
+          <div className="text-[10.5px] font-medium uppercase tracking-wide text-text-muted">Product</div>
+          {productOptions.length > 1 ? (
+            <select
+              aria-label="Research product"
+              className="input mt-1 w-full"
+              value={selectedProductId}
+              onChange={(event) => {
+                setSelectedProductId(event.target.value);
+                setJob(undefined);
+                setLoadedKey("");
+              }}
+            >
+              <option value="">Select a product</option>
+              {productOptions.map((product) => <option key={product.id} value={product.id}>{product.label}</option>)}
+            </select>
+          ) : productOptions.length === 1 ? (
+            <p className="mt-1 text-[12px] text-text-primary" data-selected-research-product={productOptions[0]!.id}>{productOptions[0]!.label}</p>
+          ) : (
+            <p className="mt-1 text-[11px] text-text-muted">Associate a product with this candidate before researching trade activity.</p>
+          )}
+        </div>
+        <div>
+          <div className="text-[10.5px] font-medium uppercase tracking-wide text-text-muted">Market</div>
+          <p className="mt-1 text-[12px] text-text-primary" data-research-market={marketCountryCode ?? "unavailable"}>
+            {marketCountryCode ? `${marketLabel} (${marketCountryCode})` : "Canonical market unavailable"}
+          </p>
+        </div>
+      </div>
+      {!selectedProductId && productOptions.length > 1 ? (
+        <p className="mt-3 text-[12px] text-text-muted">Choose the product context to view or start its trade research.</p>
+      ) : loading ? (
+        <p className="mt-3 text-[12px] text-text-muted">Loading trade research for this context…</p>
+      ) : job ? (
+        <JobContent job={job} />
+      ) : selectedRequest ? (
+        <p className="mt-3 text-[12px] text-text-muted">No trade research has been run for this product and market.</p>
+      ) : null}
     </section>
   );
 }

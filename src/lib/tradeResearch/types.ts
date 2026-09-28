@@ -1,5 +1,6 @@
 export const AUTOMATIC_SPEND_RUPEES = 0 as const;
 export const TRADE_RESEARCH_PLANNER_VERSION = "trade-planner-v1" as const;
+export const TRADE_RESEARCH_INTERPRETATION_VERSION = "trade-interpretation-v1" as const;
 
 export const TRADE_RESEARCH_STAGES = [
   "preparing_identity",
@@ -29,6 +30,35 @@ export const PHASE_2A_STAGES = [
 export type TradeResearchStage = (typeof TRADE_RESEARCH_STAGES)[number];
 export type Phase2AStage = (typeof PHASE_2A_STAGES)[number];
 export type TradeResearchGoal = "screen_trade_activity" | "find_target_product" | "check_india_origin";
+
+/**
+ * The complete semantic boundary for one trade-research request.
+ *
+ * Display labels, timestamps and run identifiers deliberately do not belong
+ * here. Callers must persist this exact context before treating a result as
+ * reusable for a later request.
+ */
+export interface ResearchContext {
+  workspaceId: string;
+  candidateId: string;
+  marketCountryCode: string;
+  productId: string;
+  productForm: string | null;
+  researchGoal: TradeResearchGoal;
+  providerPlanVersion: string;
+  interpretationVersion: string;
+}
+
+export type ResearchContextField = keyof ResearchContext;
+
+/** Browser-safe request fields. Workspace and version fields are server-owned. */
+export interface TradeResearchRequest {
+  candidateId: string;
+  marketCountryCode: string;
+  productId: string;
+  productForm: string | null;
+  researchGoal: TradeResearchGoal;
+}
 export type TradeResearchStatus =
   | "queued" | "running" | "cancel_requested" | "completed" | "partial"
   | "needs_review" | "failed" | "cancelled";
@@ -82,6 +112,148 @@ export type TradeResearchEvidenceLevel =
   | "not_available"
   | "not_checked";
 
+export const TRADE_RESEARCH_PROVIDER_EXECUTION_STATES = [
+  "not_started",
+  "completed",
+  "no_match",
+  "failed_retryable",
+  "failed_terminal",
+  "unsupported",
+  "blocked",
+  "cancelled",
+  "cached",
+] as const;
+
+export type TradeResearchProviderExecutionState =
+  (typeof TRADE_RESEARCH_PROVIDER_EXECUTION_STATES)[number];
+
+export interface TradeResearchProviderExecution {
+  status: TradeResearchProviderExecutionState;
+  /** Stable, non-sensitive code only. Provider response bodies do not belong here. */
+  safeErrorCode: string | null;
+}
+
+export type TradeResearchMatchDecision =
+  | "exact"
+  | "strong"
+  | "ambiguous"
+  | "rejected"
+  | "none"
+  | "not_evaluated";
+
+export interface TradeResearchEvidenceAssessment {
+  state: TradeResearchEvidenceLevel;
+  explanation: string;
+}
+
+export type TradeResearchCoverageState =
+  | "covered"
+  | "partially_covered"
+  | "not_covered"
+  | "not_evaluated";
+
+export interface TradeResearchCoverageAssessment {
+  state: TradeResearchCoverageState;
+  explanation: string;
+}
+
+/** Describes the grain a source actually supports. */
+export interface TradeResearchMappingScope {
+  marketCountryCode: string;
+  productId: string;
+  productForm: string | null;
+  sourceProductCodes: string[];
+  companyGrain: "company_record" | "dataset_only" | "not_available";
+  productGrain: "company_product" | "market_product" | "not_available";
+  originGrain: "company_product_origin" | "market_product_origin" | "not_available";
+  shipmentGrain: "shipment_record" | "not_available";
+  programGrain: "company_program" | "not_available";
+}
+
+export interface TradeResearchEvidenceConflict {
+  dimension: "identity" | "product" | "origin" | "shipment" | "program" | "coverage";
+  description: string;
+  sourceRecordIds: string[];
+}
+
+/**
+ * Evidence emitted by one provider. Dimensions remain independent: no field
+ * may be promoted merely because a different dimension is strong.
+ */
+export interface TradeResearchProviderEvidence {
+  matchDecision: TradeResearchMatchDecision;
+  companyEvidence: TradeResearchEvidenceAssessment;
+  productEvidence: TradeResearchEvidenceAssessment;
+  originEvidence: TradeResearchEvidenceAssessment;
+  shipmentEvidence: TradeResearchEvidenceAssessment;
+  programEvidence: TradeResearchEvidenceAssessment;
+  coverage: TradeResearchCoverageAssessment;
+  limitations: string[];
+  attribution: string;
+  mappingScope: TradeResearchMappingScope;
+  interpretationVersion: string;
+  conflicts: TradeResearchEvidenceConflict[];
+}
+
+interface TradeResearchProviderResultBase {
+  providerId: string;
+  datasetId: string;
+  /** Publisher/source release. This is not an interpretation version. */
+  datasetVersion: string | null;
+  /** Parser implementation version. This is not a dataset version. */
+  parserVersion: string | null;
+  sourceRecordIds: string[];
+  sourcePeriod: string | null;
+  retrievedAt: string | null;
+}
+
+export type TradeResearchEvaluatedProviderResult = TradeResearchProviderResultBase & {
+  execution: TradeResearchProviderExecution & {
+    status: "completed" | "no_match" | "cached";
+  };
+  evidence: TradeResearchProviderEvidence;
+};
+
+export type TradeResearchUnevaluatedProviderResult = TradeResearchProviderResultBase & {
+  execution: TradeResearchProviderExecution & {
+    status:
+      | "not_started"
+      | "failed_retryable"
+      | "failed_terminal"
+      | "unsupported"
+      | "blocked"
+      | "cancelled";
+  };
+  /** Partial evidence may be retained; absence must never be read as no_match. */
+  evidence: TradeResearchProviderEvidence | null;
+};
+
+/** One durable provider outcome. Execution status and evidence are separate. */
+export type TradeResearchProviderResult =
+  | TradeResearchEvaluatedProviderResult
+  | TradeResearchUnevaluatedProviderResult;
+
+export type TradeResearchAggregateEvidenceState =
+  | "verified"
+  | "supporting"
+  | "no_verified_match"
+  | "conflicting"
+  | "not_available"
+  | "not_checked";
+
+export interface TradeResearchAggregateDimensionSummary {
+  state: TradeResearchAggregateEvidenceState;
+  explanation: string;
+  supportingProviderIds: string[];
+  conflictingProviderIds: string[];
+}
+
+export interface TradeResearchAggregateConflict {
+  dimension: "identity" | "product" | "origin" | "shipment" | "program" | "coverage";
+  providerIds: string[];
+  description: string;
+}
+
 export interface TradeResearchResultSummary {
   officialProgramEvidence: "verified" | "no_verified_match" | "needs_review" | "not_checked";
   /**
@@ -128,6 +300,12 @@ export interface TradeResearchResultSummary {
   shipmentEvidence: "not_verified";
   sourcesChecked: number;
   automaticSpendRupees: 0;
+  /** T06 context. Missing means legacy/unknown and is never inferred on read. */
+  context?: ResearchContext;
+  /** SHA-256 fingerprint of the canonical context input. */
+  contextFingerprint?: string;
+  /** T06 provider contract. Present values take precedence in typed readers. */
+  providerResults?: TradeResearchProviderResult[];
   /**
    * Backwards-compatible singular evidence. For Phase 2A/2B rows
    * (single provider), this carries the primary provider's block.
@@ -186,6 +364,21 @@ export interface TradeResearchAggregateSummary {
   sourcesCorroborating: number;
 }
 
+/**
+ * Draft aggregate contract for the later aggregation task. T06 defines its
+ * shape only; current Phase 2C aggregation continues to write the compatible
+ * TradeResearchAggregateSummary subset.
+ */
+export interface TradeResearchAggregateResult extends TradeResearchAggregateSummary {
+  identitySummary: TradeResearchAggregateDimensionSummary;
+  productSummary: TradeResearchAggregateDimensionSummary;
+  originSummary: TradeResearchAggregateDimensionSummary;
+  shipmentSummary: TradeResearchAggregateDimensionSummary;
+  programSummary: TradeResearchAggregateDimensionSummary;
+  coverageSummary: TradeResearchAggregateDimensionSummary;
+  conflicts: TradeResearchAggregateConflict[];
+}
+
 export interface TradeResearchJobSnapshot {
   id: string;
   batchId: string;
@@ -198,6 +391,9 @@ export interface TradeResearchJobSnapshot {
   outcome?: TradeResearchOutcome;
   revision: number;
   automaticSpendRupees: 0;
+  /** Present only for T07+ typed jobs. Historical jobs remain contextless. */
+  context?: ResearchContext;
+  contextFingerprint?: string;
   result: TradeResearchResultSummary;
   createdAt: string;
   completedAt?: string;

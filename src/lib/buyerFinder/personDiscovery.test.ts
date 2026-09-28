@@ -336,7 +336,9 @@ describe("discoverPeopleForCandidate", () => {
     expect(listSpy).not.toHaveBeenCalled();
     const stored = await repos.candidates.get(CANDIDATE_ID);
     expect(stored?.source).toBe("hunter");
-    expect(stored?.companyScore).toBeGreaterThan(23);
+    // Query-only Hunter context contributes 4 completeness points; the
+    // persisted 23 includes the newly observed person/contact quality.
+    expect(stored?.companyScore).toBe(23);
     expect(stored?.peopleSearchedAt).toBeTruthy();
     const matches = await repos.productMatches.listByCandidate(CANDIDATE_ID);
     expect(matches).toHaveLength(1);

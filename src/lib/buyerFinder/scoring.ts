@@ -4,6 +4,7 @@
  */
 
 import { findBusinessProductById } from "./businessCatalogue";
+import { hasObservedProductEvidence, observedEvidence } from "./evidenceSemantics";
 import {
   blankToUndefined,
   normalizeDomain,
@@ -46,7 +47,7 @@ export interface ScoreBuyerCandidateInput {
   productMatches: BuyerCandidateProductMatch[];
   /** When set, product points use this match only — not the max of all matches. */
   targetProductId?: BusinessProductId;
-  /** When set, awards country-fit points for a case-insensitive country match. */
+  /** Legacy call-site context. Search-country intent never awards points. */
   targetCountry?: string;
 }
 
@@ -62,7 +63,6 @@ const PRODUCT_RELEVANCE_MAX = 22;
 const IMPORTER_POINTS = 8;
 const DISTRIBUTOR_POINTS = 4;
 const BUYER_TYPE_POINTS = 5;
-const COUNTRY_MATCH_POINTS = 4;
 const INDUSTRY_POINTS = 2;
 
 const PRIMARY_CONTACT_POINTS = 3;
@@ -209,20 +209,18 @@ function buyerTypeFits(buyerType: string | undefined): boolean {
   return /importer|distributor|wholesaler/i.test(buyerType);
 }
 
-function normalizeCountry(value: string | null | undefined): string | undefined {
-  const s = blankToUndefined(value)?.toLowerCase();
-  return s;
-}
-
 function strongestProductMatch(
   productMatches: BuyerCandidateProductMatch[],
   targetProductId: BusinessProductId | undefined,
 ): BuyerCandidateProductMatch | undefined {
   if (targetProductId) {
-    return productMatches.find((m) => m.productId === targetProductId);
+    return productMatches.find(
+      (m) => m.productId === targetProductId && hasObservedProductEvidence(m),
+    );
   }
   let best: BuyerCandidateProductMatch | undefined;
   for (const m of productMatches) {
+    if (!hasObservedProductEvidence(m)) continue;
     const rel = m.relevance ?? 0;
     if (!best || rel > (best.relevance ?? 0)) best = m;
   }
@@ -369,7 +367,7 @@ function scoreBestContact(contacts: BuyerCandidateContact[]): {
 }
 
 function scoreCompanyFit(input: ScoreBuyerCandidateInput): ScoreReason[] {
-  const { candidate, productMatches, targetProductId, targetCountry } = input;
+  const { candidate, productMatches, targetProductId } = input;
   const reasons: ScoreReason[] = [];
 
   const match = strongestProductMatch(productMatches, targetProductId);
@@ -408,17 +406,6 @@ function scoreCompanyFit(input: ScoreBuyerCandidateInput): ScoreReason[] {
       code: "buyer-type",
       label: "Buyer type is importer, distributor, or wholesaler",
       points: BUYER_TYPE_POINTS,
-      category: "companyFit",
-    });
-  }
-
-  const wanted = normalizeCountry(targetCountry);
-  const got = normalizeCountry(candidate.country);
-  if (wanted && got && wanted === got) {
-    reasons.push({
-      code: "country-match",
-      label: "Country matches the search",
-      points: COUNTRY_MATCH_POINTS,
       category: "companyFit",
     });
   }
@@ -464,8 +451,10 @@ function scoreCompleteness(input: ScoreBuyerCandidateInput): ScoreReason[] {
     });
   }
 
-  const evidence = candidate.evidence ?? [];
-  const matchEvidence = productMatches.flatMap((m) => m.evidence ?? []);
+  const evidence = candidate.source === "hunter" ? [] : observedEvidence(candidate.evidence);
+  const matchEvidence = productMatches.flatMap((m) =>
+    m.source === "hunter" ? [] : observedEvidence(m.evidence),
+  );
   const allEvidence = [...evidence, ...matchEvidence];
   if (allEvidence.length >= 1) {
     reasons.push({
@@ -484,7 +473,7 @@ function scoreCompleteness(input: ScoreBuyerCandidateInput): ScoreReason[] {
     });
   }
 
-  if (productMatches.length >= 2) {
+  if (productMatches.filter(hasObservedProductEvidence).length >= 2) {
     reasons.push({
       code: "product-matches-multiple",
       label: "Multiple product matches",
@@ -493,14 +482,6 @@ function scoreCompleteness(input: ScoreBuyerCandidateInput): ScoreReason[] {
     });
   }
 
-  if (blankToUndefined(candidate.source)) {
-    reasons.push({
-      code: "source",
-      label: "Discovery source recorded",
-      points: 1,
-      category: "completeness",
-    });
-  }
   if (normalizeOptionalUrl(candidate.companyLinkedinUrl)) {
     reasons.push({
       code: "company-linkedin",

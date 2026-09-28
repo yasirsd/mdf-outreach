@@ -9,6 +9,7 @@ import {
   planTradeResearch,
 } from "./providers";
 import { findCountryByCode, codeForCountryName } from "@/lib/catalogue/countries";
+import type { ResearchContext } from "./types";
 
 /**
  * BI4F Phase 2B — Super Asia Foods production-shaped regression.
@@ -44,6 +45,19 @@ function superAsia(countryText: string): BuyerCandidate {
   };
 }
 
+function researchContext(productId = "guntur-dry-red-chilli"): ResearchContext {
+  return {
+    workspaceId: "00000000-0000-4000-8000-000000000001",
+    candidateId: "00000000-0000-4000-8000-000000000900",
+    marketCountryCode: "CA",
+    productId,
+    productForm: null,
+    researchGoal: "screen_trade_activity",
+    providerPlanVersion: "trade-planner-v1",
+    interpretationVersion: "trade-interpretation-v1",
+  };
+}
+
 describe("BI4F 2B — Super Asia Foods (Canada, Guntur Dry Red Chilli) planner routing", () => {
   it("stored country 'Canada' normalizes to ISO code CA (as tradeResearchActions does)", () => {
     const displayForm = superAsia("Canada");
@@ -72,9 +86,7 @@ describe("BI4F 2B — Super Asia Foods (Canada, Guntur Dry Red Chilli) planner r
   it("Super Asia + Guntur → exactly ONE eligible plan (Canada CID); FDA is wrong_country; automatic spend 0", () => {
     const plans = planTradeResearch({
       candidate: superAsia("Canada"),
-      countryCode: "CA",
-      goal: "screen_trade_activity",
-      productId: "guntur-dry-red-chilli",
+      context: researchContext(),
       hasFreshCache: false,
       descriptors: DEFAULT_TRADE_RESEARCH_DESCRIPTORS,
     });
@@ -88,7 +100,7 @@ describe("BI4F 2B — Super Asia Foods (Canada, Guntur Dry Red Chilli) planner r
     expect(fdaPlan?.reason).toBe("wrong_country");
   });
 
-  it("Super Asia + NO productId (missing product-match row) → BOTH descriptors mark not_food_import_relevant", () => {
+  it("Super Asia + empty legacy productId → BOTH descriptors remain ineligible", () => {
     // This is the production-shape reason for a sources_checked=0
     // outcome AFTER the deploy — the candidate had no
     // `buyer_candidate_product_matches` row, so tradeResearchActions
@@ -97,9 +109,7 @@ describe("BI4F 2B — Super Asia Foods (Canada, Guntur Dry Red Chilli) planner r
     // productId is missing.
     const plans = planTradeResearch({
       candidate: superAsia("Canada"),
-      countryCode: "CA",
-      goal: "screen_trade_activity",
-      productId: undefined,
+      context: researchContext(""),
       hasFreshCache: false,
       descriptors: DEFAULT_TRADE_RESEARCH_DESCRIPTORS,
     });
@@ -118,9 +128,7 @@ describe("BI4F 2B — Super Asia Foods (Canada, Guntur Dry Red Chilli) planner r
   it("empty-string productId (batch stored '') is treated identically to undefined", () => {
     const plans = planTradeResearch({
       candidate: superAsia("Canada"),
-      countryCode: "CA",
-      goal: "screen_trade_activity",
-      productId: "",
+      context: researchContext(""),
       hasFreshCache: false,
       descriptors: DEFAULT_TRADE_RESEARCH_DESCRIPTORS,
     });
@@ -132,9 +140,7 @@ describe("BI4F 2B — planner is deterministic across planner-version bumps (his
   it("same inputs → same eligibility + same reason on repeated calls (idempotent)", () => {
     const inputs = {
       candidate: superAsia("Canada"),
-      countryCode: "CA",
-      goal: "screen_trade_activity" as const,
-      productId: "guntur-dry-red-chilli",
+      context: researchContext(),
       hasFreshCache: false,
       descriptors: DEFAULT_TRADE_RESEARCH_DESCRIPTORS,
     };
@@ -146,9 +152,7 @@ describe("BI4F 2B — planner is deterministic across planner-version bumps (his
   it("planner returns the SAME descriptor identity (id + version) each call — historical plan rows keyed by these will resolve consistently", () => {
     const inputs = {
       candidate: superAsia("Canada"),
-      countryCode: "CA",
-      goal: "screen_trade_activity" as const,
-      productId: "guntur-dry-red-chilli",
+      context: researchContext(),
       hasFreshCache: false,
       descriptors: DEFAULT_TRADE_RESEARCH_DESCRIPTORS,
     };

@@ -13,6 +13,7 @@ import {
 } from "./fdaVqip";
 import { FDA_VQIP_DESCRIPTOR, isAutomaticallyExecutable, planTradeResearch, DEFAULT_TRADE_RESEARCH_DESCRIPTORS } from "./providers";
 import type { BuyerCandidate } from "@/lib/buyerFinder/types";
+import type { ResearchContext } from "./types";
 
 function usCandidate(over: Partial<BuyerCandidate> = {}): BuyerCandidate {
   return {
@@ -38,6 +39,19 @@ function caCandidate(): BuyerCandidate {
     isImporter: true,
     discoveryStatus: "ready",
     reviewStatus: "pending",
+  };
+}
+
+function researchContext(marketCountryCode: string): ResearchContext {
+  return {
+    workspaceId: "00000000-0000-4000-8000-000000000001",
+    candidateId: "00000000-0000-4000-8000-000000000002",
+    marketCountryCode,
+    productId: "guntur-dry-red-chilli",
+    productForm: null,
+    researchGoal: "screen_trade_activity",
+    providerPlanVersion: "trade-planner-v1",
+    interpretationVersion: "trade-interpretation-v1",
   };
 }
 
@@ -162,8 +176,7 @@ describe("BI4F 2C — FDA VQIP adapter", () => {
 describe("BI4F 2C — planner routes FDA VQIP correctly", () => {
   it("US candidate + VQIP → eligible", () => {
     const [plan] = planTradeResearch({
-      candidate: usCandidate(), countryCode: "US", goal: "screen_trade_activity",
-      productId: "guntur-dry-red-chilli", hasFreshCache: false,
+      candidate: usCandidate(), context: researchContext("US"), hasFreshCache: false,
       descriptors: [FDA_VQIP_DESCRIPTOR],
     });
     expect(plan.eligible).toBe(true);
@@ -173,8 +186,7 @@ describe("BI4F 2C — planner routes FDA VQIP correctly", () => {
 
   it("CA candidate + VQIP → wrong_country", () => {
     const [plan] = planTradeResearch({
-      candidate: caCandidate(), countryCode: "CA", goal: "screen_trade_activity",
-      productId: "guntur-dry-red-chilli", hasFreshCache: false,
+      candidate: caCandidate(), context: researchContext("CA"), hasFreshCache: false,
       descriptors: [FDA_VQIP_DESCRIPTOR],
     });
     expect(plan.eligible).toBe(false);
@@ -183,8 +195,7 @@ describe("BI4F 2C — planner routes FDA VQIP correctly", () => {
 
   it("US candidate + full default descriptors → FSVP + VQIP eligible, CID wrong_country", () => {
     const plans = planTradeResearch({
-      candidate: usCandidate(), countryCode: "US", goal: "screen_trade_activity",
-      productId: "guntur-dry-red-chilli", hasFreshCache: false,
+      candidate: usCandidate(), context: researchContext("US"), hasFreshCache: false,
       descriptors: DEFAULT_TRADE_RESEARCH_DESCRIPTORS,
     });
     const eligibleIds = plans.filter((p) => p.eligible).map((p) => p.descriptor.id);
@@ -194,8 +205,7 @@ describe("BI4F 2C — planner routes FDA VQIP correctly", () => {
 
   it("CA candidate + full default descriptors → only CID eligible", () => {
     const plans = planTradeResearch({
-      candidate: caCandidate(), countryCode: "CA", goal: "screen_trade_activity",
-      productId: "guntur-dry-red-chilli", hasFreshCache: false,
+      candidate: caCandidate(), context: researchContext("CA"), hasFreshCache: false,
       descriptors: DEFAULT_TRADE_RESEARCH_DESCRIPTORS,
     });
     const eligibleIds = plans.filter((p) => p.eligible).map((p) => p.descriptor.id);

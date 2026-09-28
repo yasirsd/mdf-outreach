@@ -32,5 +32,20 @@ describe("useTradeResearchPolling", () => {
     await act(async () => { resolve({ revision: 1 }); await Promise.resolve(); });
     hook.unmount();
   });
-});
 
+  it("does not publish an in-flight snapshot after the selected context is disabled", async () => {
+    vi.useFakeTimers();
+    let resolve!: (value: { context: string }) => void;
+    const fetchSnapshot = vi.fn(() => new Promise<{ context: string }>((done) => { resolve = done; }));
+    const onSnapshot = vi.fn();
+    const hook = renderHook(
+      ({ enabled }) => useTradeResearchPolling({ enabled, fetchSnapshot, onSnapshot }),
+      { initialProps: { enabled: true } },
+    );
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_500); });
+    hook.rerender({ enabled: false });
+    await act(async () => { resolve({ context: "stale-chilli" }); await Promise.resolve(); });
+    expect(onSnapshot).not.toHaveBeenCalled();
+    hook.unmount();
+  });
+});

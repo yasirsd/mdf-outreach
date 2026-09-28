@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { BuyerCandidate } from "@/lib/buyerFinder/types";
-import { FDA_FSVP_DESCRIPTOR, isAutomaticallyExecutable, planTradeResearch, type TradeResearchProviderDescriptor } from "./providers";
+import {
+  FDA_FSVP_DESCRIPTOR,
+  isAutomaticallyExecutable,
+  planTradeResearch as planTradeResearchWithContext,
+  type TradeResearchProviderDescriptor,
+} from "./providers";
+import type { ResearchContext, TradeResearchGoal } from "./types";
 import { assertTradeResearchTransition, isJobLeaseStale, isRetryableProviderFailure, retryDelayMs } from "./stateMachine";
 
 function candidate(over: Partial<BuyerCandidate> = {}): BuyerCandidate {
@@ -11,7 +17,48 @@ function descriptor(costClass: TradeResearchProviderDescriptor["costClass"], ove
   return { ...FDA_FSVP_DESCRIPTOR, id: `test-${costClass}`, costClass, ...over };
 }
 
+function researchContext(over: Partial<ResearchContext> = {}): ResearchContext {
+  return {
+    workspaceId: "00000000-0000-4000-8000-000000000001",
+    candidateId: "00000000-0000-4000-8000-000000000002",
+    marketCountryCode: "US",
+    productId: "guntur-dry-red-chilli",
+    productForm: null,
+    researchGoal: "screen_trade_activity",
+    providerPlanVersion: "trade-planner-v1",
+    interpretationVersion: "trade-interpretation-v1",
+    ...over,
+  };
+}
+
+/** Compatibility helper for the pre-T07 policy cases below. */
+function planTradeResearch(input: {
+  candidate: BuyerCandidate;
+  countryCode: string;
+  goal: TradeResearchGoal;
+  productId?: string;
+  hasFreshCache: boolean;
+  descriptors?: readonly TradeResearchProviderDescriptor[];
+}) {
+  return planTradeResearchWithContext({
+    candidate: input.candidate,
+    context: researchContext({
+      candidateId: input.candidate.id,
+      marketCountryCode: input.countryCode,
+      productId: input.productId ?? "",
+      researchGoal: input.goal,
+    }),
+    hasFreshCache: input.hasFreshCache,
+    descriptors: input.descriptors,
+  });
+}
+
 describe("trade research engine policy", () => {
+  it("T07 receives the complete ResearchContext directly", () => {
+    const context = researchContext({ productId: "banganapalli-mango", marketCountryCode: "US" });
+    const plans = planTradeResearchWithContext({ candidate: candidate(), context, hasFreshCache: false });
+    expect(plans[0]).toMatchObject({ eligible: true, reason: "eligible" });
+  });
   it("plans only FDA FSVP for US food/import-relevant activity screening", () => {
     const plans = planTradeResearch({ candidate: candidate(), countryCode: "US", goal: "screen_trade_activity", productId: "guntur-dry-red-chilli", hasFreshCache: false });
     expect(plans).toHaveLength(1); expect(plans[0]).toMatchObject({ eligible: true, reason: "eligible", automaticSpendRupees: 0 });
@@ -197,4 +244,3 @@ describe("trade research engine policy", () => {
     expect({ datasetParseCount, jobExecutionCount, pollingCount: 0 }).toEqual({ datasetParseCount: 1, jobExecutionCount: size, pollingCount: 0 });
   });
 });
-

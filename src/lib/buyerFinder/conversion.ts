@@ -38,6 +38,17 @@ export type ConversionEligibilityReason =
   | "already_converted"
   | "invalid_selection";
 
+export type ConversionPreviewReason =
+  | "ready"
+  | "not_found"
+  | "not_approved"
+  | "missing_email"
+  | "unsupported_email_source"
+  | "invalid_candidate_state"
+  | "already_converted"
+  | "duplicate_buyer"
+  | "invalid_selection";
+
 export interface CandidateConversion {
   id: string;
   candidateId: string;
@@ -69,7 +80,10 @@ export interface ConversionMaskedOption {
   label: string;
   title?: string;
   selectable: false;
-  reason: "Personal email not revealed";
+  reason:
+    | "Personal email not revealed"
+    | "Only revealed personal email can be used"
+    | "A valid personal email is required";
 }
 
 export interface ConversionPublicEmailOption {
@@ -112,6 +126,8 @@ export interface ConversionMapping {
 }
 
 export interface ConversionPreview {
+  canConvert: boolean;
+  reason: ConversionPreviewReason;
   eligibility: ConversionEligibilityReason;
   candidateId: string;
   companyName: string;
@@ -138,6 +154,7 @@ export type ConvertOutcome =
 
 export interface ConvertResult {
   outcome: ConvertOutcome;
+  reason?: ConversionPreviewReason | "unsupported_product" | "conflict";
   buyer?: Buyer;
   conversion?: CandidateConversion;
   duplicateMatch?: ConversionDuplicateMatch;
@@ -179,7 +196,11 @@ export function conversionEligibility(input: {
 }
 
 export function contactHasUsablePersonalEmail(contact: BuyerCandidateContact): boolean {
-  return Boolean(normalizeValidBuyerEmail(contact.businessEmail));
+  return (
+    Boolean(blankToUndefined(contact.revealedAt)) &&
+    contact.emailType === "personal" &&
+    Boolean(normalizeValidBuyerEmail(contact.businessEmail))
+  );
 }
 
 export function isSelectableRevealedContact(contact: BuyerCandidateContact): boolean {
@@ -204,12 +225,19 @@ function sortPublic(a: BuyerCandidatePublicEmail, b: BuyerCandidatePublicEmail):
 }
 
 export function listConversionOptions(input: {
+  candidateId?: string;
   contacts: BuyerCandidateContact[];
   publicEmails: BuyerCandidatePublicEmail[];
 }): ConversionOption[] {
   const options: ConversionOption[] = [];
-  const revealed = input.contacts.filter(isSelectableRevealedContact).slice().sort(sortRevealed);
-  const masked = input.contacts.filter((c) => !isSelectableRevealedContact(c));
+  const contacts = input.candidateId
+    ? input.contacts.filter((row) => row.candidateId === input.candidateId)
+    : input.contacts;
+  const publicEmails = input.candidateId
+    ? input.publicEmails.filter((row) => row.candidateId === input.candidateId)
+    : input.publicEmails;
+  const revealed = contacts.filter(isSelectableRevealedContact).slice().sort(sortRevealed);
+  const masked = contacts.filter((c) => !isSelectableRevealedContact(c));
   for (const c of revealed) {
     options.push({
       kind: "revealed_personal_contact",
@@ -220,10 +248,10 @@ export function listConversionOptions(input: {
       selectable: true,
     });
   }
-  const publics = input.publicEmails.slice().sort(sortPublic);
+  const publics = publicEmails.slice().sort(sortPublic);
   for (const e of publics) {
     const email = normalizeValidBuyerEmail(e.email);
-    if (!email) continue;
+    if (!email || e.source !== "company_website") continue;
     options.push({
       kind: "public_company_email",
       publicEmailId: e.id,
@@ -232,13 +260,18 @@ export function listConversionOptions(input: {
     });
   }
   for (const c of masked) {
+    const reason = !blankToUndefined(c.revealedAt)
+      ? "Personal email not revealed"
+      : c.emailType !== "personal"
+        ? "Only revealed personal email can be used"
+        : "A valid personal email is required";
     options.push({
       kind: "masked_person",
       contactId: c.id,
       label: contactLabel(c),
       title: blankToUndefined(c.jobTitle),
       selectable: false,
-      reason: "Personal email not revealed",
+      reason,
     });
   }
   // BF5B-final: company_only is no longer offered. Email is mandatory to
@@ -255,6 +288,7 @@ export function listConversionOptions(input: {
  * state instead of a Convert button.
  */
 export function hasUsableEmailForConversion(input: {
+  candidateId?: string;
   contacts: BuyerCandidateContact[];
   publicEmails: BuyerCandidatePublicEmail[];
 }): boolean {
@@ -279,10 +313,12 @@ export function defaultConversionSelection(options: ConversionOption[]): Convers
 
 export function resolveConversionSelection(input: {
   requested?: ConversionSelectionInput;
+  candidateId?: string;
   contacts: BuyerCandidateContact[];
   publicEmails: BuyerCandidatePublicEmail[];
 }): { ok: true; selection: Required<Pick<ConversionSelectionInput, "kind">> & ConversionSelectionInput } | { ok: false } {
   const options = listConversionOptions({
+    candidateId: input.candidateId,
     contacts: input.contacts,
     publicEmails: input.publicEmails,
   });
@@ -296,7 +332,11 @@ export function resolveConversionSelection(input: {
     return { ok: false };
   }
   if (requested.kind === "revealed_personal_contact" || requested.contactId) {
-    const contact = input.contacts.find((c) => c.id === requested.contactId);
+    const contact = input.contacts.find(
+      (c) =>
+        c.id === requested.contactId &&
+        (!input.candidateId || c.candidateId === input.candidateId),
+    );
     if (!contact || !isSelectableRevealedContact(contact)) return { ok: false };
     return {
       ok: true,
@@ -304,8 +344,18 @@ export function resolveConversionSelection(input: {
     };
   }
   if (requested.kind === "public_company_email" || requested.publicEmailId) {
-    const row = input.publicEmails.find((e) => e.id === requested.publicEmailId);
-    if (!row || !normalizeValidBuyerEmail(row.email)) return { ok: false };
+    const row = input.publicEmails.find(
+      (e) =>
+        e.id === requested.publicEmailId &&
+        (!input.candidateId || e.candidateId === input.candidateId),
+    );
+    if (
+      !row ||
+      row.source !== "company_website" ||
+      !normalizeValidBuyerEmail(row.email)
+    ) {
+      return { ok: false };
+    }
     return {
       ok: true,
       selection: { kind: "public_company_email", publicEmailId: row.id },
@@ -363,6 +413,7 @@ export function mapConversionBuyer(input: {
 }): ConversionMapping | undefined {
   const resolved = resolveConversionSelection({
     requested: input.selection,
+    candidateId: input.candidate.id,
     contacts: input.contacts,
     publicEmails: input.publicEmails,
   });
@@ -507,11 +558,13 @@ export function buildConversionPreview(input: {
     conversion: input.conversion,
   });
   const options = listConversionOptions({
+    candidateId: input.candidate?.id,
     contacts: input.contacts,
     publicEmails: input.publicEmails,
   });
   const resolved = resolveConversionSelection({
     requested: input.requested,
+    candidateId: input.candidate?.id,
     contacts: input.contacts,
     publicEmails: input.publicEmails,
   });
@@ -545,9 +598,20 @@ export function buildConversionPreview(input: {
         })
       : undefined;
   const missingEmail = mapping.email.length === 0;
-  const createBlocked =
-    eligibility !== "ok" || !resolved.ok || Boolean(duplicateMatch);
+  const reason = conversionPreviewReason({
+    eligibility,
+    candidate: input.candidate,
+    contacts: input.contacts,
+    publicEmails: input.publicEmails,
+    requested: input.requested,
+    resolved: resolved.ok,
+    duplicate: Boolean(duplicateMatch),
+  });
+  const canConvert = reason === "ready";
+  const createBlocked = !canConvert;
   return {
+    canConvert,
+    reason,
     eligibility,
     candidateId: input.candidate?.id ?? "",
     companyName: input.candidate?.companyName ?? "",
@@ -562,6 +626,89 @@ export function buildConversionPreview(input: {
     missingEmail,
     createBlocked,
   };
+}
+
+function conversionPreviewReason(input: {
+  eligibility: ConversionEligibilityReason;
+  candidate?: BuyerCandidate;
+  contacts: BuyerCandidateContact[];
+  publicEmails: BuyerCandidatePublicEmail[];
+  requested?: ConversionSelectionInput;
+  resolved: boolean;
+  duplicate: boolean;
+}): ConversionPreviewReason {
+  if (input.requested?.kind === "company_only") {
+    return "invalid_selection";
+  }
+  switch (input.eligibility) {
+    case "not_found":
+      return "not_found";
+    case "not_approved":
+      return "not_approved";
+    case "rejected":
+    case "archived":
+      return "invalid_candidate_state";
+    case "already_converted":
+      return "already_converted";
+    case "invalid_selection":
+      return "invalid_selection";
+  }
+
+  if (!input.resolved) {
+    const candidateId = input.candidate?.id;
+    const requested = input.requested;
+    if (
+      (requested?.kind === "revealed_personal_contact" &&
+        (!requested.contactId || Boolean(requested.publicEmailId))) ||
+      (requested?.kind === "public_company_email" &&
+        (!requested.publicEmailId || Boolean(requested.contactId)))
+    ) {
+      return "invalid_selection";
+    }
+    if (requested?.contactId) {
+      const contact = input.contacts.find(
+        (row) => row.id === requested.contactId && row.candidateId === candidateId,
+      );
+      return contact ? "unsupported_email_source" : "invalid_selection";
+    }
+    if (requested?.publicEmailId) {
+      const email = input.publicEmails.find(
+        (row) => row.id === requested.publicEmailId && row.candidateId === candidateId,
+      );
+      return email ? "unsupported_email_source" : "invalid_selection";
+    }
+    const hasUnsupportedSource =
+      Boolean(blankToUndefined(input.candidate?.generalEmail)) ||
+      input.contacts.some((row) => row.candidateId === candidateId) ||
+      input.publicEmails.some((row) => row.candidateId === candidateId);
+    return hasUnsupportedSource ? "unsupported_email_source" : "missing_email";
+  }
+
+  if (input.duplicate) return "duplicate_buyer";
+  return "ready";
+}
+
+export function conversionPreviewReasonMessage(reason: ConversionPreviewReason): string {
+  switch (reason) {
+    case "ready":
+      return "Ready to create a Buyer.";
+    case "not_found":
+      return "This Candidate is unavailable in the selected workspace.";
+    case "not_approved":
+      return "Approve this Candidate for Buyer review before converting it.";
+    case "missing_email":
+      return "A verified conversion-eligible email is required.";
+    case "unsupported_email_source":
+      return "The available email source cannot be used for Buyer conversion.";
+    case "invalid_candidate_state":
+      return "This Candidate is rejected or archived and cannot be converted.";
+    case "already_converted":
+      return "This Candidate has already been converted.";
+    case "duplicate_buyer":
+      return "A matching Buyer already exists.";
+    case "invalid_selection":
+      return "Choose a valid conversion-eligible email source.";
+  }
 }
 
 export function mappingToBuyer(mapping: ConversionMapping, nowIso: string): Buyer {
@@ -606,19 +753,50 @@ export async function convertCandidateToBuyer(input: {
     const candidate = input.candidate;
     const eligibility = conversionEligibility({ candidate, conversion });
     if (eligibility === "already_converted" && conversion) {
-      return { outcome: "already_converted", conversion };
+      return {
+        outcome: "already_converted",
+        reason: "already_converted",
+        conversion,
+        message: conversionPreviewReasonMessage("already_converted"),
+      };
     }
-    if (eligibility === "not_found") return { outcome: "not_found", message: "Candidate not found." };
+    if (eligibility === "not_found") {
+      return {
+        outcome: "not_found",
+        reason: "not_found",
+        message: conversionPreviewReasonMessage("not_found"),
+      };
+    }
     if (eligibility !== "ok" || !candidate) {
-      return { outcome: "not_eligible", message: "This candidate cannot be converted." };
+      const reason =
+        eligibility === "not_approved" ? "not_approved" : "invalid_candidate_state";
+      return {
+        outcome: "not_eligible",
+        reason,
+        message: conversionPreviewReasonMessage(reason),
+      };
     }
     const resolved = resolveConversionSelection({
       requested: input.requested,
+      candidateId: candidate.id,
       contacts: input.contacts,
       publicEmails: input.publicEmails,
     });
     if (!resolved.ok) {
-      return { outcome: "invalid_selection", message: "Choose a valid contact source." };
+      const reason = conversionPreviewReason({
+        eligibility,
+        candidate,
+        contacts: input.contacts,
+        publicEmails: input.publicEmails,
+        requested: input.requested,
+        resolved: false,
+        duplicate: false,
+      });
+      return {
+        outcome: "invalid_selection",
+        reason,
+        message: conversionPreviewReasonMessage(reason),
+      };
     }
     const mapping = mapConversionBuyer({
       candidate,
@@ -628,7 +806,11 @@ export async function convertCandidateToBuyer(input: {
       selection: resolved.selection,
     });
     if (!mapping) {
-      return { outcome: "invalid_selection", message: "Choose a valid contact source." };
+      return {
+        outcome: "invalid_selection",
+        reason: "invalid_selection",
+        message: conversionPreviewReasonMessage("invalid_selection"),
+      };
     }
     const existingBuyers = await input.loadExistingBuyers();
     const duplicateMatch = findConversionDuplicate({
@@ -639,8 +821,9 @@ export async function convertCandidateToBuyer(input: {
     if (duplicateMatch) {
       return {
         outcome: "duplicate",
+        reason: "duplicate_buyer",
         duplicateMatch,
-        message: "A matching Buyer already exists.",
+        message: conversionPreviewReasonMessage("duplicate_buyer"),
       };
     }
     const nowIso = (input.now ?? (() => new Date()))().toISOString();

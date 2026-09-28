@@ -30,6 +30,8 @@ const ahmed: BuyerCandidateContact = {
   isPrimary: true,
   contactScore: 18,
   source: "hunter",
+  emailType: "personal",
+  revealedAt: "2026-08-31T00:00:00.000Z",
 };
 
 const chilli = {
@@ -143,6 +145,8 @@ describe("BF5A conversion actions", () => {
     candidates.delete(natureland.id);
     const preview = await previewCandidateConversionAction({ candidateId: natureland.id });
     expect(preview.eligibility).toBe("not_found");
+    expect(preview.canConvert).toBe(false);
+    expect(preview.reason).toBe("not_found");
     expect(buyers).toHaveLength(0);
     expect(conversions.size).toBe(0);
   });
@@ -150,6 +154,8 @@ describe("BF5A conversion actions", () => {
   it("preview does not insert a Buyer", async () => {
     const preview = await previewCandidateConversionAction({ candidateId: natureland.id });
     expect(preview.eligibility).toBe("ok");
+    expect(preview.canConvert).toBe(true);
+    expect(preview.reason).toBe("ready");
     expect(preview.mapping.email).toBe("ahmed@natureland.net");
     expect(preview.mapping.productInterest).toBe("Guntur Dry Red Chilli");
     expect(preview.mapping.source).toBe("Buyer Finder");
@@ -182,5 +188,16 @@ describe("BF5A conversion actions", () => {
     });
     expect(second.outcome).toBe("already_converted");
     expect(buyers).toHaveLength(1);
+  });
+
+  it("rechecks approval on the server before execution", async () => {
+    candidates.set(natureland.id, { ...natureland, reviewStatus: "pending" });
+    const result = await convertCandidateToBuyerAction({
+      candidateId: natureland.id,
+      contactId: ahmed.id,
+    });
+    expect(result).toMatchObject({ outcome: "not_eligible", reason: "not_approved" });
+    expect(buyers).toHaveLength(0);
+    expect(conversions.size).toBe(0);
   });
 });

@@ -108,6 +108,89 @@ describe("BI3 publicWebsiteBusinessExtract — business claim extraction", () =>
     expect(product?.normalized).toMatchObject({ mdfProductId: "guntur-dry-red-chilli" });
   });
 
+  it("keeps a spices mention at category level instead of inventing Guntur evidence", () => {
+    const out = extractBusinessClaims({
+      finalUrl: url,
+      kind: "about",
+      html: "<p>We import spices for restaurants across the region.</p>",
+    });
+    expect(out.claims.some((c) => c.claimType === "company_is_importer")).toBe(true);
+    expect(out.claims.some((c) => c.claimType === "imports_product")).toBe(false);
+  });
+
+  it("keeps red chilli at product/category level instead of inventing Guntur", () => {
+    const out = extractBusinessClaims({
+      finalUrl: url,
+      kind: "products",
+      html: "<p>We import red chilli for food manufacturers.</p>",
+    });
+    expect(out.claims.some((c) => c.claimType === "imports_product")).toBe(false);
+  });
+
+  it("does not collapse Guntur red chilli to the dry-form catalogue product", () => {
+    const out = extractBusinessClaims({
+      finalUrl: url,
+      kind: "products",
+      html: "<p>We import Guntur red chilli for food manufacturers.</p>",
+    });
+    expect(out.claims.some((c) => c.claimType === "imports_product")).toBe(false);
+  });
+
+  it("does not collapse generic mango to Banganapalli", () => {
+    const out = extractBusinessClaims({
+      finalUrl: url,
+      kind: "products",
+      html: "<p>We import mango throughout the summer.</p>",
+    });
+    expect(out.claims.some((c) => c.claimType === "imports_product")).toBe(false);
+  });
+
+  it("allows exact Banganapalli mango wording", () => {
+    const out = extractBusinessClaims({
+      finalUrl: url,
+      kind: "products",
+      html: "<p>We import Banganapalli mango directly from growers.</p>",
+    });
+    expect(out.claims.find((c) => c.claimType === "imports_product")?.normalized)
+      .toMatchObject({ mdfProductId: "banganapalli-mango" });
+  });
+
+  it.each([
+    "We are not importers of spices.",
+    "We never import spices.",
+    "We no longer import spices.",
+    "We do not import spices.",
+    "Our company does not import spices.",
+    "Our company isn't an importer of spices.",
+    "We aren't importers of spices.",
+    "We operate without importing spices.",
+  ])("suppresses negated importer wording: %s", (copy) => {
+    const out = extractBusinessClaims({ finalUrl: url, kind: "about", html: `<p>${copy}</p>` });
+    expect(out.claims.some((c) => c.claimType === "company_is_importer")).toBe(false);
+    expect(out.claims.some((c) => c.claimType === "imports_product")).toBe(false);
+  });
+
+  it.each([
+    "We supply importers across the US.",
+    "Our customers include leading importers of spices.",
+    "We work with importers and distributors of food products.",
+    "Third Party Foods is an importer of dry red chilli.",
+    "Imported ingredients are packed in our warehouse.",
+  ])("does not leak third-party or passive importer wording to the company: %s", (copy) => {
+    const out = extractBusinessClaims({ finalUrl: url, kind: "about", html: `<p>${copy}</p>` });
+    expect(out.claims.some((c) => c.claimType === "company_is_importer")).toBe(false);
+  });
+
+  it("classifies 'we distribute imported products' as distributor only", () => {
+    const out = extractBusinessClaims({
+      finalUrl: url,
+      kind: "about",
+      html: "<p>We distribute imported products throughout the country.</p>",
+    });
+    expect(out.claims.some((c) => c.claimType === "company_is_distributor")).toBe(true);
+    expect(out.claims.some((c) => c.claimType === "company_is_importer")).toBe(false);
+  });
+
   it("does NOT fire imports_product when import phrase and product are in different sentences", () => {
     const html = `
       <html><body>

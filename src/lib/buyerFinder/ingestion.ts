@@ -236,6 +236,7 @@ interface NormalizedHit {
   companyLinkedinUrl?: string;
   generalEmail?: string;
   evidence: CandidateEvidence[];
+  productEvidence: CandidateEvidence[];
   source: CandidateSource;
   sourceUrl?: string;
   productRelevance: number;
@@ -243,11 +244,16 @@ interface NormalizedHit {
 
 function validateAndNormalize(raw: DiscoveredCompany): NormalizedHit | string {
   const companyName = blankToUndefined(raw?.companyName);
-  const country = blankToUndefined(raw?.country);
+  const source = normalizeCandidateSource(raw.source);
+  const country = blankToUndefined(raw?.country) ?? "";
   if (!companyName) return "company name is required";
-  if (!country) return "country is required";
+  // Hunter's free Discover response has no row-level location. An empty
+  // country is therefore truthful for Hunter; other providers must still
+  // supply an observed location.
+  if (!country && source !== "hunter") return "country is required";
   const website = normalizeOptionalUrl(raw.website);
   const domain = normalizeDomain(raw.domain) ?? normalizeDomain(website);
+  const productEvidence = evidenceSafe(raw.productEvidence);
   return {
     providerRecordId: blankToUndefined(raw.providerRecordId) ?? slug(companyName),
     companyName,
@@ -262,11 +268,15 @@ function validateAndNormalize(raw: DiscoveredCompany): NormalizedHit | string {
     companyLinkedinUrl: normalizeOptionalUrl(raw.companyLinkedinUrl),
     generalEmail: normalizeOptionalEmail(raw.generalEmail),
     evidence: evidenceSafe(raw.evidence),
-    source: normalizeCandidateSource(raw.source),
+    productEvidence,
+    source,
     sourceUrl: normalizeOptionalUrl(raw.sourceUrl),
-    // Placeholder when the provider omitted relevance — not a measured
-    // Hunter score. UI must not present this as precise "50% relevance".
-    productRelevance: clampScore(raw.productRelevance) ?? 50,
+    // Search/query return is context only. Relevance becomes positive
+    // only when the provider supplies separate observed product evidence.
+    productRelevance:
+      productEvidence.length > 0
+        ? (clampScore(raw.productRelevance) ?? 0)
+        : 0,
   };
 }
 
@@ -455,7 +465,7 @@ async function addProductMatch(
     country: hit.country,
     query: `${queryCountry} ${productId}`,
     relevance: hit.productRelevance,
-    evidence: hit.evidence,
+    evidence: hit.productEvidence,
     source: hit.source,
   };
   await repos.productMatches.create(row);

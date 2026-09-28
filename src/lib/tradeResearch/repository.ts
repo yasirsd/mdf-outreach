@@ -2,8 +2,10 @@ import "server-only";
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { BuyerCandidate } from "@/lib/buyerFinder/types";
+import { canonicalizeResearchContext, fingerprintResearchContext } from "./context";
 import {
   AUTOMATIC_SPEND_RUPEES,
+  type ResearchContext,
   type TradeResearchBatchSnapshot,
   type TradeResearchJobSnapshot,
   type TradeResearchOutcome,
@@ -21,6 +23,7 @@ function singleRpcRow<T extends Row>(data: unknown): T | undefined {
 }
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const CONTEXT_FINGERPRINT_PATTERN = /^trctx-v1:[0-9a-f]{64}$/;
 const TRADE_RESEARCH_STATUSES = new Set<TradeResearchStatus>([
   "queued", "running", "cancel_requested", "completed", "partial", "needs_review", "failed", "cancelled",
 ]);
@@ -147,6 +150,7 @@ function validateCreateBatchInput(input: Row): void {
   requireUuid(input.workspaceId, "p_input.workspaceId");
   requireUuid(input.createdBy, "p_input.createdBy");
   requireConstrainedText(input.requestedGoal, "p_input.requestedGoal", TRADE_RESEARCH_GOALS);
+  const plannerVersion = requireText(input.plannerVersion, "p_input.plannerVersion");
   requireJson(input, "p_input");
   if (!Array.isArray(input.jobs) || input.jobs.length === 0) {
     throw new TradeResearchContractError("p_input.jobs", "jsonb", valueCategory(input.jobs));
@@ -163,11 +167,42 @@ function validateCreateBatchInput(input: Row): void {
     if (typeof job.productId !== "string") {
       throw new TradeResearchContractError(`p_input.jobs[${jobIndex}].productId`, "constrained_text", valueCategory(job.productId));
     }
+    if (!job.productId.trim()) {
+      throw new TradeResearchContractError(`p_input.jobs[${jobIndex}].productId`, "constrained_text", "empty_string");
+    }
     if (typeof job.countryCode !== "string" || !/^[A-Z]{2}$/.test(job.countryCode)) {
       throw new TradeResearchContractError(`p_input.jobs[${jobIndex}].countryCode`, "constrained_text", valueCategory(job.countryCode));
     }
     if (!Array.isArray(job.plans)) {
       throw new TradeResearchContractError(`p_input.jobs[${jobIndex}].plans`, "jsonb", valueCategory(job.plans));
+    }
+    if (!job.context || typeof job.context !== "object" || Array.isArray(job.context)) {
+      throw new TradeResearchContractError(`p_input.jobs[${jobIndex}].context`, "jsonb", valueCategory(job.context));
+    }
+    const context = canonicalizeResearchContext(job.context as ResearchContext);
+    const contextFingerprint = requireText(
+      job.contextFingerprint,
+      `p_input.jobs[${jobIndex}].contextFingerprint`,
+    );
+    if (!CONTEXT_FINGERPRINT_PATTERN.test(contextFingerprint)
+        || fingerprintResearchContext(context) !== contextFingerprint) {
+      throw new TradeResearchContractError(
+        `p_input.jobs[${jobIndex}].contextFingerprint`,
+        "constrained_text",
+        "invalid_fingerprint",
+      );
+    }
+    if (context.workspaceId !== input.workspaceId
+        || context.candidateId !== job.candidateId
+        || context.productId !== job.productId
+        || context.marketCountryCode !== job.countryCode
+        || context.researchGoal !== input.requestedGoal
+        || context.providerPlanVersion !== plannerVersion) {
+      throw new TradeResearchContractError(
+        `p_input.jobs[${jobIndex}].context`,
+        "jsonb",
+        "authoritative_field_mismatch",
+      );
     }
     for (const [planIndex, item] of job.plans.entries()) {
       if (!item || typeof item !== "object" || Array.isArray(item)) {
@@ -179,6 +214,31 @@ function validateCreateBatchInput(input: Row): void {
       requireConstrainedText(plan.costClass, `p_input.jobs[${jobIndex}].plans[${planIndex}].costClass`, PLAN_COST_CLASSES);
       requireNonNegativeInteger(plan.sequence, `p_input.jobs[${jobIndex}].plans[${planIndex}].sequence`, "integer");
     }
+  }
+}
+
+function persistedResearchContext(row: Row): {
+  context?: ResearchContext;
+  contextFingerprint?: string;
+} {
+  const rawContext = row.research_context;
+  const rawFingerprint = row.context_fingerprint;
+  const contextMissing = rawContext === null || rawContext === undefined;
+  const fingerprintMissing = rawFingerprint === null || rawFingerprint === undefined;
+  if (contextMissing && fingerprintMissing) return {};
+  if (contextMissing !== fingerprintMissing
+      || !rawContext || typeof rawContext !== "object" || Array.isArray(rawContext)
+      || typeof rawFingerprint !== "string" || !CONTEXT_FINGERPRINT_PATTERN.test(rawFingerprint)) {
+    throw new TradeResearchContractError("job.research_context", "jsonb", "invalid_context_pair");
+  }
+  try {
+    const context = canonicalizeResearchContext(rawContext as ResearchContext);
+    if (fingerprintResearchContext(context) !== rawFingerprint) {
+      throw new Error("fingerprint mismatch");
+    }
+    return { context, contextFingerprint: rawFingerprint };
+  } catch {
+    throw new TradeResearchContractError("job.research_context", "jsonb", "invalid_context");
   }
 }
 
@@ -205,6 +265,7 @@ function mapInternalJobRow(data: unknown): InternalJobRow | undefined {
   requireConstrainedText(row.status, "job.status", TRADE_RESEARCH_STATUSES);
   requireConstrainedText(row.stage, "job.stage", TRADE_RESEARCH_STAGE_SET);
   requireNonNegativeInteger(row.revision, "job.revision");
+  persistedResearchContext(row);
   return row as InternalJobRow;
 }
 
@@ -262,13 +323,25 @@ export function mapTradeResearchBatch(row: Row): TradeResearchBatchSnapshot {
 
 export function mapTradeResearchJob(row: Row): TradeResearchJobSnapshot {
   const raw = row.result_summary && typeof row.result_summary === "object" ? row.result_summary as Partial<TradeResearchResultSummary> : {};
+  const { context: _untrustedContext, contextFingerprint: _untrustedFingerprint, ...compatibleRaw } = raw;
+  const stored = persistedResearchContext(row);
   return {
     id: String(row.id), batchId: String(row.batch_id), candidateId: String(row.candidate_id),
     productId: row.product_id ? String(row.product_id) : undefined, countryCode: String(row.country_code),
     requestedGoal: row.requested_goal as TradeResearchJobSnapshot["requestedGoal"], status: row.status as TradeResearchStatus,
     stage: row.stage as TradeResearchStage, outcome: row.outcome ? row.outcome as TradeResearchOutcome : undefined,
     revision: Number(row.revision), automaticSpendRupees: zero(row.automatic_spend_rupees),
-    result: { ...EMPTY_RESULT, ...raw, automaticSpendRupees: zero(raw.automaticSpendRupees ?? 0) },
+    context: stored.context,
+    contextFingerprint: stored.contextFingerprint,
+    result: {
+      ...EMPTY_RESULT,
+      ...compatibleRaw,
+      ...(stored.context ? {
+        context: stored.context,
+        contextFingerprint: stored.contextFingerprint,
+      } : {}),
+      automaticSpendRupees: zero(raw.automaticSpendRupees ?? 0),
+    },
     createdAt: String(row.created_at), completedAt: row.completed_at ? String(row.completed_at) : undefined,
   };
 }
@@ -295,6 +368,55 @@ export function createTradeResearchReadRepository(client: SupabaseClient, worksp
       if (error) throw error;
       return data ? mapTradeResearchJob(data as Row) : undefined;
     },
+    async getLatestJobForContext(candidateId: string, contextFingerprint: string): Promise<TradeResearchJobSnapshot | undefined> {
+      requireUuid(candidateId, "buyer_trade_research_jobs.candidate_id");
+      if (!CONTEXT_FINGERPRINT_PATTERN.test(contextFingerprint)) {
+        throw new TradeResearchContractError(
+          "buyer_trade_research_jobs.context_fingerprint",
+          "constrained_text",
+          valueCategory(contextFingerprint),
+        );
+      }
+      const { data, error } = await client.from("buyer_trade_research_jobs").select("*")
+        .eq("workspace_id", workspaceId)
+        .eq("candidate_id", candidateId)
+        .eq("context_fingerprint", contextFingerprint)
+        .order("created_at", { ascending: false }).limit(1).maybeSingle();
+      if (error) throw error;
+      return data ? mapTradeResearchJob(data as Row) : undefined;
+    },
+    async getLatestJobsForContexts(
+      contexts: readonly { candidateId: string; contextFingerprint: string }[],
+    ): Promise<Map<string, TradeResearchJobSnapshot>> {
+      if (!contexts.length) return new Map();
+      for (const item of contexts) {
+        requireUuid(item.candidateId, "buyer_trade_research_jobs.candidate_id");
+        if (!CONTEXT_FINGERPRINT_PATTERN.test(item.contextFingerprint)) {
+          throw new TradeResearchContractError(
+            "buyer_trade_research_jobs.context_fingerprint",
+            "constrained_text",
+            valueCategory(item.contextFingerprint),
+          );
+        }
+      }
+      const candidateIds = [...new Set(contexts.map((item) => item.candidateId))];
+      const fingerprints = [...new Set(contexts.map((item) => item.contextFingerprint))];
+      const requestedPairs = new Set(contexts.map((item) => `${item.candidateId}:${item.contextFingerprint}`));
+      const { data, error } = await client.from("buyer_trade_research_jobs").select("*")
+        .eq("workspace_id", workspaceId)
+        .in("candidate_id", candidateIds)
+        .in("context_fingerprint", fingerprints)
+        .order("created_at", { ascending: false });
+      if (error) throw error;
+      const result = new Map<string, TradeResearchJobSnapshot>();
+      for (const row of data ?? []) {
+        const mapped = mapTradeResearchJob(row as Row);
+        if (!mapped.contextFingerprint) continue;
+        if (!requestedPairs.has(`${mapped.candidateId}:${mapped.contextFingerprint}`)) continue;
+        if (!result.has(mapped.contextFingerprint)) result.set(mapped.contextFingerprint, mapped);
+      }
+      return result;
+    },
     async getLatestJobsForCandidates(candidateIds: readonly string[]): Promise<Map<string, TradeResearchJobSnapshot>> {
       if (!candidateIds.length) return new Map();
       const { data, error } = await client.from("buyer_trade_research_jobs").select("*").eq("workspace_id", workspaceId).in("candidate_id", [...candidateIds]).order("created_at", { ascending: false });
@@ -315,8 +437,10 @@ export function createTradeResearchReadRepository(client: SupabaseClient, worksp
 }
 
 export interface InternalJobRow extends Row {
-  id: string; batch_id: string; workspace_id: string; candidate_id: string; product_id?: string;
+  id: string; batch_id: string; workspace_id: string; candidate_id: string; product_id?: string | null;
   country_code: string; status: TradeResearchStatus; stage: TradeResearchStage; revision: number;
+  research_context?: ResearchContext | null;
+  context_fingerprint?: string | null;
 }
 
 export interface SnapshotRow extends Row {

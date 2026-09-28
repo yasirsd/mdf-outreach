@@ -30,7 +30,7 @@ describe("productMatchStrengthLabel", () => {
       ],
     });
     expect(isDirectoryKeywordMatch(hunter)).toBe(true);
-    expect(productMatchStrengthLabel(hunter)).toBe("Directory keyword match");
+    expect(productMatchStrengthLabel(hunter)).toBe("Directory keyword match · context only");
     expect(productMatchStrengthLabel(hunter)).not.toMatch(/50%/);
   });
 
@@ -40,7 +40,7 @@ describe("productMatchStrengthLabel", () => {
       relevance: 50,
       evidence: [{ note: "Hunter Discover company match. Country United Arab Emirates (AE).", confidence: 40 }],
     });
-    expect(productMatchStrengthLabel(mislabelled)).toBe("Directory keyword match");
+    expect(productMatchStrengthLabel(mislabelled)).toBe("Directory keyword match · context only");
   });
 
   it("keeps a numeric relevance label for mock/provider-supplied scores", () => {

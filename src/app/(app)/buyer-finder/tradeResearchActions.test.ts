@@ -34,8 +34,16 @@ const writerCtorMock = vi.hoisted(() => vi.fn(() => ({
   getFreshSnapshotByProvider: getFreshSnapshotByProviderMock,
 })));
 const getBatchMock = vi.hoisted(() => vi.fn(async (_id: string) => undefined as unknown));
+const getLatestJobForContextMock = vi.hoisted(() => vi.fn(async (
+  _candidateId: string,
+  _contextFingerprint: string,
+) => null as unknown));
+const getLatestJobsForContextsMock = vi.hoisted(() => vi.fn(
+  async (_items: Array<{ candidateId: string; contextFingerprint: string }>) => new Map<string, unknown>(),
+));
 const readRepoMock = vi.hoisted(() => vi.fn(() => ({
-  getLatestJobsForCandidates: vi.fn(async () => new Map()),
+  getLatestJobsForContexts: getLatestJobsForContextsMock,
+  getLatestJobForContext: getLatestJobForContextMock,
   getBatch: getBatchMock,
 })));
 vi.mock("@/lib/tradeResearch/repository", async () => {
@@ -88,11 +96,18 @@ vi.mock("@/lib/tradeResearch/fdaVqip", async (importOriginal) => {
 import type { TradeResearchBatchSnapshot } from "@/lib/tradeResearch/types";
 
 const OWNER_SESSION = {
-  userId: "user-1",
+  userId: "00000000-0000-4000-8000-000000000010",
   email: "owner@mdfexport.com",
-  membership: { workspaceId: "ws-1", role: "owner" as const },
+  membership: { workspaceId: "00000000-0000-4000-8000-000000000011", role: "owner" as const },
 };
 const CANDIDATE_ID = "00000000-0000-4000-8000-000000000001";
+const REQUEST = {
+  candidateId: CANDIDATE_ID,
+  marketCountryCode: "US",
+  productId: "guntur-dry-red-chilli",
+  productForm: null,
+  researchGoal: "screen_trade_activity" as const,
+};
 const BATCH: TradeResearchBatchSnapshot = {
   id: "00000000-0000-4000-8000-000000000009",
   status: "queued",
@@ -106,6 +121,8 @@ beforeEach(() => {
   requireMdfSessionMock.mockReset();
   revalidatePathMock.mockReset();
   createBatchMock.mockReset();
+  getLatestJobsForContextsMock.mockReset().mockResolvedValue(new Map());
+  getLatestJobForContextMock.mockReset().mockResolvedValue(null);
   drainMock.mockReset().mockResolvedValue({
     jobsRequested: 1, claimed: 1, processed: 1, completed: 1, requeued: 0,
     failed: 0, noWork: false, durationMs: 42, automaticSpendRupees: 0,
@@ -135,7 +152,7 @@ describe("BI4F 2A createTradeResearchBatchAction — inline kick", () => {
     requireMdfSessionMock.mockResolvedValue(OWNER_SESSION);
     createBatchMock.mockResolvedValueOnce(BATCH);
     const { createTradeResearchBatchAction } = await import("./tradeResearchActions");
-    const result = await createTradeResearchBatchAction([CANDIDATE_ID]);
+    const result = await createTradeResearchBatchAction([REQUEST]);
     expect(result).toEqual({ outcome: "created", batch: BATCH });
     expect(drainMock).toHaveBeenCalledTimes(1);
     // Bounded kick: exactly one job, capped time budget.
@@ -155,7 +172,7 @@ describe("BI4F 2A createTradeResearchBatchAction — inline kick", () => {
     createBatchMock.mockResolvedValueOnce(BATCH);
     drainMock.mockRejectedValueOnce(new Error("worker exploded"));
     const { createTradeResearchBatchAction } = await import("./tradeResearchActions");
-    const result = await createTradeResearchBatchAction([CANDIDATE_ID]);
+    const result = await createTradeResearchBatchAction([REQUEST]);
     expect(result).toEqual({ outcome: "created", batch: BATCH });
     expect(revalidatePathMock).toHaveBeenCalledWith("/buyer-finder");
   });
@@ -168,14 +185,14 @@ describe("BI4F 2A createTradeResearchBatchAction — inline kick", () => {
       failed: 0, noWork: true, durationMs: 3, automaticSpendRupees: 0,
     });
     const { createTradeResearchBatchAction } = await import("./tradeResearchActions");
-    const result = await createTradeResearchBatchAction([CANDIDATE_ID]);
+    const result = await createTradeResearchBatchAction([REQUEST]);
     expect(result).toEqual({ outcome: "created", batch: BATCH });
   });
 
   it("non-owner cannot even create a batch, so no drain kick is fired", async () => {
     requireMdfSessionMock.mockResolvedValue({ ...OWNER_SESSION, membership: { ...OWNER_SESSION.membership, role: "member" } });
     const { createTradeResearchBatchAction } = await import("./tradeResearchActions");
-    const result = await createTradeResearchBatchAction([CANDIDATE_ID]);
+    const result = await createTradeResearchBatchAction([REQUEST]);
     expect(result.outcome).toBe("forbidden");
     expect(createBatchMock).not.toHaveBeenCalled();
     expect(drainMock).not.toHaveBeenCalled();
@@ -190,7 +207,7 @@ describe("BI4F 2A createTradeResearchBatchAction — inline kick", () => {
       },
     });
     const { createTradeResearchBatchAction } = await import("./tradeResearchActions");
-    const result = await createTradeResearchBatchAction([CANDIDATE_ID]);
+    const result = await createTradeResearchBatchAction([REQUEST]);
     expect(result).toMatchObject({ outcome: "candidate_not_found" });
     expect(createBatchMock).not.toHaveBeenCalled();
     expect(drainMock).not.toHaveBeenCalled();
@@ -200,12 +217,155 @@ describe("BI4F 2A createTradeResearchBatchAction — inline kick", () => {
     requireMdfSessionMock.mockResolvedValue(OWNER_SESSION);
     createBatchMock.mockResolvedValueOnce(BATCH);
     const { createTradeResearchBatchAction } = await import("./tradeResearchActions");
-    await createTradeResearchBatchAction([CANDIDATE_ID]);
+    await createTradeResearchBatchAction([REQUEST]);
     // The action does not pass any `costClass` override to drain — the
     // worker's own PROVIDER_COST_POLICY_VIOLATION guard is authoritative.
     const kick = drainMock.mock.calls[0]![0] as Record<string, unknown>;
     expect(kick.costClass).toBeUndefined();
     expect(kick.automaticSpendRupees).toBeUndefined();
+  });
+});
+
+describe("T07 explicit research request binding", () => {
+  const MANGO_REQUEST = { ...REQUEST, productId: "banganapalli-mango" };
+
+  function repositoriesWithProducts(productIds: string[]) {
+    return {
+      repos: {
+        buyerCandidates: {
+          list: async () => [{ id: CANDIDATE_ID, companyName: "Latitude 36 Foods", country: "United States" }],
+        },
+        buyerCandidateProductMatches: {
+          listByCandidate: async () => productIds.map((productId, index) => ({
+            id: `match-${index}`,
+            candidateId: CANDIDATE_ID,
+            productId,
+            evidence: [],
+          })),
+        },
+      },
+    };
+  }
+
+  it("stores the explicitly requested chilli context with server-owned workspace and versions", async () => {
+    requireMdfSessionMock.mockResolvedValue(OWNER_SESSION);
+    createBatchMock.mockResolvedValueOnce(BATCH);
+    const { createTradeResearchBatchAction } = await import("./tradeResearchActions");
+    await createTradeResearchBatchAction([{ ...REQUEST, workspaceId: "browser-workspace", providerPlanVersion: "browser-v9" } as typeof REQUEST]);
+    const input = createBatchMock.mock.calls[0]![0] as {
+      workspaceId: string;
+      plannerVersion: string;
+      jobs: Array<{ context: Record<string, unknown>; contextFingerprint: string }>;
+    };
+    expect(input.workspaceId).toBe(OWNER_SESSION.membership.workspaceId);
+    expect(input.jobs[0]!.context).toMatchObject({
+      workspaceId: OWNER_SESSION.membership.workspaceId,
+      candidateId: CANDIDATE_ID,
+      productId: "guntur-dry-red-chilli",
+      marketCountryCode: "US",
+      productForm: null,
+      providerPlanVersion: "trade-planner-v1",
+      interpretationVersion: "trade-interpretation-v1",
+    });
+    expect(input.jobs[0]!.contextFingerprint).toMatch(/^trctx-v1:[0-9a-f]{64}$/);
+  });
+
+  it("uses explicit mango even when chilli is the first product row", async () => {
+    requireMdfSessionMock.mockResolvedValue(OWNER_SESSION);
+    serverReposMock.mockResolvedValueOnce(repositoriesWithProducts([
+      "guntur-dry-red-chilli",
+      "banganapalli-mango",
+    ]));
+    createBatchMock.mockResolvedValueOnce(BATCH);
+    const { createTradeResearchBatchAction } = await import("./tradeResearchActions");
+    await createTradeResearchBatchAction([MANGO_REQUEST]);
+    const input = createBatchMock.mock.calls[0]![0] as { jobs: Array<{ productId: string; context: { productId: string } }> };
+    expect(input.jobs[0]).toMatchObject({
+      productId: "banganapalli-mango",
+      context: { productId: "banganapalli-mango" },
+    });
+  });
+
+  it("creates distinct contexts for chilli and mango on the same candidate", async () => {
+    requireMdfSessionMock.mockResolvedValue(OWNER_SESSION);
+    serverReposMock.mockResolvedValueOnce(repositoriesWithProducts([
+      "guntur-dry-red-chilli",
+      "banganapalli-mango",
+    ]));
+    createBatchMock.mockResolvedValueOnce(BATCH);
+    const { createTradeResearchBatchAction } = await import("./tradeResearchActions");
+    await createTradeResearchBatchAction([REQUEST, MANGO_REQUEST]);
+    const input = createBatchMock.mock.calls[0]![0] as { jobs: Array<{ contextFingerprint: string }> };
+    expect(input.jobs).toHaveLength(2);
+    expect(input.jobs[0]!.contextFingerprint).not.toBe(input.jobs[1]!.contextFingerprint);
+  });
+
+  it("rejects missing and arbitrary candidate product contexts", async () => {
+    requireMdfSessionMock.mockResolvedValue(OWNER_SESSION);
+    const { createTradeResearchBatchAction } = await import("./tradeResearchActions");
+    await expect(createTradeResearchBatchAction([{ ...REQUEST, productId: "" }]))
+      .resolves.toMatchObject({ outcome: "invalid_input" });
+    await expect(createTradeResearchBatchAction([{ ...REQUEST, productId: "indian-pomegranate" }]))
+      .resolves.toMatchObject({ outcome: "invalid_input" });
+    expect(createBatchMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects non-null form while the current product model has no form selector", async () => {
+    requireMdfSessionMock.mockResolvedValue(OWNER_SESSION);
+    const { createTradeResearchBatchAction } = await import("./tradeResearchActions");
+    const result = await createTradeResearchBatchAction([{ ...REQUEST, productForm: "whole" }]);
+    expect(result.outcome).toBe("invalid_input");
+  });
+
+  it("blocks only the same active context and permits a different product", async () => {
+    requireMdfSessionMock.mockResolvedValue(OWNER_SESSION);
+    createBatchMock.mockResolvedValue(BATCH);
+    getLatestJobsForContextsMock.mockImplementationOnce(async (items: Array<{ contextFingerprint: string }>) => new Map([
+      [items[0]!.contextFingerprint, {
+        id: "00000000-0000-4000-8000-000000000090",
+        status: "running",
+      }],
+    ]));
+    const { createTradeResearchBatchAction } = await import("./tradeResearchActions");
+    await expect(createTradeResearchBatchAction([REQUEST]))
+      .resolves.toMatchObject({ outcome: "already_active" });
+    expect(createBatchMock).not.toHaveBeenCalled();
+
+    serverReposMock.mockResolvedValueOnce(repositoriesWithProducts([
+      "guntur-dry-red-chilli",
+      "banganapalli-mango",
+    ]));
+    getLatestJobsForContextsMock.mockResolvedValueOnce(new Map());
+    await expect(createTradeResearchBatchAction([MANGO_REQUEST]))
+      .resolves.toMatchObject({ outcome: "created" });
+  });
+
+  it("permits a different market while another context fingerprint is active", async () => {
+    requireMdfSessionMock.mockResolvedValue(OWNER_SESSION);
+    createBatchMock.mockResolvedValue(BATCH);
+    getLatestJobsForContextsMock.mockResolvedValueOnce(new Map([[`trctx-v1:${"a".repeat(64)}`, {
+      id: "00000000-0000-4000-8000-000000000090",
+      status: "running",
+    }]]));
+    const { createTradeResearchBatchAction } = await import("./tradeResearchActions");
+    await expect(createTradeResearchBatchAction([{ ...REQUEST, marketCountryCode: "CA" }]))
+      .resolves.toMatchObject({ outcome: "created" });
+  });
+
+  it("builds exact-context reads from the selected workspace and server versions", async () => {
+    requireMdfSessionMock.mockResolvedValue(OWNER_SESSION);
+    const { getLatestTradeResearchJobForContextAction } = await import("./tradeResearchActions");
+    await getLatestTradeResearchJobForContextAction({
+      ...REQUEST,
+      workspaceId: "browser-workspace",
+      providerPlanVersion: "browser-v9",
+      interpretationVersion: "browser-v9",
+    } as typeof REQUEST);
+
+    expect(getLatestJobForContextMock).toHaveBeenCalledWith(
+      CANDIDATE_ID,
+      expect.stringMatching(/^trctx-v1:[0-9a-f]{64}$/),
+    );
   });
 });
 
@@ -245,7 +405,7 @@ describe("BI4F 2A createTradeResearchBatchAction — bounded stall-recovery loop
     createBatchMock.mockResolvedValueOnce(BATCH);
     // Default beforeEach: batch is terminal after first drain.
     const { createTradeResearchBatchAction } = await import("./tradeResearchActions");
-    await createTradeResearchBatchAction([CANDIDATE_ID]);
+    await createTradeResearchBatchAction([REQUEST]);
     expect(drainMock).toHaveBeenCalledTimes(1);
   });
 
@@ -267,7 +427,7 @@ describe("BI4F 2A createTradeResearchBatchAction — bounded stall-recovery loop
         corroboratedCount: 0, automaticSpendRupees: 0, createdAt: "2026-09-26T00:00:00Z",
       });
     const { createTradeResearchBatchAction } = await import("./tradeResearchActions");
-    await createTradeResearchBatchAction([CANDIDATE_ID]);
+    await createTradeResearchBatchAction([REQUEST]);
     expect(drainMock).toHaveBeenCalledTimes(2);
   });
 
@@ -286,7 +446,7 @@ describe("BI4F 2A createTradeResearchBatchAction — bounded stall-recovery loop
       corroboratedCount: 0, automaticSpendRupees: 0, createdAt: "2026-09-26T00:00:00Z",
     });
     const { createTradeResearchBatchAction } = await import("./tradeResearchActions");
-    const result = await createTradeResearchBatchAction([CANDIDATE_ID]);
+    const result = await createTradeResearchBatchAction([REQUEST]);
     expect(result.outcome).toBe("created");
     expect(drainMock).toHaveBeenCalledTimes(1);
   });
@@ -301,7 +461,7 @@ describe("BI4F 2A createTradeResearchBatchAction — bounded stall-recovery loop
       corroboratedCount: 0, automaticSpendRupees: 0, createdAt: "2026-09-26T00:00:00Z",
     });
     const { createTradeResearchBatchAction } = await import("./tradeResearchActions");
-    await createTradeResearchBatchAction([CANDIDATE_ID]);
+    await createTradeResearchBatchAction([REQUEST]);
     // Bounded: even under worst-case non-terminal state, the loop is
     // capped at INLINE_KICK_MAX_ITERATIONS. It never runs unbounded.
     expect(drainMock.mock.calls.length).toBeLessThanOrEqual(2);

@@ -4,8 +4,12 @@ import {
   TradeResearchContractError,
   TradeResearchLeaseLostError,
   TradeResearchWriter,
+  createTradeResearchReadRepository,
+  mapTradeResearchJob,
   type InternalJobRow,
 } from "./repository";
+import { fingerprintResearchContext } from "./context";
+import type { ResearchContext } from "./types";
 import { safeTradeResearchErrorCode, safeTradeResearchErrorMetadata } from "./server/diagnostics";
 
 const claimed: InternalJobRow = {
@@ -25,6 +29,155 @@ function clientWithRpc(rpc: ReturnType<typeof vi.fn>): SupabaseClient {
   return { rpc } as unknown as SupabaseClient;
 }
 
+describe("T06 additive result_summary mapping", () => {
+  it("preserves explicit context and typed provider results without fabricating legacy context", () => {
+    const context: ResearchContext = {
+      workspaceId: claimed.workspace_id,
+      candidateId: claimed.candidate_id,
+      marketCountryCode: "US",
+      productId: claimed.product_id!,
+      productForm: null,
+      researchGoal: "screen_trade_activity",
+      providerPlanVersion: "trade-planner-v1",
+      interpretationVersion: "trade-interpretation-v1",
+    };
+    const contextFingerprint = fingerprintResearchContext(context);
+    const result = mapTradeResearchJob({
+      id: claimed.id,
+      batch_id: claimed.batch_id,
+      candidate_id: claimed.candidate_id,
+      product_id: claimed.product_id,
+      country_code: claimed.country_code,
+      requested_goal: "screen_trade_activity",
+      status: "completed",
+      stage: "complete",
+      outcome: "no_verified_evidence",
+      revision: 2,
+      automatic_spend_rupees: 0,
+      created_at: "2026-09-28T00:00:00Z",
+      research_context: context,
+      context_fingerprint: contextFingerprint,
+      result_summary: {
+        context,
+        contextFingerprint,
+        providerResults: [],
+      },
+    });
+
+    expect(result.result.context).toMatchObject({ productId: "guntur-dry-red-chilli", marketCountryCode: "US" });
+    expect(result.result.providerResults).toEqual([]);
+    expect(mapTradeResearchJob({
+      id: claimed.id,
+      batch_id: claimed.batch_id,
+      candidate_id: claimed.candidate_id,
+      country_code: "US",
+      requested_goal: "screen_trade_activity",
+      status: "completed",
+      stage: "complete",
+      revision: 1,
+      automatic_spend_rupees: 0,
+      created_at: "2026-09-28T00:00:00Z",
+      result_summary: { context, contextFingerprint },
+    }).result.context).toBeUndefined();
+  });
+});
+
+describe("T07 exact-context repository reads", () => {
+  it("returns chilli only for the chilli fingerprint and never for mango", async () => {
+    const chilli: ResearchContext = {
+      workspaceId: claimed.workspace_id,
+      candidateId: claimed.candidate_id,
+      marketCountryCode: "US",
+      productId: "guntur-dry-red-chilli",
+      productForm: null,
+      researchGoal: "screen_trade_activity",
+      providerPlanVersion: "trade-planner-v1",
+      interpretationVersion: "trade-interpretation-v1",
+    };
+    const mango = { ...chilli, productId: "banganapalli-mango" };
+    const chilliFingerprint = fingerprintResearchContext(chilli);
+    const filters = new Map<string, unknown>();
+    const row = {
+      id: claimed.id,
+      batch_id: claimed.batch_id,
+      candidate_id: claimed.candidate_id,
+      product_id: chilli.productId,
+      country_code: "US",
+      requested_goal: "screen_trade_activity",
+      status: "completed",
+      stage: "complete",
+      outcome: "no_verified_evidence",
+      revision: 2,
+      automatic_spend_rupees: 0,
+      created_at: "2026-09-28T00:00:00Z",
+      research_context: chilli,
+      context_fingerprint: chilliFingerprint,
+      result_summary: {},
+    };
+    const builder = {
+      select: vi.fn(() => builder),
+      eq: vi.fn((field: string, value: unknown) => { filters.set(field, value); return builder; }),
+      order: vi.fn(() => builder),
+      limit: vi.fn(() => builder),
+      maybeSingle: vi.fn(async () => ({
+        data: filters.get("context_fingerprint") === chilliFingerprint ? row : null,
+        error: null,
+      })),
+    };
+    const client = { from: vi.fn(() => builder) } as unknown as SupabaseClient;
+    const repository = createTradeResearchReadRepository(client, claimed.workspace_id);
+
+    await expect(repository.getLatestJobForContext(claimed.candidate_id, chilliFingerprint))
+      .resolves.toMatchObject({ productId: "guntur-dry-red-chilli", contextFingerprint: chilliFingerprint });
+    await expect(repository.getLatestJobForContext(
+      claimed.candidate_id,
+      fingerprintResearchContext(mango),
+    )).resolves.toBeUndefined();
+  });
+
+  it.each(["queued", "running", "failed", "cancelled", "completed"] as const)(
+    "preserves the authoritative context when a job is %s",
+    (status) => {
+      const context: ResearchContext = {
+        workspaceId: claimed.workspace_id,
+        candidateId: claimed.candidate_id,
+        marketCountryCode: "US",
+        productId: "guntur-dry-red-chilli",
+        productForm: null,
+        researchGoal: "screen_trade_activity",
+        providerPlanVersion: "trade-planner-v1",
+        interpretationVersion: "trade-interpretation-v1",
+      };
+      const contextFingerprint = fingerprintResearchContext(context);
+      const mapped = mapTradeResearchJob({
+        ...claimed,
+        status,
+        stage: status === "queued" || status === "running" ? claimed.stage : "complete",
+        research_context: context,
+        context_fingerprint: contextFingerprint,
+        automatic_spend_rupees: 0,
+        result_summary: {},
+      });
+      expect(mapped.context).toEqual(context);
+      expect(mapped.contextFingerprint).toBe(contextFingerprint);
+      expect(mapped.result).toMatchObject({ context, contextFingerprint });
+    },
+  );
+
+  it("keeps a historical both-null row contextless", () => {
+    const mapped = mapTradeResearchJob({
+      ...claimed,
+      research_context: null,
+      context_fingerprint: null,
+      automatic_spend_rupees: 0,
+      result_summary: {},
+    });
+    expect(mapped.context).toBeUndefined();
+    expect(mapped.contextFingerprint).toBeUndefined();
+    expect(mapped.result.context).toBeUndefined();
+  });
+});
+
 describe("TradeResearchWriter RPC contract", () => {
   it("keeps a catalogue product slug in text while validating create-time UUID fields", async () => {
     const batch = {
@@ -38,6 +191,26 @@ describe("TradeResearchWriter RPC contract", () => {
       requestedGoal: "screen_trade_activity", productId: "", countryCode: "", plannerVersion: "trade-planner-v1",
       jobs: [{
         candidateId: claimed.candidate_id, productId: "guntur-dry-red-chilli", countryCode: "US", supersedesJobId: "",
+        context: {
+          workspaceId: claimed.workspace_id,
+          candidateId: claimed.candidate_id,
+          marketCountryCode: "US",
+          productId: "guntur-dry-red-chilli",
+          productForm: null,
+          researchGoal: "screen_trade_activity",
+          providerPlanVersion: "trade-planner-v1",
+          interpretationVersion: "trade-interpretation-v1",
+        },
+        contextFingerprint: fingerprintResearchContext({
+          workspaceId: claimed.workspace_id,
+          candidateId: claimed.candidate_id,
+          marketCountryCode: "US",
+          productId: "guntur-dry-red-chilli",
+          productForm: null,
+          researchGoal: "screen_trade_activity",
+          providerPlanVersion: "trade-planner-v1",
+          interpretationVersion: "trade-interpretation-v1",
+        }),
         plans: [{ providerId: "fda-fsvp", eligibility: "eligible", costClass: "free", sequence: 1 }],
       }],
     };

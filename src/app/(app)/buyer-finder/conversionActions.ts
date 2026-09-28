@@ -7,6 +7,8 @@ import { isEntityUuid } from "@/lib/buyerFinder/ids";
 import {
   buildConversionPreview,
   buyerOpenHref,
+  conversionEligibility,
+  conversionPreviewReasonMessage,
   pickAuthoritativeProductMatchId,
   resolveConversionSelection,
   selectionFromBrowserInput,
@@ -77,7 +79,13 @@ export async function previewCandidateConversionAction(
   const requested = parseSelection(input);
   if (requested === "invalid") {
     const preview = emptyPreview(candidateId, "not_found");
-    return { ...preview, eligibility: "invalid_selection", createBlocked: true };
+    return {
+      ...preview,
+      canConvert: false,
+      reason: "invalid_selection",
+      eligibility: "invalid_selection",
+      createBlocked: true,
+    };
   }
 
   const { repos } = await serverRepositories();
@@ -128,11 +136,19 @@ export async function convertCandidateToBuyerAction(
   await requireMdfSession();
   const candidateId = (input.candidateId ?? "").trim();
   if (!isEntityUuid(candidateId)) {
-    return { outcome: "invalid_selection", message: "Invalid candidate id." };
+    return {
+      outcome: "invalid_selection",
+      reason: "invalid_selection",
+      message: "Invalid Candidate selection.",
+    };
   }
   const requested = parseSelection(input);
   if (requested === "invalid") {
-    return { outcome: "invalid_selection", message: "Choose a valid contact source." };
+    return {
+      outcome: "invalid_selection",
+      reason: "invalid_selection",
+      message: conversionPreviewReasonMessage("invalid_selection"),
+    };
   }
 
   const { repos } = await serverRepositories();
@@ -148,22 +164,51 @@ export async function convertCandidateToBuyerAction(
     const buyer = await repos.buyers.get(conversion.buyerId);
     return {
       outcome: "already_converted",
+      reason: "already_converted",
       conversion,
       buyer,
       buyerHref: buyer ? buyerOpenHref(buyer) : undefined,
-      message: "This candidate is already a Buyer.",
+      message: conversionPreviewReasonMessage("already_converted"),
+    };
+  }
+
+  const eligibility = conversionEligibility({ candidate });
+  if (eligibility === "not_found" || !candidate) {
+    return {
+      outcome: "not_found",
+      reason: "not_found",
+      message: conversionPreviewReasonMessage("not_found"),
+    };
+  }
+  if (eligibility !== "ok") {
+    const reason =
+      eligibility === "not_approved" ? "not_approved" : "invalid_candidate_state";
+    return {
+      outcome: "not_eligible",
+      reason,
+      message: conversionPreviewReasonMessage(reason),
     };
   }
 
   const resolved = resolveConversionSelection({
     requested,
+    candidateId,
     contacts,
     publicEmails,
   });
-  if (!resolved.ok || !candidate) {
+  if (!resolved.ok) {
+    const blockedPreview = buildConversionPreview({
+      candidate,
+      contacts,
+      publicEmails,
+      productMatches,
+      existingBuyers: [],
+      requested,
+    });
     return {
-      outcome: candidate ? "invalid_selection" : "not_found",
-      message: candidate ? "Choose a valid contact source." : "Candidate not found.",
+      outcome: "invalid_selection",
+      reason: blockedPreview.reason,
+      message: conversionPreviewReasonMessage(blockedPreview.reason),
     };
   }
 
