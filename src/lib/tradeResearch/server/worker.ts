@@ -33,6 +33,7 @@ import {
 } from "../canadaCid";
 import { PRODUCT_TRADE_MAPPINGS } from "@/lib/marketIntelligence/product";
 import { isRetryableProviderFailure, retryDelayMs } from "../stateMachine";
+import { aggregateTradeResearchEvidence } from "../aggregation";
 import {
   AUTOMATIC_SPEND_RUPEES, PHASE_2A_STAGES,
   type Phase2AStage,
@@ -259,6 +260,7 @@ function evaluatedProviderResult(input: {
   source: TradeResearchSourceEvidence;
   status: Extract<TradeResearchProviderExecutionState, "completed" | "no_match" | "cached">;
   matchCount: number;
+  indiaOriginEvidence?: TradeResearchEvidenceLevel;
 }): TradeResearchEvaluatedProviderResult {
   const context = input.job.research_context;
   const assessment = (state: TradeResearchEvidenceLevel, explanation: string) => ({ state, explanation });
@@ -281,6 +283,12 @@ function evaluatedProviderResult(input: {
       companyEvidence: assessment(input.source.companyEvidence, input.source.matchReason),
       productEvidence: assessment(input.source.productEvidence, input.source.coverageExplanation),
       originEvidence: assessment(input.source.originEvidence, input.source.coverageExplanation),
+      indiaOriginEvidence: assessment(
+        input.indiaOriginEvidence ?? "not_verified",
+        input.indiaOriginEvidence
+          ? input.source.coverageExplanation
+          : "This source did not verify an India-origin relationship for the matched company and product.",
+      ),
       shipmentEvidence: assessment(input.source.shipmentEvidence, "This source does not establish shipment-level activity."),
       programEvidence: assessment(
         isFda ? input.source.companyEvidence : "not_available",
@@ -1023,7 +1031,7 @@ async function processCanadaCidPlan(
     providerResults: [evaluatedProviderResult({
       job, providerId: CANADA_CID_DESCRIPTOR.id, datasetId: CANADA_CID_DATASET_ID,
       parserVersion: CANADA_CID_PARSE_VERSION, snapshot, source,
-      status: providerStatus, matchCount: match.matchedRows.length,
+      status: providerStatus, matchCount: match.matchedRows.length, indiaOriginEvidence: indiaOrigin,
     })],
   };
   job = await advanceStage(writer, job, workerId, "finalizing", log);
@@ -1282,7 +1290,8 @@ async function processMultiProviderUsPlans(
     // Cancellation gate.
     if (await writer.isCancellationRequested(job.batch_id)) {
       job = await refreshOwnedJob(writer, job, workerId);
-      const aggregate = aggregateProviderEvidence(perProvider);
+      const providerResults = completeProvisionalProviderResults(plans, typedProviderResults);
+      const aggregate = aggregateTradeResearchEvidence(providerResults);
       const primary = perProvider[0];
       job = await writer.finalize(job, workerId, "cancelled", "cancelled", {
         ...blankResult(),
@@ -1296,7 +1305,7 @@ async function processMultiProviderUsPlans(
         } : undefined,
         sources: perProvider,
         aggregate,
-        providerResults: completeProvisionalProviderResults(plans, typedProviderResults),
+        providerResults,
       });
       return "completed";
     }
@@ -1334,24 +1343,37 @@ async function processMultiProviderUsPlans(
   }
 
   // Aggregate + finalize once.
-  const aggregate = aggregateProviderEvidence(perProvider);
-  const sourcesChecked = perProvider.length;
+  const providerResults = completeProvisionalProviderResults(plans, typedProviderResults);
+  const aggregate = aggregateTradeResearchEvidence(providerResults);
+  const sourcesChecked = aggregate.coverageCounts.evaluated;
 
-  // Top-level projection (backwards-compatible for single-source UI):
-  const strongCount = perProvider.filter((s) => s.companyEvidence === "verified").length;
-  const supportingCount = perProvider.filter((s) => s.companyEvidence === "supporting").length;
-  const noMatchCount = perProvider.filter((s) => s.companyEvidence === "no_verified_match").length;
+  // Legacy compatibility projection is dimension-local. New readers use the
+  // typed aggregate and providerResults as the authoritative representation.
   const officialProgramEvidence: TradeResearchResultSummary["officialProgramEvidence"] =
-    aggregate.identity === "conflicting_evidence" ? "needs_review" :
-    strongCount > 0 ? "verified" :
-    supportingCount > 0 ? "needs_review" :
-    noMatchCount > 0 ? "no_verified_match" :
+    aggregate.programSummary.state === "verified" ? "verified" :
+    aggregate.programSummary.state === "supporting" || aggregate.programSummary.state === "needs_review" || aggregate.programSummary.state === "conflicting" ? "needs_review" :
+    aggregate.programSummary.state === "no_verified_match" ? "no_verified_match" :
     "not_checked";
+  const productEvidence: TradeResearchResultSummary["productEvidence"] =
+    aggregate.productSummary.state === "verified" ? "verified" :
+    aggregate.productSummary.state === "supporting" || aggregate.productSummary.state === "needs_review" ? "supporting" :
+    aggregate.productSummary.state === "no_verified_match" ? "no_verified_match" : "not_available";
+  const originEvidence: TradeResearchResultSummary["originEvidence"] =
+    aggregate.originSummary.state === "verified" ? "verified" :
+    aggregate.originSummary.state === "supporting" || aggregate.originSummary.state === "needs_review" ? "supporting" :
+    aggregate.originSummary.state === "no_verified_match" ? "no_verified_match" :
+    aggregate.originSummary.state === "not_verified" ? "not_verified" : "not_available";
+  const indiaOrigin: TradeResearchResultSummary["indiaOrigin"] =
+    aggregate.indiaOriginSummary.state === "verified" ? "verified" :
+    aggregate.indiaOriginSummary.state === "supporting" || aggregate.indiaOriginSummary.state === "needs_review" ? "supporting" : "not_verified";
 
   const primary = perProvider[0];
   const result: TradeResearchResultSummary = {
     ...blankResult(),
     officialProgramEvidence,
+    productEvidence,
+    originEvidence,
+    indiaOrigin,
     sourcesChecked,
     evidence: primary ? {
       source: primary.source, datasetPeriod: primary.datasetPeriod, retrievedAt: primary.retrievedAt,
@@ -1362,7 +1384,7 @@ async function processMultiProviderUsPlans(
     } : undefined,
     sources: perProvider,
     aggregate,
-    providerResults: completeProvisionalProviderResults(plans, typedProviderResults),
+    providerResults,
   };
 
   job = await advanceStage(writer, job, workerId, "finalizing", log);
@@ -1371,14 +1393,15 @@ async function processMultiProviderUsPlans(
     job = await writer.finalize(job, workerId, "partial", "partial", result);
   } else if (!anyEvaluated) {
     job = await writer.finalize(job, workerId, "failed", "failed", result);
-  } else if (aggregate.identity === "conflicting_evidence") {
+  } else if (aggregate.identitySummary.state === "conflicting" || aggregate.identitySummary.state === "needs_review") {
     job = await writer.finalize(job, workerId, "needs_review", "needs_review", result);
-  } else if (strongCount > 0) {
-    // Any strong identity match finalizes as corroboration.
-    const outcome = anyProviderFailed ? "partial" : "official_importer_program_corroboration";
-    const status = anyProviderFailed ? "partial" : "completed";
+  } else if (aggregate.programSummary.state === "verified") {
+    const incompleteAttempt = anyProviderFailed || aggregate.coverageCounts.failed > 0
+      || aggregate.coverageCounts.blocked > 0 || aggregate.coverageCounts.notStarted > 0;
+    const outcome = incompleteAttempt ? "partial" : "official_importer_program_corroboration";
+    const status = incompleteAttempt ? "partial" : "completed";
     job = await writer.finalize(job, workerId, status, outcome, result);
-  } else if (supportingCount > 0) {
+  } else if (aggregate.programSummary.state === "supporting" || aggregate.programSummary.state === "needs_review") {
     job = await writer.finalize(job, workerId, "needs_review", "needs_review", result);
   } else {
     job = await writer.finalize(job, workerId, "completed", "no_verified_evidence", result);

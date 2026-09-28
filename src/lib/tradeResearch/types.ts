@@ -171,7 +171,7 @@ export interface TradeResearchMappingScope {
 }
 
 export interface TradeResearchEvidenceConflict {
-  dimension: "identity" | "product" | "origin" | "shipment" | "program" | "coverage";
+  dimension: "identity" | "product" | "origin" | "india_origin" | "shipment" | "program" | "coverage";
   description: string;
   sourceRecordIds: string[];
 }
@@ -185,6 +185,8 @@ export interface TradeResearchProviderEvidence {
   companyEvidence: TradeResearchEvidenceAssessment;
   productEvidence: TradeResearchEvidenceAssessment;
   originEvidence: TradeResearchEvidenceAssessment;
+  /** India-specific origin relationship from this same provider row/grain. */
+  indiaOriginEvidence?: TradeResearchEvidenceAssessment;
   shipmentEvidence: TradeResearchEvidenceAssessment;
   programEvidence: TradeResearchEvidenceAssessment;
   coverage: TradeResearchCoverageAssessment;
@@ -236,10 +238,12 @@ export type TradeResearchProviderResult =
 export type TradeResearchAggregateEvidenceState =
   | "verified"
   | "supporting"
+  | "needs_review"
   | "no_verified_match"
+  | "not_verified"
   | "conflicting"
   | "not_available"
-  | "not_checked";
+  | "not_evaluated";
 
 export interface TradeResearchAggregateDimensionSummary {
   state: TradeResearchAggregateEvidenceState;
@@ -249,9 +253,25 @@ export interface TradeResearchAggregateDimensionSummary {
 }
 
 export interface TradeResearchAggregateConflict {
-  dimension: "identity" | "product" | "origin" | "shipment" | "program" | "coverage";
+  dimension: "identity" | "product" | "origin" | "india_origin" | "shipment" | "program" | "coverage";
   providerIds: string[];
   description: string;
+}
+
+export interface TradeResearchAggregateCoverageCounts {
+  planned: number;
+  evaluated: number;
+  cached: number;
+  failed: number;
+  unsupported: number;
+  blocked: number;
+  notStarted: number;
+  cancelled: number;
+}
+
+export interface TradeResearchSourceFamilySummary {
+  familyId: string;
+  providerIds: string[];
 }
 
 export interface TradeResearchResultSummary {
@@ -380,9 +400,12 @@ export interface TradeResearchAggregateResult extends TradeResearchAggregateSumm
   identitySummary: TradeResearchAggregateDimensionSummary;
   productSummary: TradeResearchAggregateDimensionSummary;
   originSummary: TradeResearchAggregateDimensionSummary;
+  indiaOriginSummary: TradeResearchAggregateDimensionSummary;
   shipmentSummary: TradeResearchAggregateDimensionSummary;
   programSummary: TradeResearchAggregateDimensionSummary;
   coverageSummary: TradeResearchAggregateDimensionSummary;
+  coverageCounts: TradeResearchAggregateCoverageCounts;
+  sourceFamilies: TradeResearchSourceFamilySummary[];
   conflicts: TradeResearchAggregateConflict[];
 }
 

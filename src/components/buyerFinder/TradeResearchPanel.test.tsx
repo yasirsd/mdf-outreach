@@ -488,6 +488,6 @@ describe("T06 legacy result rendering compatibility", () => {
     expect(document.querySelector('[data-provider-status="not_started"]')?.textContent).toBe("Not started");
     expect(document.querySelector('[data-provider-status="failed_terminal"]')?.textContent).toBe("Failed terminal");
     expect(screen.getByText("Source status: source unavailable")).toBeTruthy();
-    expect(screen.getByText("Sources planned").nextSibling?.textContent).toBe("2");
+    expect(screen.getByText("Sources evaluated").nextSibling?.textContent).toBe("0 of 2 planned");
   });
 });

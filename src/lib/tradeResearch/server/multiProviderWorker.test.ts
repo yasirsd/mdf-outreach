@@ -128,7 +128,9 @@ describe("BI4F 2C — multi-provider execution (US: FSVP + VQIP)", () => {
     // Both are strong matches → aggregate identity = verified_identity
     const aggregate = result.aggregate as { identity: string; sourcesCorroborating: number };
     expect(aggregate.identity).toBe("verified_identity");
-    expect(aggregate.sourcesCorroborating).toBe(2);
+    // FSVP and VQIP are related FDA program lists, so the compatibility
+    // count records one corroborating source family rather than two.
+    expect(aggregate.sourcesCorroborating).toBe(1);
     // Job finalized as corroboration.
     expect(state.finalized[0]).toMatchObject({ status: "completed", outcome: "official_importer_program_corroboration" });
     expect((result.providerResults as Array<{ execution: { status: string } }>).map((item) => item.execution.status)).toEqual(["cached", "cached"]);
@@ -201,7 +203,7 @@ describe("BI4F 2C — multi-provider execution (US: FSVP + VQIP)", () => {
     expect(state.finalized[0]!.outcome).toBe("no_verified_evidence");
   });
 
-  it("VQIP with conflicting state → verified FSVP + rejected VQIP → aggregate is single_source_support (VQIP contributes no_verified_match)", async () => {
+  it("VQIP with conflicting state → verified FSVP + rejected VQIP → aggregate preserves identity conflict", async () => {
     // VQIP has our company but under a conflicting state.
     const conflictingVqip = vqipSnapshot({
       normalized_rows: [
@@ -218,8 +220,7 @@ describe("BI4F 2C — multi-provider execution (US: FSVP + VQIP)", () => {
     const vqipEv = sources.find((s) => s.providerId === "fda-vqip")!;
     // Matcher returns 'rejected' → we map that to no_verified_match.
     expect(vqipEv.companyEvidence).toBe("no_verified_match");
-    // FSVP is verified, VQIP no-match → single_source_support.
-    expect((result.aggregate as { identity: string }).identity).toBe("single_source_support");
+    expect((result.aggregate as { identity: string }).identity).toBe("conflicting_evidence");
     // NO strongest-positive-wins overwrite: FSVP's verified stays verified, VQIP's no_verified_match stays no_verified_match.
     const fsvpEv = sources.find((s) => s.providerId === "fda-fsvp")!;
     expect(fsvpEv.companyEvidence).toBe("verified");

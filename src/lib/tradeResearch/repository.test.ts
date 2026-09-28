@@ -353,6 +353,10 @@ describe("TradeResearchWriter RPC contract", () => {
           execution: { status: "failed_terminal", safeErrorCode: "SOURCE_UNAVAILABLE" },
           evidence: null,
         })],
+        aggregate: expect.objectContaining({
+          identitySummary: expect.objectContaining({ state: "not_evaluated" }),
+          coverageCounts: expect.objectContaining({ planned: 1, evaluated: 0, failed: 1 }),
+        }),
       }),
     }));
   });

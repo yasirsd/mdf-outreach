@@ -309,8 +309,11 @@ function JobContent({ job }: { job: TradeResearchJobSnapshot }) {
         <dt className="text-text-muted">Origin evidence</dt><dd className="text-text-primary" data-origin-evidence={r.originEvidence}>{originEvidenceLabel}</dd>
         <dt className="text-text-muted">India origin</dt><dd className="text-text-primary" data-india-origin={r.indiaOrigin}>{indiaOriginLabel}</dd>
         <dt className="text-text-muted">Shipment evidence</dt><dd className="text-text-primary">Not verified</dd>
-        <dt className="text-text-muted">Sources checked</dt><dd className="text-text-primary tabular-nums" data-testid="sources-checked">{r.sourcesChecked}</dd>
-        {r.sourcesPlanned !== undefined && <><dt className="text-text-muted">Sources planned</dt><dd className="text-text-primary tabular-nums">{r.sourcesPlanned}</dd></>}
+        {r.sourcesPlanned !== undefined ? (
+          <><dt className="text-text-muted">Sources evaluated</dt><dd className="text-text-primary tabular-nums" data-testid="sources-evaluated">{r.sourcesEvaluated ?? r.sourcesChecked} of {r.sourcesPlanned} planned</dd></>
+        ) : (
+          <><dt className="text-text-muted">Sources checked</dt><dd className="text-text-primary tabular-nums" data-testid="sources-checked">{r.sourcesChecked}</dd></>
+        )}
         {r.sourcesFailed !== undefined && r.sourcesFailed > 0 && <><dt className="text-text-muted">Sources failed</dt><dd className="text-text-primary tabular-nums">{r.sourcesFailed}</dd></>}
         <dt className="text-text-muted">Cost</dt><dd className="text-text-primary">₹{r.automaticSpendRupees} spent</dd>
       </dl>

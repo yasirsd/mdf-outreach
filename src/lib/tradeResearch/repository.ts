@@ -3,6 +3,7 @@ import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { BuyerCandidate } from "@/lib/buyerFinder/types";
 import { canonicalizeResearchContext, fingerprintResearchContext } from "./context";
+import { aggregateTradeResearchEvidence } from "./aggregation";
 import {
   projectProviderOutcomes,
   validateProviderResultSnapshots,
@@ -544,7 +545,11 @@ export class TradeResearchWriter {
       submitted,
       jobCancelled: status === "cancelled" || job.status === "cancel_requested",
     });
-    const authoritativeResult = withProviderOutcomeProjection(result, projection);
+    const projectedResult = withProviderOutcomeProjection(result, projection);
+    const authoritativeResult: TradeResearchResultSummary = {
+      ...projectedResult,
+      aggregate: aggregateTradeResearchEvidence(projection.providerResults),
+    };
     const { data, error } = await this.client.rpc("finalize_buyer_trade_research_job_v2", {
       p_job_id: job.id, p_worker_id: worker, p_revision: job.revision,
       p_status: status, p_outcome: outcome, p_result_summary: authoritativeResult,
