@@ -34,6 +34,13 @@ import {
 import { PRODUCT_TRADE_MAPPINGS } from "@/lib/marketIntelligence/product";
 import { isRetryableProviderFailure, retryDelayMs } from "../stateMachine";
 import { aggregateTradeResearchEvidence } from "../aggregation";
+import { readProviderResultCheckpoint } from "../checkpoints";
+import {
+  providerExecutionStatusForPlan,
+  unevaluatedProviderOutcome,
+  type ProviderOutcomeAttempt,
+  type ProviderOutcomePlan,
+} from "../providerOutcomes";
 import {
   AUTOMATIC_SPEND_RUPEES, PHASE_2A_STAGES,
   type Phase2AStage,
@@ -356,6 +363,156 @@ function completeProvisionalProviderResults(
   });
 }
 
+interface DurableProviderProgress {
+  attemptsByPlanId: Map<string, Record<string, unknown> | undefined>;
+  resolvedResults: TradeResearchProviderResult[];
+  allResolved: boolean;
+}
+
+function normalizeProviderPlan(plan: Record<string, unknown>, index: number): ProviderOutcomePlan {
+  return {
+    id: String(plan.id ?? ""),
+    provider_id: String(plan.provider_id ?? ""),
+    sequence: Number(plan.sequence ?? index + 1),
+    eligibility: plan.eligibility === "ineligible" ? "ineligible" : "eligible",
+    decision_reason: String(plan.decision_reason ?? "eligible"),
+    dataset_version: typeof plan.dataset_version === "string" ? plan.dataset_version : null,
+  };
+}
+
+async function loadDurableProviderProgress(
+  writer: TradeResearchWriter,
+  plans: readonly Record<string, unknown>[],
+  jobCancelled: boolean,
+): Promise<DurableProviderProgress> {
+  const attemptsByPlanId = new Map<string, Record<string, unknown> | undefined>();
+  const resolvedResults: TradeResearchProviderResult[] = [];
+  let allResolved = true;
+
+  for (const [index, rawPlan] of plans.entries()) {
+    const plan = normalizeProviderPlan(rawPlan, index);
+    const attempt = plan.eligibility === "eligible"
+      ? await writer.latestAttempt(plan.id)
+      : undefined;
+    attemptsByPlanId.set(plan.id, attempt);
+    const checkpoint = readProviderResultCheckpoint(attempt, plan.provider_id);
+    if (checkpoint) {
+      resolvedResults.push(checkpoint);
+      continue;
+    }
+    const status = providerExecutionStatusForPlan(
+      plan,
+      attempt as ProviderOutcomeAttempt | undefined,
+      jobCancelled,
+    );
+    if (["failed_terminal", "unsupported", "blocked", "cancelled"].includes(status)) {
+      resolvedResults.push(unevaluatedProviderOutcome(
+        plan,
+        status as "failed_terminal" | "unsupported" | "blocked" | "cancelled",
+        typeof attempt?.safe_error_code === "string" ? attempt.safe_error_code : null,
+      ));
+      continue;
+    }
+    // The schema caps attempts at three. A historical/reconciled retryable
+    // third attempt is resolved for this job invocation so resume cannot
+    // attempt an invalid #4 forever. Newly executed third attempts are
+    // written as failed_terminal below when retryDelayMs(3) is null.
+    const isCidRuntimeBudgetExhaustion = plan.provider_id === CANADA_CID_DESCRIPTOR.id
+      && attempt?.safe_error_code === "CID_RUNTIME_BUDGET_CHECKPOINT";
+    if (!isCidRuntimeBudgetExhaustion
+        && status === "failed_retryable"
+        && Number(attempt?.attempt_number ?? 0) >= 3
+        && retryDelayMs(Number(attempt?.attempt_number)) === null) {
+      resolvedResults.push(unevaluatedProviderOutcome(
+        plan,
+        "failed_retryable",
+        typeof attempt?.safe_error_code === "string" ? attempt.safe_error_code : null,
+      ));
+      continue;
+    }
+    allResolved = false;
+  }
+  return { attemptsByPlanId, resolvedResults, allResolved };
+}
+
+function resultFromProviderResults(
+  providerResults: readonly TradeResearchProviderResult[],
+  sources: readonly TradeResearchSourceEvidence[] = [],
+): TradeResearchResultSummary {
+  const aggregate = aggregateTradeResearchEvidence(providerResults);
+  const officialProgramEvidence: TradeResearchResultSummary["officialProgramEvidence"] =
+    aggregate.programSummary.state === "verified" ? "verified" :
+    ["supporting", "needs_review", "conflicting"].includes(aggregate.programSummary.state) ? "needs_review" :
+    aggregate.programSummary.state === "no_verified_match" ? "no_verified_match" : "not_checked";
+  const productEvidence: TradeResearchResultSummary["productEvidence"] =
+    aggregate.productSummary.state === "verified" ? "verified" :
+    ["supporting", "needs_review"].includes(aggregate.productSummary.state) ? "supporting" :
+    aggregate.productSummary.state === "no_verified_match" ? "no_verified_match" : "not_available";
+  const originEvidence: TradeResearchResultSummary["originEvidence"] =
+    aggregate.originSummary.state === "verified" ? "verified" :
+    ["supporting", "needs_review"].includes(aggregate.originSummary.state) ? "supporting" :
+    aggregate.originSummary.state === "no_verified_match" ? "no_verified_match" :
+    aggregate.originSummary.state === "not_verified" ? "not_verified" : "not_available";
+  const indiaOrigin: TradeResearchResultSummary["indiaOrigin"] =
+    aggregate.indiaOriginSummary.state === "verified" ? "verified" :
+    ["supporting", "needs_review"].includes(aggregate.indiaOriginSummary.state) ? "supporting" : "not_verified";
+  const primary = sources[0];
+  return {
+    ...blankResult(),
+    officialProgramEvidence,
+    productEvidence,
+    originEvidence,
+    indiaOrigin,
+    sourcesChecked: aggregate.coverageCounts.evaluated,
+    evidence: primary ? {
+      source: primary.source, datasetPeriod: primary.datasetPeriod, retrievedAt: primary.retrievedAt,
+      matchedSourceName: primary.matchedSourceName, matchedState: primary.matchedState,
+      candidateName: primary.candidateName, candidateState: primary.candidateState,
+      identityDecision: primary.identityDecision, matchReason: primary.matchReason,
+      coverageExplanation: primary.coverageExplanation,
+    } : undefined,
+    sources: sources.length > 0 ? [...sources] : undefined,
+    aggregate,
+    providerResults: [...providerResults],
+  };
+}
+
+async function finalizeResolvedProviderResults(
+  writer: TradeResearchWriter,
+  initialJob: InternalJobRow,
+  workerId: string,
+  providerResults: readonly TradeResearchProviderResult[],
+  log?: TradeResearchLogger,
+): Promise<"completed" | "failed"> {
+  let job = await advanceStage(writer, initialJob, workerId, "finalizing", log);
+  let processingOutcome: "completed" | "failed" = "completed";
+  const result = resultFromProviderResults(providerResults);
+  const aggregate = aggregateTradeResearchEvidence(providerResults);
+  if (aggregate.identitySummary.state === "conflicting" || aggregate.identitySummary.state === "needs_review") {
+    job = await writer.finalize(job, workerId, "needs_review", "needs_review", result);
+  } else if (aggregate.programSummary.state === "verified") {
+    const incomplete = aggregate.coverageCounts.failed > 0 || aggregate.coverageCounts.blocked > 0
+      || aggregate.coverageCounts.notStarted > 0;
+    job = await writer.finalize(
+      job, workerId,
+      incomplete ? "partial" : "completed",
+      incomplete ? "partial" : "official_importer_program_corroboration",
+      result,
+    );
+  } else if (aggregate.programSummary.state === "supporting" || aggregate.programSummary.state === "needs_review") {
+    job = await writer.finalize(job, workerId, "needs_review", "needs_review", result);
+  } else if (aggregate.coverageCounts.evaluated === 0 && aggregate.coverageCounts.failed > 0) {
+    job = await writer.finalize(job, workerId, "failed", "failed", result);
+    processingOutcome = "failed";
+  } else if (aggregate.coverageCounts.evaluated === 0) {
+    job = await writer.finalize(job, workerId, "completed", "unsupported_coverage", result);
+  } else {
+    job = await writer.finalize(job, workerId, "completed", "no_verified_evidence", result);
+  }
+  log?.(jobDiagnostic("stage_completed", job));
+  return processingOutcome;
+}
+
 async function refreshOwnedJob(
   writer: TradeResearchWriter,
   job: InternalJobRow,
@@ -548,16 +705,30 @@ export async function processTradeResearchJob(
 ): Promise<"completed" | "retry" | "failed"> {
   let job = claimed;
   log?.(jobDiagnostic("stage_started", job));
-  if (await writer.isCancellationRequested(job.batch_id)) {
+  const cancellationRequested = await writer.isCancellationRequested(job.batch_id);
+  if (!cancellationRequested) {
+    job = await advanceStage(writer, job, workerId, "planning_sources", log);
+  }
+  const allPlans = typeof writer.getProviderPlans === "function"
+    ? await writer.getProviderPlans(job.id)
+    : typeof writer.getEligiblePlans === "function"
+      ? await writer.getEligiblePlans(job.id)
+    : await (async () => { const p = await writer.getEligiblePlan(job.id); return p ? [p] : []; })();
+  const plans = allPlans.filter((plan) => plan.eligibility !== "ineligible");
+  if (cancellationRequested) {
     job = await refreshOwnedJob(writer, job, workerId);
-    job = await writer.finalize(job, workerId, "cancelled", "cancelled", blankResult());
+    const progress = await loadDurableProviderProgress(writer, allPlans, true);
+    const providerResults = completeProvisionalProviderResults(allPlans, progress.resolvedResults)
+      .map((result) => result.execution.status === "not_started"
+        ? { ...result, execution: { status: "cancelled" as const, safeErrorCode: null } }
+        : result);
+    job = await writer.finalize(
+      job, workerId, "cancelled", "cancelled",
+      resultFromProviderResults(providerResults),
+    );
     return "completed";
   }
-  job = await advanceStage(writer, job, workerId, "planning_sources", log);
-  const plans = typeof writer.getEligiblePlans === "function"
-    ? await writer.getEligiblePlans(job.id)
-    : await (async () => { const p = await writer.getEligiblePlan(job.id); return p ? [p] : []; })();
-  if (!plans.length) {
+  if (!allPlans.length) {
     job = await advanceStage(writer, job, workerId, "finalizing", log);
     job = await writer.finalize(job, workerId, "completed", "unsupported_coverage", blankResult());
     log?.(jobDiagnostic("stage_completed", job));
@@ -572,8 +743,17 @@ export async function processTradeResearchJob(
   }
   if (await writer.isCancellationRequested(job.batch_id)) {
     job = await refreshOwnedJob(writer, job, workerId);
-    job = await writer.finalize(job, workerId, "cancelled", "cancelled", blankResult());
+    const progress = await loadDurableProviderProgress(writer, allPlans, true);
+    const providerResults = completeProvisionalProviderResults(allPlans, progress.resolvedResults)
+      .map((result) => result.execution.status === "not_started"
+        ? { ...result, execution: { status: "cancelled" as const, safeErrorCode: null } }
+        : result);
+    job = await writer.finalize(job, workerId, "cancelled", "cancelled", resultFromProviderResults(providerResults));
     return "completed";
+  }
+  const progress = await loadDurableProviderProgress(writer, allPlans, false);
+  if (progress.allResolved) {
+    return finalizeResolvedProviderResults(writer, job, workerId, progress.resolvedResults, log);
   }
   job = await advanceStage(writer, job, workerId, "screening_sources", log);
 
@@ -584,11 +764,11 @@ export async function processTradeResearchJob(
     const providerId = String((plan as { provider_id?: unknown }).provider_id ?? "");
     switch (providerId) {
       case FDA_FSVP_DESCRIPTOR.id:
-        return processFdaFsvpPlan(writer, job, workerId, plan, now, fetchImpl, log, deadlineAt);
+        return processFdaFsvpPlan(writer, job, workerId, plan, now, fetchImpl, log, deadlineAt, progress.attemptsByPlanId.get(String(plan.id)));
       case CANADA_CID_DESCRIPTOR.id:
-        return processCanadaCidPlan(writer, job, workerId, plan, now, fetchImpl, log, deadlineAt);
+        return processCanadaCidPlan(writer, job, workerId, plan, now, fetchImpl, log, deadlineAt, progress.attemptsByPlanId.get(String(plan.id)));
       case FDA_VQIP_DESCRIPTOR.id:
-        return processFdaVqipPlan(writer, job, workerId, plan, now, fetchImpl, log, deadlineAt);
+        return processFdaVqipPlan(writer, job, workerId, plan, now, fetchImpl, log, deadlineAt, progress.attemptsByPlanId.get(String(plan.id)));
       default:
         job = await advanceStage(writer, job, workerId, "finalizing", log);
         job = await writer.finalize(job, workerId, "completed", "unsupported_coverage", blankResult());
@@ -600,7 +780,10 @@ export async function processTradeResearchJob(
   // BI4F 2C — multi-provider execution. Each provider runs to
   // completion (or safe checkpoint) independently; per-provider
   // evidence is preserved and only aggregated at finalize.
-  return processMultiProviderUsPlans(writer, job, workerId, plans, now, fetchImpl, log, deadlineAt);
+  return processMultiProviderUsPlans(
+    writer, job, workerId, plans, now, fetchImpl, log, deadlineAt,
+    progress.attemptsByPlanId,
+  );
 }
 
 /**
@@ -618,9 +801,10 @@ async function processFdaFsvpPlan(
   fetchImpl: typeof fetch | undefined,
   log: TradeResearchLogger | undefined,
   deadlineAt: number | undefined,
+  initialAttempt: Record<string, unknown> | undefined,
 ): Promise<"completed" | "retry" | "failed"> {
   let job = claimedJob;
-  let previous = await writer.latestAttempt(String(plan.id));
+  let previous = initialAttempt;
   let previousStateRaw = previous?.state;
   let previousState = typeof previousStateRaw === "string" ? previousStateRaw : null;
   // BI4F 2B stale-attempt reconciliation. A `state='running'`
@@ -709,14 +893,6 @@ async function processFdaFsvpPlan(
   const match = matchFdaFsvpCompany({ companyName: candidate.companyName, address: candidate.address, city: candidate.city, rows: snapshot.normalized_rows });
   await writer.appendEvent(job, "match_resolved", { providerId: FDA_FSVP_DESCRIPTOR.id, identityResult: match.decision, matchCount: match.matchedRows.length, datasetWatermark: snapshot.material_hash });
   const providerStatus = evaluatedExecutionStatus(previousState, attemptAlreadyResolved, cacheHit, match.decision);
-  if (!attemptAlreadyResolved) {
-    const attemptState = cacheHit ? "skipped_cached" : providerStatus === "no_match" ? "completed_no_match" : "completed";
-    await writer.finishAttempt(job, workerId, String(attempt.id), {
-      state: attemptState, duration_ms: Date.now() - started,
-      record_count: snapshot.row_count, match_count: match.matchedRows.length,
-    });
-    await writer.appendEvent(job, "provider_attempt_completed", { providerId: FDA_FSVP_DESCRIPTOR.id, attempt: attemptNumber, state: attemptState, recordCount: snapshot.row_count, matchCount: match.matchedRows.length });
-  }
   job = await advanceStage(writer, job, workerId, "checking_trade_activity", log);
   const source: TradeResearchSourceEvidence = {
     providerId: "fda-fsvp", outcome: cacheHit ? "cache_hit" : providerStatus === "no_match" ? "no_match" : "completed",
@@ -729,16 +905,25 @@ async function processFdaFsvpPlan(
     productEvidence: "not_available", originEvidence: "not_available", shipmentEvidence: "not_verified",
     attribution: "Source: U.S. Food & Drug Administration — Foreign Supplier Verification Programs participant list.",
   };
+  const typedProviderResult = evaluatedProviderResult({
+    job, providerId: FDA_FSVP_DESCRIPTOR.id, datasetId: FDA_FSVP_DATASET_ID,
+    parserVersion: FDA_FSVP_PARSE_VERSION, snapshot, source,
+    status: providerStatus, matchCount: match.matchedRows.length,
+  });
+  if (!attemptAlreadyResolved) {
+    const attemptState = cacheHit ? "skipped_cached" : providerStatus === "no_match" ? "completed_no_match" : "completed";
+    await writer.finishAttemptWithCheckpoint(job, workerId, String(attempt.id), {
+      state: attemptState, duration_ms: Date.now() - started,
+      record_count: snapshot.row_count, match_count: match.matchedRows.length,
+    }, typedProviderResult);
+    await writer.appendEvent(job, "provider_attempt_completed", { providerId: FDA_FSVP_DESCRIPTOR.id, attempt: attemptNumber, state: attemptState, recordCount: snapshot.row_count, matchCount: match.matchedRows.length });
+  }
   const result: TradeResearchResultSummary = {
     ...blankResult(),
     officialProgramEvidence: match.decision === "strong" ? "verified" : match.decision === "ambiguous" ? "needs_review" : "no_verified_match",
     sourcesChecked: 1,
     evidence: source,
-    providerResults: [evaluatedProviderResult({
-      job, providerId: FDA_FSVP_DESCRIPTOR.id, datasetId: FDA_FSVP_DATASET_ID,
-      parserVersion: FDA_FSVP_PARSE_VERSION, snapshot, source,
-      status: providerStatus, matchCount: match.matchedRows.length,
-    })],
+    providerResults: [typedProviderResult],
   };
   job = await advanceStage(writer, job, workerId, "finalizing", log);
   if (await writer.isCancellationRequested(job.batch_id)) {
@@ -834,6 +1019,7 @@ async function processCanadaCidPlan(
   fetchImpl: typeof fetch | undefined,
   log: TradeResearchLogger | undefined,
   deadlineAt: number | undefined,
+  initialAttempt: Record<string, unknown> | undefined,
 ): Promise<"completed" | "retry" | "failed"> {
   let job = claimedJob;
   const productId = typeof job.product_id === "string" && job.product_id ? job.product_id : undefined;
@@ -845,7 +1031,7 @@ async function processCanadaCidPlan(
     return "completed";
   }
 
-  let previous = await writer.latestAttempt(String(plan.id));
+  let previous = initialAttempt;
   let previousStateRaw = previous?.state;
   let previousState = typeof previousStateRaw === "string" ? previousStateRaw : null;
   // BI4F 2B stale-attempt reconciliation — same contract as the FDA
@@ -981,14 +1167,6 @@ async function processCanadaCidPlan(
     matchCount: match.matchedRows.length, datasetWatermark: snapshot.material_hash,
   });
   const providerStatus = evaluatedExecutionStatus(previousState, attemptAlreadyResolved, cacheHit, match.decision);
-  if (!attemptAlreadyResolved) {
-    const attemptState = cacheHit ? "skipped_cached" : providerStatus === "no_match" ? "completed_no_match" : "completed";
-    await writer.finishAttempt(job, workerId, String(attempt.id), {
-      state: attemptState, duration_ms: Date.now() - started,
-      record_count: snapshot.row_count, match_count: match.matchedRows.length,
-    });
-    await writer.appendEvent(job, "provider_attempt_completed", { providerId: CANADA_CID_DESCRIPTOR.id, attempt: attemptNumber, state: attemptState, recordCount: snapshot.row_count, matchCount: match.matchedRows.length });
-  }
   job = await advanceStage(writer, job, workerId, "checking_trade_activity", log);
 
   // Identity gates every company-scoped product/origin projection before
@@ -1019,6 +1197,19 @@ async function processCanadaCidPlan(
     companyEvidence: strong ? "verified" : ambiguous ? "supporting" : "no_verified_match",
     productEvidence, originEvidence, shipmentEvidence: "not_verified", attribution: CANADA_CID_ATTRIBUTION,
   };
+  const typedProviderResult = evaluatedProviderResult({
+    job, providerId: CANADA_CID_DESCRIPTOR.id, datasetId: CANADA_CID_DATASET_ID,
+    parserVersion: CANADA_CID_PARSE_VERSION, snapshot, source,
+    status: providerStatus, matchCount: match.matchedRows.length, indiaOriginEvidence: indiaOrigin,
+  });
+  if (!attemptAlreadyResolved) {
+    const attemptState = cacheHit ? "skipped_cached" : providerStatus === "no_match" ? "completed_no_match" : "completed";
+    await writer.finishAttemptWithCheckpoint(job, workerId, String(attempt.id), {
+      state: attemptState, duration_ms: Date.now() - started,
+      record_count: snapshot.row_count, match_count: match.matchedRows.length,
+    }, typedProviderResult);
+    await writer.appendEvent(job, "provider_attempt_completed", { providerId: CANADA_CID_DESCRIPTOR.id, attempt: attemptNumber, state: attemptState, recordCount: snapshot.row_count, matchCount: match.matchedRows.length });
+  }
   const result: TradeResearchResultSummary = {
     ...blankResult(),
     officialProgramEvidence: strong ? "verified" : ambiguous ? "needs_review" : "no_verified_match",
@@ -1028,11 +1219,7 @@ async function processCanadaCidPlan(
     shipmentEvidence: "not_verified",
     sourcesChecked: 1,
     evidence: source,
-    providerResults: [evaluatedProviderResult({
-      job, providerId: CANADA_CID_DESCRIPTOR.id, datasetId: CANADA_CID_DATASET_ID,
-      parserVersion: CANADA_CID_PARSE_VERSION, snapshot, source,
-      status: providerStatus, matchCount: match.matchedRows.length, indiaOriginEvidence: indiaOrigin,
-    })],
+    providerResults: [typedProviderResult],
   };
   job = await advanceStage(writer, job, workerId, "finalizing", log);
   if (await writer.isCancellationRequested(job.batch_id)) {
@@ -1116,9 +1303,10 @@ async function processFdaVqipPlan(
   fetchImpl: typeof fetch | undefined,
   log: TradeResearchLogger | undefined,
   deadlineAt: number | undefined,
+  initialAttempt: Record<string, unknown> | undefined,
 ): Promise<"completed" | "retry" | "failed"> {
   let job = claimedJob;
-  let previous = await writer.latestAttempt(String(plan.id));
+  let previous = initialAttempt;
   let previousStateRaw = previous?.state;
   let previousState = typeof previousStateRaw === "string" ? previousStateRaw : null;
   if (previousState === "running" && previous?.id) {
@@ -1205,14 +1393,6 @@ async function processFdaVqipPlan(
     matchCount: match.matchedRows.length, datasetWatermark: snapshot.material_hash,
   });
   const providerStatus = evaluatedExecutionStatus(previousState, attemptAlreadyResolved, cacheHit, match.decision);
-  if (!attemptAlreadyResolved) {
-    const attemptState = cacheHit ? "skipped_cached" : providerStatus === "no_match" ? "completed_no_match" : "completed";
-    await writer.finishAttempt(job, workerId, String(attempt.id), {
-      state: attemptState, duration_ms: Date.now() - started,
-      record_count: snapshot.row_count, match_count: match.matchedRows.length,
-    });
-    await writer.appendEvent(job, "provider_attempt_completed", { providerId: FDA_VQIP_DESCRIPTOR.id, attempt: attemptNumber, state: attemptState, recordCount: snapshot.row_count, matchCount: match.matchedRows.length });
-  }
   job = await advanceStage(writer, job, workerId, "checking_trade_activity", log);
   const source: TradeResearchSourceEvidence = {
     providerId: "fda-vqip", outcome: cacheHit ? "cache_hit" : providerStatus === "no_match" ? "no_match" : "completed",
@@ -1225,16 +1405,25 @@ async function processFdaVqipPlan(
     productEvidence: "not_available", originEvidence: "not_available", shipmentEvidence: "not_verified",
     attribution: FDA_VQIP_ATTRIBUTION,
   };
+  const typedProviderResult = evaluatedProviderResult({
+    job, providerId: FDA_VQIP_DESCRIPTOR.id, datasetId: FDA_VQIP_DATASET_ID,
+    parserVersion: FDA_VQIP_PARSE_VERSION, snapshot, source,
+    status: providerStatus, matchCount: match.matchedRows.length,
+  });
+  if (!attemptAlreadyResolved) {
+    const attemptState = cacheHit ? "skipped_cached" : providerStatus === "no_match" ? "completed_no_match" : "completed";
+    await writer.finishAttemptWithCheckpoint(job, workerId, String(attempt.id), {
+      state: attemptState, duration_ms: Date.now() - started,
+      record_count: snapshot.row_count, match_count: match.matchedRows.length,
+    }, typedProviderResult);
+    await writer.appendEvent(job, "provider_attempt_completed", { providerId: FDA_VQIP_DESCRIPTOR.id, attempt: attemptNumber, state: attemptState, recordCount: snapshot.row_count, matchCount: match.matchedRows.length });
+  }
   const result: TradeResearchResultSummary = {
     ...blankResult(),
     officialProgramEvidence: match.decision === "strong" ? "verified" : match.decision === "ambiguous" ? "needs_review" : "no_verified_match",
     sourcesChecked: 1,
     evidence: source,
-    providerResults: [evaluatedProviderResult({
-      job, providerId: FDA_VQIP_DESCRIPTOR.id, datasetId: FDA_VQIP_DATASET_ID,
-      parserVersion: FDA_VQIP_PARSE_VERSION, snapshot, source,
-      status: providerStatus, matchCount: match.matchedRows.length,
-    })],
+    providerResults: [typedProviderResult],
   };
   job = await advanceStage(writer, job, workerId, "finalizing", log);
   if (await writer.isCancellationRequested(job.batch_id)) {
@@ -1274,6 +1463,7 @@ async function processMultiProviderUsPlans(
   fetchImpl: typeof fetch | undefined,
   log: TradeResearchLogger | undefined,
   deadlineAt: number | undefined,
+  initialAttempts: ReadonlyMap<string, Record<string, unknown> | undefined> = new Map(),
 ): Promise<"completed" | "retry" | "failed"> {
   let job = claimedJob;
   const perProvider: TradeResearchSourceEvidence[] = [];
@@ -1283,14 +1473,40 @@ async function processMultiProviderUsPlans(
 
   for (const plan of plans) {
     const providerId = String((plan as { provider_id?: unknown }).provider_id ?? "");
-    // Deadline gate BEFORE starting the provider — skip if budget too low.
+    const planId = String(plan.id ?? "");
+    // Durable terminal inspection comes before deadline/cancellation gates.
+    // A completed checkpoint never depends on current cache freshness.
+    let previous = initialAttempts.has(planId)
+      ? initialAttempts.get(planId)
+      : await writer.latestAttempt(planId);
+    const checkpoint = readProviderResultCheckpoint(previous, providerId);
+    if (checkpoint) {
+      typedProviderResults.push(checkpoint);
+      anyEvaluated = true;
+      continue;
+    }
+    if (previous?.state === "failed_terminal") {
+      typedProviderResults.push(unevaluatedProviderResult(
+        providerId,
+        "failed_terminal",
+        typeof previous.safe_error_code === "string" ? previous.safe_error_code : null,
+      ));
+      anyProviderFailed = true;
+      continue;
+    }
+
+    // Only unfinished work is subject to the current invocation's deadline.
     const providerRequiredMs = providerId === FDA_FSVP_DESCRIPTOR.id ? FDA_COLD_PATH_WORST_CASE_MS : 5_000;
     const gate = await checkpointIfBudgetLow(writer, job, workerId, deadlineAt, providerRequiredMs, now, log);
     if (!gate.ok) return "retry";
     // Cancellation gate.
     if (await writer.isCancellationRequested(job.batch_id)) {
       job = await refreshOwnedJob(writer, job, workerId);
-      const providerResults = completeProvisionalProviderResults(plans, typedProviderResults);
+      const durable = await loadDurableProviderProgress(writer, plans, true);
+      const providerResults = completeProvisionalProviderResults(plans, durable.resolvedResults)
+        .map((result) => result.execution.status === "not_started"
+          ? { ...result, execution: { status: "cancelled" as const, safeErrorCode: null } }
+          : result);
       const aggregate = aggregateTradeResearchEvidence(providerResults);
       const primary = perProvider[0];
       job = await writer.finalize(job, workerId, "cancelled", "cancelled", {
@@ -1310,7 +1526,6 @@ async function processMultiProviderUsPlans(
       return "completed";
     }
     // Reconcile stale attempts for THIS provider only.
-    let previous = await writer.latestAttempt(String(plan.id));
     if (previous?.state === "running" && previous?.id) {
       await writer.reconcileStaleAttempt(job, workerId, String(previous.id), "STALE_LEASE_RECOVERED");
       previous = { ...previous, state: "failed_retryable" };
@@ -1453,7 +1668,9 @@ async function runFdaFsvpProviderOnly(
     if (isTradeResearchLeaseLostError(error)) throw error;
     const status = typeof error === "object" && error && "status" in error ? Number((error as { status?: unknown }).status) : undefined;
     const code = typeof error === "object" && error && "code" in error ? String((error as { code?: unknown }).code) : (error instanceof FdaFsvpParserError ? error.code : "PROVIDER_FAILURE");
-    const failureState = isRetryableProviderFailure({ status, code }) ? "failed_retryable" : "failed_terminal";
+    const failureState = isRetryableProviderFailure({ status, code }) && retryDelayMs(attemptNumber) !== null
+      ? "failed_retryable"
+      : "failed_terminal";
     await writer.finishAttempt(job, workerId, String(attempt.id), { state: failureState, safe_error_code: code, duration_ms: Date.now() - started });
     await writer.appendEvent(job, "provider_attempt_completed", { providerId: FDA_FSVP_DESCRIPTOR.id, attempt: attemptNumber, state: failureState });
     log?.(jobDiagnostic("job_failed", job, { safeErrorCode: code }));
@@ -1480,23 +1697,24 @@ async function runFdaFsvpProviderOnly(
       attribution: "Source: U.S. Food & Drug Administration — Foreign Supplier Verification Programs participant list.",
   };
   const status = evaluatedExecutionStatus(previousState, attemptAlreadyResolved, cacheHit, match.decision);
+  const typed = evaluatedProviderResult({
+    job, providerId: FDA_FSVP_DESCRIPTOR.id, datasetId: FDA_FSVP_DATASET_ID,
+    parserVersion: FDA_FSVP_PARSE_VERSION, snapshot: snapshot!, source: evidence,
+    status, matchCount: match.matchedRows.length,
+  });
   if (!attemptAlreadyResolved) {
     const attemptState = cacheHit ? "skipped_cached" : status === "no_match" ? "completed_no_match" : "completed";
-    await writer.finishAttempt(job, workerId, String(attempt.id), {
+    await writer.finishAttemptWithCheckpoint(job, workerId, String(attempt.id), {
       state: attemptState, duration_ms: Date.now() - started,
       record_count: snapshot!.row_count, match_count: match.matchedRows.length,
-    });
+    }, typed);
     await writer.appendEvent(job, "provider_attempt_completed", { providerId: FDA_FSVP_DESCRIPTOR.id, attempt: attemptNumber, state: attemptState, recordCount: snapshot!.row_count, matchCount: match.matchedRows.length });
   }
   return {
     job,
     failed: false,
     evidence,
-    typed: evaluatedProviderResult({
-      job, providerId: FDA_FSVP_DESCRIPTOR.id, datasetId: FDA_FSVP_DATASET_ID,
-      parserVersion: FDA_FSVP_PARSE_VERSION, snapshot: snapshot!, source: evidence,
-      status, matchCount: match.matchedRows.length,
-    }),
+    typed,
   };
 }
 
@@ -1539,7 +1757,9 @@ async function runFdaVqipProviderOnly(
     if (isTradeResearchLeaseLostError(error)) throw error;
     const status = typeof error === "object" && error && "status" in error ? Number((error as { status?: unknown }).status) : undefined;
     const code = typeof error === "object" && error && "code" in error ? String((error as { code?: unknown }).code) : (error instanceof FdaVqipParserError ? error.code : "PROVIDER_FAILURE");
-    const failureState = isRetryableProviderFailure({ status, code }) ? "failed_retryable" : "failed_terminal";
+    const failureState = isRetryableProviderFailure({ status, code }) && retryDelayMs(attemptNumber) !== null
+      ? "failed_retryable"
+      : "failed_terminal";
     await writer.finishAttempt(job, workerId, String(attempt.id), { state: failureState, safe_error_code: code, duration_ms: Date.now() - started });
     await writer.appendEvent(job, "provider_attempt_completed", { providerId: FDA_VQIP_DESCRIPTOR.id, attempt: attemptNumber, state: failureState });
     log?.(jobDiagnostic("job_failed", job, { safeErrorCode: code }));
@@ -1569,23 +1789,24 @@ async function runFdaVqipProviderOnly(
       attribution: FDA_VQIP_ATTRIBUTION,
   };
   const status = evaluatedExecutionStatus(previousState, attemptAlreadyResolved, cacheHit, match.decision);
+  const typed = evaluatedProviderResult({
+    job, providerId: FDA_VQIP_DESCRIPTOR.id, datasetId: FDA_VQIP_DATASET_ID,
+    parserVersion: FDA_VQIP_PARSE_VERSION, snapshot: snapshot!, source: evidence,
+    status, matchCount: match.matchedRows.length,
+  });
   if (!attemptAlreadyResolved) {
     const attemptState = cacheHit ? "skipped_cached" : status === "no_match" ? "completed_no_match" : "completed";
-    await writer.finishAttempt(job, workerId, String(attempt.id), {
+    await writer.finishAttemptWithCheckpoint(job, workerId, String(attempt.id), {
       state: attemptState, duration_ms: Date.now() - started,
       record_count: snapshot!.row_count, match_count: match.matchedRows.length,
-    });
+    }, typed);
     await writer.appendEvent(job, "provider_attempt_completed", { providerId: FDA_VQIP_DESCRIPTOR.id, attempt: attemptNumber, state: attemptState, recordCount: snapshot!.row_count, matchCount: match.matchedRows.length });
   }
   return {
     job,
     failed: false,
     evidence,
-    typed: evaluatedProviderResult({
-      job, providerId: FDA_VQIP_DESCRIPTOR.id, datasetId: FDA_VQIP_DATASET_ID,
-      parserVersion: FDA_VQIP_PARSE_VERSION, snapshot: snapshot!, source: evidence,
-      status, matchCount: match.matchedRows.length,
-    }),
+    typed,
   };
 }
 

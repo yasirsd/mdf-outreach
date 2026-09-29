@@ -64,6 +64,7 @@ function makeFixture(previous: Record<string, unknown> | undefined): Fixture {
       return { id: `attempt-${attemptNumber}`, attempt_number: attemptNumber };
     }),
     finishAttempt: vi.fn(async (_job: InternalJobRow, _worker: string, _id: string, patch: Record<string, unknown>) => { state.attempts.push({ patch }); }),
+    finishAttemptWithCheckpoint: vi.fn(async (_job: InternalJobRow, _worker: string, _id: string, patch: Record<string, unknown>) => { state.attempts.push({ patch }); }),
     appendEvent: vi.fn(async (_row: InternalJobRow, event: string, payload: Record<string, unknown>) => { state.events.push({ event, payload }); }),
     release: vi.fn(async (row: InternalJobRow, _worker: string, next: string) => { state.released.push(next); return { ...row, revision: row.revision + 1, lease_owner: null }; }),
     heartbeat: vi.fn(async (row: InternalJobRow) => ({ ...row, revision: row.revision + 1 })),
@@ -157,26 +158,20 @@ describe("BI4F 2B — runtime-budget retry is bounded at 3 attempts", () => {
     expect(state.saveCalls).toBe(0);
   });
 
-  it("attempt 4 after three prior NON-budget failures → NOT terminated by bounded-retry guard", async () => {
-    // If the previous attempt failed for a reason OTHER than runtime
-    // budget (e.g. HTTP_ERROR / PARSER_INCOMPATIBLE), the retry
-    // classification path (isRetryableProviderFailure / finalize-as-
-    // failed) governs, NOT the runtime-budget bounded guard. This
-    // guarantees a single-cause exhaustion cap without stealing
-    // other error branches.
+  it("three prior NON-budget retryable failures → no invalid attempt 4 or resume loop", async () => {
     const previous = {
       id: "attempt-3", attempt_number: 3, state: "retry_wait",
       safe_error_code: "TRANSIENT_HTTP",
     };
     const { writer, state } = makeFixture(previous);
-    // Force the pre-fetch deadline gate to fire so we return retry
-    // via the STANDARD budget-low path, not the terminal one.
     const outcome = await processTradeResearchJob(
       writer, job(), "worker-a", () => NOW, undefined, undefined,
       Date.now() + 5_000,
     );
-    expect(outcome).toBe("retry");
-    expect(state.finalized).toHaveLength(0);
+    expect(outcome).toBe("failed");
+    expect(state.startedAttempts).toEqual([]);
+    expect(state.finalized).toHaveLength(1);
+    expect(state.finalized[0]).toMatchObject({ status: "failed", outcome: "failed" });
   });
 
   it("CanadaCidRuntimeBudgetError type is exposed and correctly-coded", () => {

@@ -9,7 +9,7 @@ import {
   type InternalJobRow,
 } from "./repository";
 import { fingerprintResearchContext } from "./context";
-import type { ResearchContext } from "./types";
+import type { ResearchContext, TradeResearchProviderResult } from "./types";
 import { safeTradeResearchErrorCode, safeTradeResearchErrorMetadata } from "./server/diagnostics";
 
 const claimed: InternalJobRow = {
@@ -24,6 +24,23 @@ const claimed: InternalJobRow = {
   revision: 1,
   lease_owner: "worker-a",
 };
+
+function evaluatedCheckpoint(
+  status: "completed" | "no_match" | "cached" = "completed",
+  providerId = "fda-fsvp",
+): TradeResearchProviderResult {
+  return {
+    providerId,
+    datasetId: "fsvp-participant-list",
+    datasetVersion: "sha256-material",
+    parserVersion: "fsvp-xlsx-v1",
+    sourceRecordIds: ["row-1"],
+    sourcePeriod: "2026 Q2",
+    retrievedAt: "2026-09-28T12:00:00.000Z",
+    execution: { status, safeErrorCode: null },
+    evidence: {},
+  } as unknown as TradeResearchProviderResult;
+}
 
 function clientWithRpc(rpc: ReturnType<typeof vi.fn>): SupabaseClient {
   const chain: Record<string, unknown> = {};
@@ -183,6 +200,56 @@ describe("T07 exact-context repository reads", () => {
 });
 
 describe("TradeResearchWriter RPC contract", () => {
+  it.each([
+    ["completed", "completed"],
+    ["completed_no_match", "no_match"],
+    ["skipped_cached", "cached"],
+  ] as const)("uses the v2 RPC to atomically persist %s with its %s checkpoint", async (attemptState, executionStatus) => {
+    const rpc = vi.fn(async () => ({ data: { id: "00000000-0000-4000-8000-000000000006" }, error: null }));
+    const result = evaluatedCheckpoint(executionStatus);
+    await expect(new TradeResearchWriter(clientWithRpc(rpc)).finishAttemptWithCheckpoint(
+      claimed,
+      "worker-a",
+      "00000000-0000-4000-8000-000000000006",
+      { state: attemptState, duration_ms: 12, record_count: 3, match_count: 1 },
+      result,
+    )).resolves.toBeUndefined();
+    expect(rpc).toHaveBeenCalledWith("finish_buyer_trade_research_attempt_v2", {
+      p_attempt_id: "00000000-0000-4000-8000-000000000006",
+      p_job_id: claimed.id,
+      p_worker_id: "worker-a",
+      p_revision: claimed.revision,
+      p_state: attemptState,
+      p_provider_result: result,
+      p_safe_error_code: null,
+      p_duration_ms: 12,
+      p_record_count: 3,
+      p_match_count: 1,
+    });
+  });
+
+  it("rejects invalid or mismatched success checkpoints before the v2 RPC", async () => {
+    const rpc = vi.fn();
+    const writer = new TradeResearchWriter(clientWithRpc(rpc));
+    await expect(writer.finishAttemptWithCheckpoint(
+      claimed, "worker-a", "00000000-0000-4000-8000-000000000006",
+      { state: "completed" }, evaluatedCheckpoint("no_match"),
+    )).rejects.toThrow("INVALID_PROVIDER_RESULT_CHECKPOINT");
+    await expect(writer.finishAttemptWithCheckpoint(
+      claimed, "worker-a", "00000000-0000-4000-8000-000000000006",
+      { state: "completed" }, { ...evaluatedCheckpoint(), evidence: null } as TradeResearchProviderResult,
+    )).rejects.toThrow("INVALID_PROVIDER_RESULT_CHECKPOINT");
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
+  it("maps stale lease, owner, or revision rejection from the v2 RPC to lease loss", async () => {
+    const rpc = vi.fn(async () => ({ data: null, error: { code: "P0001", message: "STALE_JOB_REVISION" } }));
+    await expect(new TradeResearchWriter(clientWithRpc(rpc)).finishAttemptWithCheckpoint(
+      claimed, "worker-a", "00000000-0000-4000-8000-000000000006",
+      { state: "completed" }, evaluatedCheckpoint(),
+    )).rejects.toBeInstanceOf(TradeResearchLeaseLostError);
+  });
+
   it("keeps a catalogue product slug in text while validating create-time UUID fields", async () => {
     const batch = {
       id: "00000000-0000-4000-8000-000000000010", status: "queued", requested_goal: "screen_trade_activity",

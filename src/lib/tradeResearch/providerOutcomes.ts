@@ -51,7 +51,7 @@ const DATASET_IDS: Readonly<Record<string, string>> = {
   "canada-cid": "cid-major-importers-by-hs6-by-country",
 };
 
-function unevaluated(
+export function unevaluatedProviderOutcome(
   plan: ProviderOutcomePlan,
   status: Exclude<TradeResearchProviderExecutionState, "completed" | "no_match" | "cached">,
   safeErrorCode: string | null,
@@ -83,7 +83,7 @@ function latestAttempts(attempts: readonly ProviderOutcomeAttempt[]): Map<string
   return latest;
 }
 
-function statusFor(
+export function providerExecutionStatusForPlan(
   plan: ProviderOutcomePlan,
   attempt: ProviderOutcomeAttempt | undefined,
   jobCancelled: boolean,
@@ -154,7 +154,7 @@ export function projectProviderOutcomes(input: {
   const latest = latestAttempts(input.attempts);
   const providerResults = plans.map((plan): TradeResearchProviderResult => {
     const attempt = latest.get(plan.id);
-    const status = statusFor(plan, attempt, Boolean(input.jobCancelled));
+    const status = providerExecutionStatusForPlan(plan, attempt, Boolean(input.jobCancelled));
     const candidate = submitted.get(plan.provider_id);
     if (status === "completed" || status === "no_match" || status === "cached") {
       if (!candidate || candidate.execution.status !== status || !candidate.evidence) {
@@ -166,7 +166,7 @@ export function projectProviderOutcomes(input: {
         execution: { status, safeErrorCode: null },
       } as TradeResearchProviderResult;
     }
-    return unevaluated(plan, status, attempt?.safe_error_code ?? null);
+    return unevaluatedProviderOutcome(plan, status, attempt?.safe_error_code ?? null);
   });
 
   const attemptedPlanIds = new Set(input.attempts.map((attempt) => attempt.provider_plan_id));

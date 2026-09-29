@@ -9,6 +9,7 @@ import {
   type TradeResearchWriter,
 } from "../repository";
 import { drainTradeResearch, processTradeResearchJob } from "./worker";
+import type { TradeResearchProviderResult } from "../types";
 
 const NOW = new Date("2026-09-28T12:00:00Z");
 
@@ -37,6 +38,16 @@ function candidate(): BuyerCandidate {
     city: "Cypress, CA 90630", industry: "Food", isImporter: true,
     discoveryStatus: "ready", reviewStatus: "pending",
   };
+}
+
+function checkpoint(): TradeResearchProviderResult {
+  return {
+    providerId: "fda-fsvp", datasetId: "fsvp-participant-list",
+    datasetVersion: "hash", parserVersion: "fsvp-xlsx-v1", sourceRecordIds: [],
+    sourcePeriod: "2026 Q2", retrievedAt: NOW.toISOString(),
+    execution: { status: "completed", safeErrorCode: null },
+    evidence: {} as TradeResearchProviderResult extends { evidence: infer E } ? E : never,
+  } as TradeResearchProviderResult;
 }
 
 type Attempt = { id: string; jobId: string; owner: string | null; state: string };
@@ -125,6 +136,16 @@ function strictCasFixture(providerIds: string[] = ["fda-fsvp", "fda-vqip"]) {
       attempt.state = String(patch.state);
       attempt.owner = null;
     }),
+    finishAttemptWithCheckpoint: vi.fn(async (row: InternalJobRow, worker: string, id: string, patch: Record<string, unknown>) => {
+      calls.finishAttemptExpected.push(row.revision);
+      assertOwner(row, worker);
+      const attempt = attempts.get(id);
+      if (!attempt || attempt.jobId !== row.id || attempt.owner !== worker || attempt.state !== "running") {
+        throw new TradeResearchLeaseLostError();
+      }
+      attempt.state = String(patch.state);
+      attempt.owner = null;
+    }),
     reconcileStaleAttempt: vi.fn(async (row: InternalJobRow, worker: string, id: string) => {
       calls.reconcileExpected.push(row.revision);
       assertOwner(row, worker, ["running"]);
@@ -203,6 +224,12 @@ describe("T02 strict revision-CAS worker contract", () => {
     await expect(fixture.writer.release(revision2, "worker-a", NOW.toISOString())).rejects.toBeInstanceOf(TradeResearchLeaseLostError);
     await expect(fixture.writer.finalize(revision2, "worker-a", "completed", "no_verified_evidence", result)).rejects.toBeInstanceOf(TradeResearchLeaseLostError);
     await expect(fixture.writer.finishAttempt(revision2, "worker-a", String(attempt.id), { state: "completed" })).rejects.toBeInstanceOf(TradeResearchLeaseLostError);
+    await expect(fixture.writer.finishAttemptWithCheckpoint(
+      revision2, "worker-a", String(attempt.id), { state: "completed" }, checkpoint(),
+    )).rejects.toBeInstanceOf(TradeResearchLeaseLostError);
+    await expect(fixture.writer.finishAttemptWithCheckpoint(
+      fixture.currentJob(), "worker-b", String(attempt.id), { state: "completed" }, checkpoint(),
+    )).rejects.toBeInstanceOf(TradeResearchLeaseLostError);
     await expect(fixture.writer.reconcileStaleAttempt(revision2, "worker-a", String(attempt.id), "STALE_LEASE_RECOVERED")).rejects.toBeInstanceOf(TradeResearchLeaseLostError);
     expect(fixture.attempts.get(String(attempt.id))?.state).toBe("running");
   });

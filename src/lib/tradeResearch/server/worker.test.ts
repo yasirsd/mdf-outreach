@@ -56,6 +56,7 @@ function memoryWriter(over: Record<string, unknown> = {}) {
     startAttempt: vi.fn(async (_job, _plan, attemptNumber) => ({ id: `attempt-${attemptNumber}`, attempt_number: attemptNumber })),
     appendEvent: vi.fn(async () => undefined),
     finishAttempt: vi.fn(async (_job, _worker, _id, patch) => { state.attempts.push(patch); }),
+    finishAttemptWithCheckpoint: vi.fn(async (_job, _worker, _id, patch) => { state.attempts.push(patch); }),
     release: vi.fn(async (row: InternalJobRow, _worker, next: string) => {
       state.released.push(next);
       return { ...row, revision: row.revision + 1, lease_owner: null };

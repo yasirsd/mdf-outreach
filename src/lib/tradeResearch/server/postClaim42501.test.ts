@@ -124,6 +124,7 @@ describe("BI4F 2A — a 42501 raised AFTER claim is safely requeued (production 
       startAttempt: vi.fn(async () => ({ id: "00000000-0000-4000-8000-000000000007", attempt_number: 1 })),
       appendEvent: vi.fn(async () => undefined),
       finishAttempt: vi.fn(async () => undefined),
+      finishAttemptWithCheckpoint: vi.fn(async () => undefined),
       getCandidate: vi.fn(async () => { throw permissionDenied; }),
       finalize: vi.fn(),
       release: vi.fn(),
@@ -156,6 +157,7 @@ describe("BI4F 2A — a 42501 raised AFTER claim is safely requeued (production 
       startAttempt: vi.fn(async () => ({ id: "00000000-0000-4000-8000-000000000007", attempt_number: 1 })),
       appendEvent: vi.fn(async () => undefined),
       finishAttempt: vi.fn(async () => undefined),
+      finishAttemptWithCheckpoint: vi.fn(async () => undefined),
       getCandidate: vi.fn(async () => { throw permissionDenied; }),
       recoverClaimedJob: vi.fn(async () => "requeued" as const),
     } as unknown as TradeResearchWriter;

@@ -87,6 +87,7 @@ function writerFor(over: Partial<State> = {}): { state: State; writer: TradeRese
     latestAttempt: vi.fn(async () => undefined),
     startAttempt: vi.fn(async (_row: InternalJobRow, _planId: string, attemptNumber: number) => ({ id: `attempt-${attemptNumber}`, attempt_number: attemptNumber })),
     finishAttempt: vi.fn(async (_job: InternalJobRow, _worker: string, _id: string, patch: Record<string, unknown>) => { state.attempts.push(patch); }),
+    finishAttemptWithCheckpoint: vi.fn(async (_job: InternalJobRow, _worker: string, _id: string, patch: Record<string, unknown>) => { state.attempts.push(patch); }),
     appendEvent: vi.fn(async (_job: InternalJobRow, event: string, safe: Record<string, unknown>) => { state.events.push({ event, ...safe }); }),
     release: vi.fn(async (row: InternalJobRow, _worker: string, next: string) => { state.released.push(next); return { ...row, revision: row.revision + 1, lease_owner: null }; }),
     heartbeat: vi.fn(async (row: InternalJobRow) => ({ ...row, revision: row.revision + 1 })),
@@ -147,12 +148,12 @@ describe("BI4F 2B — worker dispatch by plan.provider_id", () => {
     }));
     const calls = writer as unknown as {
       heartbeat: ReturnType<typeof vi.fn>;
-      finishAttempt: ReturnType<typeof vi.fn>;
+      finishAttemptWithCheckpoint: ReturnType<typeof vi.fn>;
       finalize: ReturnType<typeof vi.fn>;
     };
     expect(calls.heartbeat).toHaveBeenCalledWith(expect.objectContaining({ revision: 3 }), "worker-a");
     // Attempt completion now follows matching so completed/no-match is durable.
-    expect(calls.finishAttempt.mock.calls[0][0]).toMatchObject({ revision: 5 });
+    expect(calls.finishAttemptWithCheckpoint.mock.calls[0][0]).toMatchObject({ revision: 6 });
     expect(calls.finalize.mock.calls[0][0]).toMatchObject({ revision: 7 });
   });
 

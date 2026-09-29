@@ -4,6 +4,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { BuyerCandidate } from "@/lib/buyerFinder/types";
 import { canonicalizeResearchContext, fingerprintResearchContext } from "./context";
 import { aggregateTradeResearchEvidence } from "./aggregation";
+import { assertProviderResultCheckpoint } from "./checkpoints";
 import {
   projectProviderOutcomes,
   validateProviderResultSnapshots,
@@ -18,6 +19,7 @@ import {
   type TradeResearchBatchSnapshot,
   type TradeResearchJobSnapshot,
   type TradeResearchOutcome,
+  type TradeResearchProviderResult,
   type TradeResearchResultSummary,
   type TradeResearchStage,
   type TradeResearchStatus,
@@ -625,6 +627,16 @@ export class TradeResearchWriter {
     if (error) throw error;
     return (data ?? []) as Row[];
   }
+  async getProviderPlans(jobId: string): Promise<Row[]> {
+    requireUuid(jobId, "buyer_trade_research_provider_plans.job_id");
+    const { data, error } = await this.client
+      .from("buyer_trade_research_provider_plans").select("*")
+      .eq("job_id", jobId)
+      .order("sequence")
+      .order("provider_id");
+    if (error) throw error;
+    return (data ?? []) as Row[];
+  }
   async latestAttemptForPlan(planId: string): Promise<Row | undefined> {
     return this.latestAttempt(planId);
   }
@@ -662,6 +674,40 @@ export class TradeResearchWriter {
       p_worker_id: worker,
       p_revision: job.revision,
       p_state: state,
+      p_safe_error_code: patch.safe_error_code ?? null,
+      p_duration_ms: patch.duration_ms ?? null,
+      p_record_count: patch.record_count ?? null,
+      p_match_count: patch.match_count ?? null,
+    });
+    if (error) {
+      if (isStaleMutationError(error)) throw new TradeResearchLeaseLostError(error);
+      throw error;
+    }
+    const attempt = singleRpcRow<Row>(data);
+    if (!attempt || isNullComposite(attempt)) throw new TradeResearchLeaseLostError();
+  }
+  async finishAttemptWithCheckpoint(
+    job: InternalJobRow,
+    worker: string,
+    id: string,
+    patch: Row,
+    providerResult: TradeResearchProviderResult,
+  ): Promise<void> {
+    requireInternalJobRow(job);
+    requireText(worker, "p_worker_id");
+    requireUuid(id, "buyer_trade_research_attempts.id");
+    requireJson(patch, "attempt_patch");
+    requireJson(providerResult, "p_provider_result");
+    validateAttemptPatch(patch);
+    const state = requireConstrainedText(patch.state, "attempt.state", PROVIDER_ATTEMPT_STATES);
+    assertProviderResultCheckpoint(state, providerResult.providerId, providerResult);
+    const { data, error } = await this.client.rpc("finish_buyer_trade_research_attempt_v2", {
+      p_attempt_id: id,
+      p_job_id: job.id,
+      p_worker_id: worker,
+      p_revision: job.revision,
+      p_state: state,
+      p_provider_result: providerResult,
       p_safe_error_code: patch.safe_error_code ?? null,
       p_duration_ms: patch.duration_ms ?? null,
       p_record_count: patch.record_count ?? null,

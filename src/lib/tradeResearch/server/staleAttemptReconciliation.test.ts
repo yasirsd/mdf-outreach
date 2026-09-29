@@ -77,6 +77,7 @@ function makeFixture(previous: Record<string, unknown> | undefined, opts: { fres
       return { id: `attempt-${attemptNumber}`, attempt_number: attemptNumber };
     }),
     finishAttempt: vi.fn(async (_job: InternalJobRow, _worker: string, id: string, patch: Record<string, unknown>) => { state.finishAttemptCalls.push({ id, patch }); }),
+    finishAttemptWithCheckpoint: vi.fn(async (_job: InternalJobRow, _worker: string, id: string, patch: Record<string, unknown>) => { state.finishAttemptCalls.push({ id, patch }); }),
     appendEvent: vi.fn(async () => undefined),
     release: vi.fn(async (row: InternalJobRow) => ({ ...row, revision: row.revision + 1, lease_owner: null })),
     heartbeat: vi.fn(async (row: InternalJobRow) => ({ ...row, revision: row.revision + 1 })),
@@ -139,7 +140,7 @@ describe("BI4F 2B — reconciles stale 'running' attempts as failed_retryable/ST
     expect(state.startAttemptCalls).toEqual([]);
   });
 
-  it("previous attempt state='failed_terminal' → NO reconcile, new attempt at #2 created", async () => {
+  it("previous attempt state='failed_terminal' → NO reconcile and NO retry", async () => {
     const failed = {
       id: "attempt-1", attempt_number: 1, state: "failed_terminal",
       lease_owner: null, lease_expires_at: null,
@@ -148,7 +149,8 @@ describe("BI4F 2B — reconciles stale 'running' attempts as failed_retryable/ST
     const { writer, state } = makeFixture(failed, { fresh: cidSnapshot() });
     await processTradeResearchJob(writer, jobRow(), "worker-new", () => NOW);
     expect(state.reconciled).toEqual([]);
-    expect(state.startAttemptCalls).toEqual([2]);
+    expect(state.startAttemptCalls).toEqual([]);
+    expect(state.finalized).toEqual([{ status: "failed", outcome: "failed" }]);
   });
 
   it("previous attempt state='retry_wait' → NO reconcile, new attempt at #2 created", async () => {

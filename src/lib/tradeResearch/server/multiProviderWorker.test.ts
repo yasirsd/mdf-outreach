@@ -90,6 +90,7 @@ function makeFixture(opts: {
       return { id, attempt_number: n };
     }),
     finishAttempt: vi.fn(async (_job: InternalJobRow, _worker: string, id: string, patch: Record<string, unknown>) => { state.attempts.push({ id, patch }); }),
+    finishAttemptWithCheckpoint: vi.fn(async (_job: InternalJobRow, _worker: string, id: string, patch: Record<string, unknown>) => { state.attempts.push({ id, patch }); }),
     appendEvent: vi.fn(async (_r: InternalJobRow, event: string, payload: Record<string, unknown>) => { state.events.push({ event, payload }); }),
     release: vi.fn(async (row: InternalJobRow) => ({ ...row, revision: row.revision + 1, lease_owner: null })),
     heartbeat: vi.fn(async (row: InternalJobRow) => ({ ...row, revision: row.revision + 1 })),
