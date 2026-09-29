@@ -240,11 +240,11 @@ describe("T02 strict revision-CAS worker contract", () => {
     await expect(processTradeResearchJob(fixture.writer, claimed, "worker-a", () => NOW, providerFetch()))
       .resolves.toBe("completed");
 
-    expect(fixture.calls.startAttemptExpected).toEqual([3, 4]);
-    expect(fixture.calls.heartbeatExpected).toEqual([3, 4]);
-    expect(fixture.calls.finishAttemptExpected).toEqual([4, 5]);
-    expect(fixture.calls.finalizeExpected).toEqual([6]);
-    expect(fixture.currentJob()).toMatchObject({ status: "completed", revision: 7, lease_owner: null });
+    expect(fixture.calls.startAttemptExpected).toEqual([3, 6]);
+    expect(fixture.calls.heartbeatExpected).toEqual([3, 6]);
+    expect(fixture.calls.finishAttemptExpected).toEqual([6, 7]);
+    expect(fixture.calls.finalizeExpected).toEqual([8]);
+    expect(fixture.currentJob()).toMatchObject({ status: "completed", revision: 9, lease_owner: null });
   });
 
   it("runtime-budget release uses the final heartbeat revision", async () => {

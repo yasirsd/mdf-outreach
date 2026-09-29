@@ -450,15 +450,19 @@ describe("BI4F 2B — routing regressions (FDA path preserved byte-identically)"
     expect(state.events.some((e) => e.event === "provider_attempt_started" && e.providerId === "fda-fsvp")).toBe(true);
   });
 
-  it("unrecognised provider_id → finalize as unsupported_coverage (safe default)", async () => {
+  it("unrecognised provider_id → durable failed_terminal UNKNOWN_PROVIDER outcome", async () => {
     const { state, writer } = writerFor({
       fresh: cidSnapshot(),
       plan: { id: "plan-x", provider_id: "unknown-provider", cost_class: "free", automatic_spend_rupees: 0 },
     });
     const outcome = await processTradeResearchJob(writer, job(), "worker-a", () => NOW);
-    expect(outcome).toBe("completed");
-    expect(state.finalized[0]).toMatchObject({ status: "completed", outcome: "unsupported_coverage" });
-    // Never fires a CID or FDA provider_attempt_started event.
-    expect(state.events.filter((e) => e.event === "provider_attempt_started")).toHaveLength(0);
+    expect(outcome).toBe("failed");
+    expect(state.attempts[0]).toMatchObject({ state: "failed_terminal", safe_error_code: "UNKNOWN_PROVIDER" });
+    expect(state.finalized[0]).toMatchObject({ status: "failed", outcome: "failed" });
+    const result = state.finalized[0]!.result as { providerResults: Array<Record<string, unknown>> };
+    expect(result.providerResults[0]).toMatchObject({
+      providerId: "unknown-provider",
+      execution: { status: "failed_terminal", safeErrorCode: "UNKNOWN_PROVIDER" },
+    });
   });
 });
