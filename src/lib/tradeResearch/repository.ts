@@ -510,6 +510,114 @@ export class TradeResearchWriter {
     const { data, error } = await this.client.rpc("release_buyer_trade_research_job", { p_job_id: job.id, p_worker: worker, p_revision: job.revision, p_next_attempt_at: nextAttemptAt });
     return authoritativeJobMutation(data, error);
   }
+  /**
+   * T12 reconciliation reader — surfaces terminal research jobs that
+   * have NO row in `buyer_trade_research_certifications`, so
+   * `reconcilePendingResearchCertifications` can heal transient
+   * certification-write losses.
+   *
+   * Delegates to the `select_terminal_research_jobs_missing_certification`
+   * RPC (migration 0032). The RPC performs a Postgres NOT EXISTS
+   * anti-join on `(job_id, workspace_id)`, so:
+   *
+   *   * LIMIT applies to MISSING rows, not to arbitrary terminal
+   *     rows. There is no application-side "scan cap" to starve
+   *     older uncertified jobs behind a large pool of newer
+   *     certified ones — every missing row is discoverable in one
+   *     bounded invocation.
+   *
+   *   * Ordering is `completed_at DESC, id DESC`, a total
+   *     deterministic key that never skips rows across page
+   *     boundaries even when timestamps repeat.
+   *
+   *   * Workspace safety uses the `(job_id, workspace_id)` pair.
+   *     Reconciliation is intentionally a service-role, cross-
+   *     workspace internal worker. Row ownership is preserved: the
+   *     RPC returns each job's own workspace_id, and the certify
+   *     write downstream inserts that same value verbatim (never a
+   *     substituted one). Authenticated-user RLS on the
+   *     certifications table is unchanged.
+   *
+   * Never reopens or mutates the terminal job.
+   */
+  async listTerminalJobsMissingCertification(limit: number): Promise<Array<{
+    job: InternalJobRow;
+    resultSummary: TradeResearchResultSummary;
+  }>> {
+    requireNonNegativeInteger(limit, "limit", "integer");
+    if (limit === 0) return [];
+    const clamped = Math.max(1, Math.min(50, limit));
+    const { data, error } = await this.client.rpc(
+      "select_terminal_research_jobs_missing_certification",
+      { p_limit: clamped },
+    );
+    if (error) throw error;
+    const rows = Array.isArray(data) ? data : [];
+    return rows.map((row) => {
+      const job = row as unknown as InternalJobRow;
+      const resultSummary = ((row as Row).result_summary ?? {}) as TradeResearchResultSummary;
+      return { job, resultSummary };
+    });
+  }
+
+  /**
+   * T12 — certify a finalized research job. Idempotent: repeated calls
+   * for the same material state collapse to a single row via the
+   * (job_id, snapshot_fingerprint) unique constraint. Never mutates
+   * the finalized job itself.
+   */
+  async certifyResearchJob(job: InternalJobRow, result: TradeResearchResultSummary): Promise<{
+    outcome: "inserted" | "already_certified";
+    status: "certified" | "legacy_unverified" | "quarantined";
+    snapshotFingerprint: string;
+  }> {
+    requireInternalJobRow(job);
+    // Local imports to avoid a repository→certification cycle at load
+    // time; the certification module has no runtime dependencies here.
+    const { classifyResearchJobForCertification } = await import("./certification");
+    const jobLike = {
+      status: job.status as string,
+      outcome: (job.outcome ?? null) as string | null,
+      workspaceId: job.workspace_id,
+      candidateId: job.candidate_id,
+      productId: (job.product_id ?? null) as string | null,
+      marketCountryCode: job.country_code,
+      researchGoal: (job.requested_goal ?? "screen_trade_activity") as "screen_trade_activity" | "find_target_product" | "check_india_origin",
+      research_context: job.research_context ?? null,
+      result_summary: result,
+    };
+    const decision = classifyResearchJobForCertification(jobLike);
+    const nowIso = new Date().toISOString();
+    const row = {
+      workspace_id: job.workspace_id,
+      job_id: job.id,
+      candidate_id: job.candidate_id,
+      product_id: decision.identity.productId,
+      market_country_code: decision.identity.marketCountryCode,
+      research_goal: decision.identity.researchGoal,
+      provider_plan_version: decision.identity.providerPlanVersion,
+      interpretation_version: decision.identity.interpretationVersion,
+      context_fingerprint: decision.identity.contextFingerprint,
+      provider_results_digest: decision.identity.providerResultsDigest,
+      result_summary_digest: decision.identity.resultSummaryDigest,
+      snapshot_fingerprint: decision.identity.snapshotFingerprint,
+      status: decision.status,
+      status_reason: decision.reason,
+      certified_at: decision.status === "certified" ? nowIso : null,
+      automatic_spend_rupees: 0,
+    };
+    const { data, error } = await this.client
+      .from("buyer_trade_research_certifications")
+      .upsert(row, { onConflict: "job_id,snapshot_fingerprint", ignoreDuplicates: true })
+      .select("id")
+      .maybeSingle();
+    if (error) throw error;
+    return {
+      outcome: data ? "inserted" : "already_certified",
+      status: decision.status,
+      snapshotFingerprint: decision.identity.snapshotFingerprint,
+    };
+  }
   async finalize(job: InternalJobRow, worker: string, status: TradeResearchStatus, outcome: TradeResearchOutcome, result: TradeResearchResultSummary): Promise<InternalJobRow> {
     requireInternalJobRow(job);
     requireConstrainedText(status, "p_status", TERMINAL_TRADE_RESEARCH_STATUSES);

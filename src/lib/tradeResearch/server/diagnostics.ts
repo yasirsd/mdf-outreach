@@ -6,7 +6,8 @@ export type TradeResearchDiagnostic = {
   event: "drain_started" | "drain_finished" | "route_failed" | "jobs_requested" | "jobs_claimed" | "claim_no_work" | "claim_rejected" |
     "job_claimed" | "stage_started" | "stage_completed" | "job_requeued" | "job_failed" |
     "inline_kick_started" | "inline_kick_finished" | "inline_kick_budget_exhausted" | "inline_kick_failed" |
-    "job_checkpointed_runtime_budget";
+    "job_checkpointed_runtime_budget" |
+    "research_snapshot_certified" | "research_snapshot_certification_failed";
   elapsedMs?: number;
   remainingBudgetMs?: number;
   remainingMs?: number;

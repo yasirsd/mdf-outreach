@@ -192,13 +192,29 @@ describe("bounded trade research worker", () => {
       id: null, batch_id: null, workspace_id: null, candidate_id: null, product_id: null,
       country_code: null, status: null, stage: null, revision: null, lease_owner: null,
     };
-    const rpc = vi.fn(async () => ({ data: nullClaim, error: null }));
+    // The drain performs a bounded RPC read of terminal jobs missing
+    // certification at the end of every pass (T12 reconciliation).
+    // Route the claim RPC to the null-composite and the reconciliation
+    // RPC to an empty result so neither triggers job processing.
+    const claimNames = new Set(["claim_buyer_trade_research_job"]);
+    const reconcileNames = new Set(["select_terminal_research_jobs_missing_certification"]);
+    const rpc = vi.fn(async (name: string) => {
+      if (claimNames.has(name)) return { data: nullClaim, error: null };
+      if (reconcileNames.has(name)) return { data: [], error: null };
+      return { data: null, error: null };
+    });
     const from = vi.fn();
     const writer = new TradeResearchWriter({ rpc, from } as unknown as SupabaseClient);
     const result = await drainTradeResearch({ writer, workerId: "worker-a", maxJobs: 2 });
     expect(result).toMatchObject({ claimed: 0, processed: 0, failed: 0, noWork: true });
-    expect(rpc).toHaveBeenCalledOnce();
+    // The null claim must NOT trigger job-processing DB calls. `from`
+    // is used only for job/attempt/plan reads during processing, which
+    // never happens here.
     expect(from).not.toHaveBeenCalled();
+    // The only RPCs invoked are the claim (once) plus the bounded
+    // reconciliation read (once).
+    const rpcNames = rpc.mock.calls.map((call) => (call as unknown[])[0]);
+    expect(rpcNames.every((n) => claimNames.has(n as string) || reconcileNames.has(n as string))).toBe(true);
   });
 
   it("normalizes a claim RPC rejection into a safe database error", async () => {

@@ -3,6 +3,7 @@ import "server-only";
 import { isRetryableProviderFailure, retryDelayMs } from "../stateMachine";
 import { aggregateTradeResearchEvidence } from "../aggregation";
 import { readProviderResultCheckpoint } from "../checkpoints";
+import { reconcilePendingResearchCertifications } from "../certification";
 import {
   providerExecutionStatusForPlan,
   unevaluatedProviderOutcome,
@@ -350,6 +351,40 @@ function resultFromProviderResults(
   };
 }
 
+/**
+ * T12 — best-effort certification hook after `writer.finalize`. Never
+ * regresses finalize success on certification failure (repository
+ * errors are logged and swallowed so a downstream drain doesn't
+ * appear to have failed). Idempotent by DB unique constraint.
+ */
+async function certifyFinalizedJob(
+  writer: TradeResearchWriter,
+  job: InternalJobRow,
+  result: TradeResearchResultSummary,
+  log?: TradeResearchLogger,
+): Promise<void> {
+  if (typeof writer.certifyResearchJob !== "function") return;
+  try {
+    const decision = await writer.certifyResearchJob(job, result);
+    log?.({
+      event: "research_snapshot_certified",
+      jobId: job.id, batchId: job.batch_id, candidateId: job.candidate_id,
+      status: job.status,
+      // Repurposing `safeErrorCode` on the diagnostic for the
+      // certification classification is intentional: it keeps the
+      // event shape stable and downstream log filters keep working.
+      safeErrorCode: `${decision.status}:${decision.outcome}`,
+    });
+  } catch (error) {
+    log?.({
+      event: "research_snapshot_certification_failed",
+      jobId: job.id, batchId: job.batch_id, candidateId: job.candidate_id,
+      status: job.status,
+      safeErrorCode: safeTradeResearchErrorCode(error),
+    });
+  }
+}
+
 async function finalizeResolvedProviderResults(
   writer: TradeResearchWriter,
   initialJob: InternalJobRow,
@@ -382,6 +417,7 @@ async function finalizeResolvedProviderResults(
   } else {
     job = await writer.finalize(job, workerId, "completed", "no_verified_evidence", result);
   }
+  await certifyFinalizedJob(writer, job, result, log);
   log?.(jobDiagnostic("stage_completed", job));
   return processingOutcome;
 }
@@ -485,7 +521,9 @@ export async function processTradeResearchJob(
   }
   if (!allPlans.length) {
     job = await advanceStage(writer, job, workerId, "finalizing", log);
-    job = await writer.finalize(job, workerId, "completed", "unsupported_coverage", blankResult());
+    const result = blankResult();
+    job = await writer.finalize(job, workerId, "completed", "unsupported_coverage", result);
+    await certifyFinalizedJob(writer, job, result, log);
     log?.(jobDiagnostic("stage_completed", job));
     return "completed";
   }
@@ -503,7 +541,9 @@ export async function processTradeResearchJob(
       .map((result) => result.execution.status === "not_started"
         ? { ...result, execution: { status: "cancelled" as const, safeErrorCode: null } }
         : result);
-    job = await writer.finalize(job, workerId, "cancelled", "cancelled", resultFromProviderResults(providerResults));
+    const result = resultFromProviderResults(providerResults);
+    job = await writer.finalize(job, workerId, "cancelled", "cancelled", result);
+    await certifyFinalizedJob(writer, job, result, log);
     return "completed";
   }
   const progress = await loadDurableProviderProgress(writer, allPlans, false);
@@ -607,6 +647,7 @@ async function finalizeGenericResults(
   } else {
     job = await writer.finalize(job, workerId, "completed", "no_verified_evidence", result);
   }
+  await certifyFinalizedJob(writer, job, result, log);
   log?.(jobDiagnostic("stage_completed", job));
   return processingOutcome;
 }
@@ -656,7 +697,9 @@ async function processProviderPlans(
         .map((result) => result.execution.status === "not_started"
           ? { ...result, execution: { status: "cancelled" as const, safeErrorCode: null } }
           : result);
-      await writer.finalize(job, workerId, "cancelled", "cancelled", resultFromProviderResults(cancelled, sources, eligiblePlans.length > 1));
+      const cancelledResult = resultFromProviderResults(cancelled, sources, eligiblePlans.length > 1);
+      const finalizedCancelled = await writer.finalize(job, workerId, "cancelled", "cancelled", cancelledResult);
+      await certifyFinalizedJob(writer, finalizedCancelled, cancelledResult, log);
       return "completed";
     }
 
@@ -800,7 +843,9 @@ async function processProviderPlans(
       && providerResults[0]?.execution.status === "failed_terminal"
       && providerResults[0].execution.safeErrorCode === "UNSUPPORTED_PRODUCT_MAPPING") {
     job = await advanceStage(writer, job, workerId, "finalizing", log);
-    await writer.finalize(job, workerId, "completed", "unsupported_coverage", resultFromProviderResults(providerResults));
+    const unsupportedResult = resultFromProviderResults(providerResults);
+    const finalizedUnsupported = await writer.finalize(job, workerId, "completed", "unsupported_coverage", unsupportedResult);
+    await certifyFinalizedJob(writer, finalizedUnsupported, unsupportedResult, log);
     return "completed";
   }
   return finalizeGenericResults(writer, job, workerId, providerResults, sources, eligiblePlans.length, log);
@@ -954,6 +999,39 @@ export async function drainTradeResearch(deps: WorkerDependencies): Promise<Trad
       result.durationMs = Date.now() - started;
       deps.log?.({ event: "drain_finished", jobsRequested: maxJobs, jobsClaimed: result.claimed, processed: result.processed, completed: result.completed, requeued: result.requeued, failed: result.failed, noWork: false, durationMs: result.durationMs, safeErrorCode, ...safeMetadata });
       throw new TradeResearchDrainExecutionError(safeErrorCode, result);
+    }
+  }
+  // T12 — bounded reconciliation of any terminal jobs whose
+  // post-finalize certification insert lost to a transient DB
+  // failure. Runs INSIDE the drain because that path already has a
+  // service-role writer and a deadline budget; it never opens a
+  // provider connection or mutates a terminal job. Failures are
+  // captured in the report and logged without throwing.
+  if (typeof deps.writer.listTerminalJobsMissingCertification === "function") {
+    try {
+      const reconcileReport = await reconcilePendingResearchCertifications(deps.writer as unknown as Parameters<typeof reconcilePendingResearchCertifications>[0], {
+        limit: 5,
+        onEvent: (event) => {
+          if (event.kind === "error") {
+            deps.log?.({
+              event: "research_snapshot_certification_failed",
+              jobId: event.jobId,
+              safeErrorCode: event.safeErrorCode,
+            });
+          } else if (event.kind === "inserted" && event.status) {
+            deps.log?.({
+              event: "research_snapshot_certified",
+              jobId: event.jobId,
+              safeErrorCode: `${event.status}:reconciled`,
+            });
+          }
+        },
+      });
+      // Silent on already_certified rows — expected steady state.
+      void reconcileReport;
+    } catch {
+      // Reconciliation is best-effort — a hard read failure must not
+      // regress a successful drain outcome.
     }
   }
   result.durationMs = Date.now() - started;
