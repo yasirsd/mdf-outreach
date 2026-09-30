@@ -30,7 +30,31 @@ import type {
  * repeated certification attempts to a single row.
  */
 
-export const CERTIFICATION_SCHEMA_VERSION = "trcert-v1" as const;
+/**
+ * Certification classifier version. Bumped from `trcert-v1` to
+ * `trcert-v2` as part of the production remediation for two bugs in
+ * the v1 classifier:
+ *
+ *   1. v1 read persisted research_context only from the
+ *      `result_summary` JSON blob and ignored the authoritative
+ *      row-level `research_context` column, producing spurious
+ *      `legacy_unverified` rows.
+ *   2. v1 cross-compared `research_context.interpretationVersion` (a
+ *      research-level version namespace) with per-provider
+ *      `evidence.interpretationVersion` (a parser-anchored version
+ *      namespace), producing spurious `quarantined` rows for valid
+ *      FSVP / VQIP / Canada CID provider results.
+ *
+ * Bumping this constant makes the `snapshot_fingerprint` different
+ * from any v1 row's fingerprint, so a corrected re-classification
+ * writes a NEW authoritative row alongside the historical v1 row
+ * without violating `unique (job_id, snapshot_fingerprint)` or the
+ * append-only identity-immutability guard (migration 0031). The
+ * `classifier_version` column added in migration 0033 makes the
+ * remediation auditable and allows readers to select current-version
+ * rows.
+ */
+export const CERTIFICATION_SCHEMA_VERSION = "trcert-v2" as const;
 
 export type CertificationStatus = "certified" | "legacy_unverified" | "quarantined";
 
@@ -47,6 +71,7 @@ export type QuarantineReason =
   | "provider_result_missing_parser_version"
   | "provider_result_missing_interpretation_version"
   | "provider_result_interpretation_version_conflict"
+  | "provider_result_interpretation_version_not_parser_anchored"
   | "provider_plan_version_conflict"
   | "unsupported_snapshot_schema_version"
   | "malformed_provider_results";
@@ -90,7 +115,14 @@ interface FinalizedJobLike {
   productId: string | null;
   marketCountryCode: string;
   researchGoal: TradeResearchGoal;
+  /**
+   * Authoritative row-level context column. When present, this is the
+   * source of truth — v2 classifier reads from here first and only
+   * falls back to `result_summary.context` for legacy pre-T07 rows.
+   */
   research_context: ResearchContext | null;
+  /** Authoritative row-level fingerprint. */
+  context_fingerprint?: string | null;
   result_summary: TradeResearchResultSummary;
 }
 
@@ -170,7 +202,7 @@ export function computeSnapshotFingerprint(input: {
     providerResults: input.providerResultsDigest,
     resultSummary: input.resultSummaryDigest,
   });
-  return `trcert-v1:${createHash("sha256").update(canonical, "utf8").digest("hex")}`;
+  return `${CERTIFICATION_SCHEMA_VERSION}:${createHash("sha256").update(canonical, "utf8").digest("hex")}`;
 }
 
 function evaluatedProviderResults(
@@ -195,8 +227,24 @@ export function classifyResearchJobForCertification(job: FinalizedJobLike): Cert
   const providerResultsDigest = digestProviderResults(providerResults ?? []);
   const resultSummaryDigest = digestResultSummary(job.result_summary);
 
-  // Context read + fingerprint (typed / legacy_unknown / invalid_context).
-  const stored = readStoredResearchContext(job.result_summary);
+  // Authoritative context — v2 fix for the missing-context bug:
+  // read the row-level `research_context` column first (persisted at
+  // finalize time, verified by `mapInternalJobRow`), and only fall
+  // back to the `result_summary` JSON blob for legacy rows whose
+  // row-level column is empty. `readStoredResearchContext` handles
+  // canonicalization, fingerprint verification, and typed/legacy/
+  // invalid classification.
+  const authoritativeContext: Pick<TradeResearchResultSummary, "context" | "contextFingerprint"> =
+    job.research_context !== null && job.research_context !== undefined
+      ? {
+          context: job.research_context,
+          contextFingerprint: job.context_fingerprint ?? undefined,
+        }
+      : {
+          context: job.result_summary.context,
+          contextFingerprint: job.result_summary.contextFingerprint,
+        };
+  const stored = readStoredResearchContext(authoritativeContext);
   const contextFingerprint = stored.status === "typed" ? stored.fingerprint : null;
 
   const identity: CertificationIdentity = {
@@ -303,23 +351,37 @@ export function classifyResearchJobForCertification(job: FinalizedJobLike): Cert
     }
   }
 
-  // Every provider must interpret against the same interpretationVersion as
-  // the persisted context — mismatch means the aggregate crossed a version.
-  const contextInterpretation = stored.context.interpretationVersion;
+  // Provider-interpretation version contract (v2 fix for the version-
+  // domain bug). Two orthogonal version namespaces coexist:
+  //
+  //   * research context.interpretationVersion — a research-level
+  //     contract identifier such as `trade-interpretation-v1`. It
+  //     participates in the ResearchContext fingerprint and is
+  //     validated at that level.
+  //
+  //   * provider evidence.interpretationVersion — a per-provider
+  //     interpretation contract anchored to the provider's
+  //     `parserVersion`. Production executors emit it as
+  //     `${parserVersion}:<t08-contract-version>` (e.g.
+  //     `fsvp-xlsx-v1:t08-v1`, `fda-vqip-html-v1:t08-v1`,
+  //     `canada-cid-csv-v2:t08-v1`).
+  //
+  // These namespaces are NOT comparable to each other. v1 quarantined
+  // valid provider results because it compared them directly. v2
+  // validates each in its own domain: provider interpretation must be
+  // anchored to its parserVersion, and context interpretation is
+  // already fingerprinted at the research-context layer.
   for (const r of evaluated) {
-    const versionPrefix = r.evidence.interpretationVersion.split(":")[0];
-    // Provider interpretations may be scoped under the context's
-    // interpretation version (e.g. `${parseVersion}:t08-v1`). We require
-    // that the context interpretation appears as a substring OR the
-    // provider version equals the context version.
-    if (r.evidence.interpretationVersion !== contextInterpretation
-        && !r.evidence.interpretationVersion.startsWith(contextInterpretation)
-        && !contextInterpretation.startsWith(versionPrefix)) {
+    const parser = r.parserVersion;
+    // `missing_parser_version` above already catches null parsers.
+    if (parser === null) continue;
+    const iv = r.evidence.interpretationVersion;
+    if (iv !== parser && !iv.startsWith(`${parser}:`)) {
       return {
         status: "quarantined",
         reason: reasonText(
-          "provider_result_interpretation_version_conflict",
-          `Provider ${r.providerId} interpretationVersion "${r.evidence.interpretationVersion}" is incompatible with context "${contextInterpretation}".`,
+          "provider_result_interpretation_version_not_parser_anchored",
+          `Provider ${r.providerId} evidence.interpretationVersion "${iv}" is not anchored to its parserVersion "${parser}"; provider interpretation contracts must be reported as "<parserVersion>" or "<parserVersion>:<contract-version>".`,
         ),
         identity,
       };
@@ -405,7 +467,7 @@ export interface CertificationReconciliationWriter {
   certifyResearchJob: (
     job: { id: string } & Record<string, unknown>,
     result: unknown,
-  ) => Promise<{ outcome: "inserted" | "already_certified"; status: CertificationStatus; snapshotFingerprint: string }>;
+  ) => Promise<{ outcome: "inserted" | "already_certified"; status: CertificationStatus; snapshotFingerprint: string; classifierVersion?: string }>;
 }
 
 export async function reconcilePendingResearchCertifications(

@@ -66,7 +66,11 @@ function evaluatedProviderResult(over: Partial<TradeResearchProviderResult> = {}
         shipmentGrain: "not_available",
         programGrain: "company_program",
       },
-      interpretationVersion: TRADE_RESEARCH_INTERPRETATION_VERSION,
+      // Per-provider interpretation is anchored to the parserVersion —
+      // it is a separate version namespace from
+      // `context.interpretationVersion`. Production executors emit it
+      // as `${parserVersion}:t08-v1`.
+      interpretationVersion: "fsvp-xlsx-v1:t08-v1",
       conflicts: [],
     },
     ...over,
@@ -92,9 +96,22 @@ function summary(over: Partial<TradeResearchResultSummary> = {}): TradeResearchR
 function job(over: {
   status?: string; outcome?: string | null;
   research_context?: ResearchContext | null;
+  context_fingerprint?: string | null;
   result_summary?: TradeResearchResultSummary;
 } = {}) {
   const outcome: string | null = "outcome" in over ? (over.outcome ?? null) : "official_importer_program_corroboration";
+  // Preserve explicit `null` for research_context / context_fingerprint
+  // — v2 classifier reads these row-level columns first, so tests
+  // exercising the legacy fallback path MUST be able to pass null here.
+  const research_context: ResearchContext | null = "research_context" in over
+    ? (over.research_context as ResearchContext | null)
+    : context();
+  const context_fingerprint: string | null = "context_fingerprint" in over
+    ? (over.context_fingerprint as string | null)
+    : (research_context ? (() => {
+        try { return fingerprintResearchContext(research_context); }
+        catch { return null; }
+      })() : null);
   return {
     status: over.status ?? "completed",
     outcome,
@@ -103,7 +120,8 @@ function job(over: {
     productId: "guntur-dry-red-chilli",
     marketCountryCode: "US",
     researchGoal: "screen_trade_activity" as const,
-    research_context: over.research_context ?? context(),
+    research_context,
+    context_fingerprint,
     result_summary: over.result_summary ?? summary(),
   };
 }
@@ -163,7 +181,7 @@ describe("T12 — classifyResearchJobForCertification", () => {
   it("finalized valid result with full provenance → certified", () => {
     const decision = classifyResearchJobForCertification(job());
     expect(decision.status).toBe("certified");
-    expect(decision.identity.snapshotFingerprint).toMatch(/^trcert-v1:[0-9a-f]{64}$/);
+    expect(decision.identity.snapshotFingerprint).toMatch(/^trcert-v2:[0-9a-f]{64}$/);
   });
 
   it("same finalized valid state → same fingerprint (idempotency)", () => {
@@ -193,6 +211,11 @@ describe("T12 — classifyResearchJobForCertification", () => {
   });
 
   it("interpretation-version change → different fingerprint", () => {
+    // Provider evidence.interpretationVersion is anchored to
+    // `parserVersion` (a separate version namespace); it does NOT
+    // need to track `context.interpretationVersion`. Changing only
+    // the research-level interpretation version still produces a
+    // different snapshot fingerprint via the context fingerprint.
     const a = classifyResearchJobForCertification(job());
     const ctxV2 = context({ interpretationVersion: "trade-interpretation-v2" });
     const b = classifyResearchJobForCertification(job({
@@ -200,10 +223,11 @@ describe("T12 — classifyResearchJobForCertification", () => {
       result_summary: summary({
         context: ctxV2,
         contextFingerprint: fingerprintResearchContext(ctxV2),
-        providerResults: [evaluatedProviderResult({ evidence: { ...evaluatedProviderResult().evidence!, interpretationVersion: "trade-interpretation-v2" } as never })],
       }),
     }));
     expect(a.identity.snapshotFingerprint).not.toBe(b.identity.snapshotFingerprint);
+    expect(a.status).toBe("certified");
+    expect(b.status).toBe("certified");
   });
 
   it("product change → different fingerprint", () => {
@@ -255,9 +279,11 @@ describe("T12 — classifyResearchJobForCertification", () => {
   });
 
   it("context fingerprint mismatch → quarantined (invalid_context)", () => {
-    const s = summary();
-    s.contextFingerprint = "trctx-v1:tampered_00000000000000000000000000000000000000000000000000000000";
-    const decision = classifyResearchJobForCertification(job({ result_summary: s }));
+    // v2 classifier reads the row-level fingerprint first — tamper
+    // that to exercise the mismatch path.
+    const decision = classifyResearchJobForCertification(job({
+      context_fingerprint: "trctx-v1:tampered_00000000000000000000000000000000000000000000000000000000",
+    }));
     expect(decision.status).toBe("quarantined");
     expect(decision.reason).toMatch(/invalid_context/);
   });
@@ -280,7 +306,11 @@ describe("T12 — classifyResearchJobForCertification", () => {
     expect(decision.reason).toMatch(/missing_parser_version/);
   });
 
-  it("provider interpretation version conflicts with context → quarantined", () => {
+  it("provider interpretation version NOT anchored to its parserVersion → quarantined", () => {
+    // Under the v2 contract, provider evidence.interpretationVersion
+    // must be scoped to its parserVersion (either equal to it or of
+    // the form `${parserVersion}:...`). `unrelated-v9` is neither and
+    // must quarantine.
     const conflicting = evaluatedProviderResult({
       evidence: {
         ...evaluatedProviderResult().evidence!,
@@ -291,7 +321,7 @@ describe("T12 — classifyResearchJobForCertification", () => {
       result_summary: summary({ providerResults: [conflicting] }),
     }));
     expect(decision.status).toBe("quarantined");
-    expect(decision.reason).toMatch(/interpretation_version_conflict/);
+    expect(decision.reason).toMatch(/interpretation_version_not_parser_anchored/);
   });
 
   it("non-terminal job → legacy_unverified (missing_finalized_outcome equivalent)", () => {
@@ -334,6 +364,206 @@ describe("T12 — helpers", () => {
   it("computeContextFingerprint returns null for missing context and a tagged hash otherwise", () => {
     expect(computeContextFingerprint(null)).toBeNull();
     expect(computeContextFingerprint(context())).toMatch(/^trctx-v1:[0-9a-f]{64}$/);
+  });
+});
+
+describe("T12 v2 — production regression: authoritative row-level context beats stale result_summary", () => {
+  it("REGRESSION: valid row-level research_context certifies even when result_summary.context is MISSING", () => {
+    // Reproduces the Iberia production job 5ce74565-...:
+    //   • buyer_trade_research_jobs.research_context is valid.
+    //   • buyer_trade_research_jobs.context_fingerprint matches.
+    //   • result_summary passed by the worker to certifyResearchJob
+    //     does NOT include context / contextFingerprint.
+    // v1 misread this as "legacy_unknown" and returned legacy_unverified.
+    // v2 reads the row-level column first — MUST NOT be legacy.
+    const ctx = context();
+    const decision = classifyResearchJobForCertification({
+      status: "completed",
+      outcome: "official_importer_program_corroboration",
+      workspaceId: WORKSPACE_ID,
+      candidateId: CANDIDATE_ID,
+      productId: "guntur-dry-red-chilli",
+      marketCountryCode: "US",
+      researchGoal: "screen_trade_activity",
+      research_context: ctx,
+      context_fingerprint: fingerprintResearchContext(ctx),
+      // Missing context / contextFingerprint in the summary — the
+      // exact production shape of the bug.
+      result_summary: {
+        officialProgramEvidence: "verified",
+        productEvidence: "not_available",
+        originEvidence: "not_available",
+        indiaOrigin: "not_verified",
+        shipmentEvidence: "not_verified",
+        sourcesChecked: 1,
+        automaticSpendRupees: 0,
+        providerResults: [evaluatedProviderResult()],
+      },
+    });
+    expect(decision.status).toBe("certified");
+    expect(decision.reason).not.toMatch(/missing_research_context/);
+  });
+
+  it("REGRESSION: row-level column takes precedence over a STALE result_summary.context", () => {
+    const rowCtx = context({ productId: "guntur-dry-red-chilli" });
+    const staleCtx = context({ productId: "banganapalli-mango" });
+    const decision = classifyResearchJobForCertification({
+      status: "completed",
+      outcome: "official_importer_program_corroboration",
+      workspaceId: WORKSPACE_ID,
+      candidateId: CANDIDATE_ID,
+      productId: "guntur-dry-red-chilli",
+      marketCountryCode: "US",
+      researchGoal: "screen_trade_activity",
+      research_context: rowCtx,
+      context_fingerprint: fingerprintResearchContext(rowCtx),
+      result_summary: {
+        ...summary({ context: staleCtx, contextFingerprint: fingerprintResearchContext(staleCtx) }),
+      },
+    });
+    // The authoritative fingerprint is the row-level one, not the stale summary.
+    expect(decision.identity.contextFingerprint).toBe(fingerprintResearchContext(rowCtx));
+  });
+
+  it("REGRESSION: neither row-level column NOR summary-embedded context present → legacy_unverified (genuine legacy)", () => {
+    const decision = classifyResearchJobForCertification({
+      status: "completed",
+      outcome: "official_importer_program_corroboration",
+      workspaceId: WORKSPACE_ID,
+      candidateId: CANDIDATE_ID,
+      productId: "guntur-dry-red-chilli",
+      marketCountryCode: "US",
+      researchGoal: "screen_trade_activity",
+      research_context: null,
+      context_fingerprint: null,
+      result_summary: {
+        officialProgramEvidence: "verified",
+        productEvidence: "not_available",
+        originEvidence: "not_available",
+        indiaOrigin: "not_verified",
+        shipmentEvidence: "not_verified",
+        sourcesChecked: 1,
+        automaticSpendRupees: 0,
+        providerResults: [evaluatedProviderResult()],
+        // context / contextFingerprint undefined
+      },
+    });
+    expect(decision.status).toBe("legacy_unverified");
+    expect(decision.reason).toMatch(/missing_research_context/);
+  });
+});
+
+describe("T12 v2 — production regression: provider evidence.interpretationVersion is parser-anchored, not context-scoped", () => {
+  it("FSVP provider result with `fsvp-xlsx-v1:t08-v1` + context `trade-interpretation-v1` → certified", () => {
+    const fsvp = evaluatedProviderResult({
+      providerId: "fda-fsvp",
+      datasetId: "fsvp-participant-list",
+      parserVersion: "fsvp-xlsx-v1",
+      evidence: {
+        ...evaluatedProviderResult().evidence!,
+        interpretationVersion: "fsvp-xlsx-v1:t08-v1",
+      } as never,
+    });
+    const decision = classifyResearchJobForCertification(job({
+      result_summary: summary({ providerResults: [fsvp] }),
+    }));
+    expect(decision.status).toBe("certified");
+  });
+
+  it("VQIP provider result with `fda-vqip-html-v1:t08-v1` + context `trade-interpretation-v1` → certified", () => {
+    const vqip = evaluatedProviderResult({
+      providerId: "fda-vqip",
+      datasetId: "fda-vqip-participant-list",
+      parserVersion: "fda-vqip-html-v1",
+      evidence: {
+        ...evaluatedProviderResult().evidence!,
+        interpretationVersion: "fda-vqip-html-v1:t08-v1",
+      } as never,
+    });
+    const decision = classifyResearchJobForCertification(job({
+      result_summary: summary({ providerResults: [vqip] }),
+    }));
+    expect(decision.status).toBe("certified");
+  });
+
+  it("Canada CID provider result with `canada-cid-csv-v2:t08-v1` + context `trade-interpretation-v1` → certified", () => {
+    const cid = evaluatedProviderResult({
+      providerId: "canada-cid",
+      datasetId: "cid-importers",
+      parserVersion: "canada-cid-csv-v2",
+      evidence: {
+        ...evaluatedProviderResult().evidence!,
+        interpretationVersion: "canada-cid-csv-v2:t08-v1",
+      } as never,
+    });
+    const decision = classifyResearchJobForCertification(job({
+      result_summary: summary({ providerResults: [cid] }),
+    }));
+    expect(decision.status).toBe("certified");
+  });
+
+  it("provider evidence.interpretationVersion equal to its parserVersion (no `:contract` suffix) → certified", () => {
+    const bare = evaluatedProviderResult({
+      parserVersion: "fsvp-xlsx-v1",
+      evidence: {
+        ...evaluatedProviderResult().evidence!,
+        interpretationVersion: "fsvp-xlsx-v1",
+      } as never,
+    });
+    const decision = classifyResearchJobForCertification(job({
+      result_summary: summary({ providerResults: [bare] }),
+    }));
+    expect(decision.status).toBe("certified");
+  });
+
+  it("malformed provider provenance (missing evidence.interpretationVersion) → quarantined", () => {
+    const bad = evaluatedProviderResult({
+      evidence: {
+        ...evaluatedProviderResult().evidence!,
+        interpretationVersion: "",
+      } as never,
+    });
+    const decision = classifyResearchJobForCertification(job({
+      result_summary: summary({ providerResults: [bad] }),
+    }));
+    expect(decision.status).toBe("quarantined");
+    expect(decision.reason).toMatch(/missing_interpretation_version/);
+  });
+
+  it("provider evidence.interpretationVersion NOT anchored to parserVersion → quarantined with the new reason", () => {
+    const bad = evaluatedProviderResult({
+      parserVersion: "fsvp-xlsx-v1",
+      evidence: {
+        ...evaluatedProviderResult().evidence!,
+        interpretationVersion: "fda-vqip-html-v1:t08-v1", // wrong parser
+      } as never,
+    });
+    const decision = classifyResearchJobForCertification(job({
+      result_summary: summary({ providerResults: [bad] }),
+    }));
+    expect(decision.status).toBe("quarantined");
+    expect(decision.reason).toMatch(/interpretation_version_not_parser_anchored/);
+  });
+
+  it("context.interpretationVersion is INDEPENDENT of provider evidence.interpretationVersion — they can differ freely", () => {
+    // context uses trade-interpretation-v1 (default). Provider uses
+    // its own parser-anchored contract. No cross-comparison; not a
+    // quarantine trigger.
+    const decision = classifyResearchJobForCertification(job());
+    expect(decision.status).toBe("certified");
+  });
+});
+
+describe("T12 v2 — remediation via classifier version bump produces distinct fingerprints", () => {
+  it("all new snapshot fingerprints carry the trcert-v2 prefix", () => {
+    const decision = classifyResearchJobForCertification(job());
+    expect(decision.identity.snapshotFingerprint.startsWith("trcert-v2:")).toBe(true);
+  });
+
+  it("re-classifying the same terminal job produces the SAME v2 fingerprint (idempotent)", () => {
+    const a = classifyResearchJobForCertification(job());
+    const b = classifyResearchJobForCertification(job());
+    expect(a.identity.snapshotFingerprint).toBe(b.identity.snapshotFingerprint);
   });
 });
 

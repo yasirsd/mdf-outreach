@@ -34,18 +34,31 @@ interface Cert extends Row {
   workspace_id: string;
 }
 
+interface CertV2 extends Cert {
+  classifier_version: string;
+}
+
 const TERMINAL_STATUSES = new Set(["completed", "partial", "needs_review", "failed", "cancelled"]);
 
-function buildClient(jobs: Job[], certs: Cert[]): { client: SupabaseClient; rpcCalls: number } {
+function buildClient(jobs: Job[], certs: Array<Cert | CertV2>): { client: SupabaseClient; rpcCalls: number } {
   const state = { rpcCalls: 0 };
-  const rpc = async (name: string, args: { p_limit?: number }) => {
-    if (name !== "select_terminal_research_jobs_missing_certification") {
+  const rpc = async (name: string, args: { p_limit?: number; p_classifier_version?: string }) => {
+    if (name !== "select_terminal_research_jobs_missing_current_certification") {
       throw new Error(`unexpected rpc ${name}`);
     }
     state.rpcCalls += 1;
     const rawLimit = args?.p_limit ?? 5;
     const limit = Math.max(1, Math.min(50, rawLimit));
-    const certifiedPairs = new Set(certs.map((c) => `${c.job_id}:${c.workspace_id}`));
+    const requiredVersion = args?.p_classifier_version ?? "trcert-v2";
+    // Pre-existing tests pass rows without classifier_version — they
+    // describe generic "certification exists" semantics against the
+    // current classifier. Treat those as the current version so those
+    // tests keep exercising the anti-join contract at v2. Rows that
+    // explicitly opt into `classifier_version: 'trcert-v1'` are
+    // historical rows and must NOT satisfy the current-version filter.
+    const certifiedPairs = new Set(certs
+      .filter((c) => (("classifier_version" in c ? c.classifier_version : requiredVersion)) === requiredVersion)
+      .map((c) => `${c.job_id}:${c.workspace_id}`));
     const eligible = jobs
       .filter((j) => TERMINAL_STATUSES.has(j.status))
       .filter((j) => j.completed_at !== null)
@@ -235,19 +248,25 @@ describe("T12 reliability — starvation-free reconciliation reader (RPC-backed)
     expect(missing.map((m) => m.job.id)).toEqual(["terminal-1"]);
   });
 
-  it("clamps limit to [1, 50] and forwards the clamped value to the RPC", async () => {
-    let received = -1;
+  it("clamps limit to [1, 50] and forwards the clamped value + current classifier_version to the RPC", async () => {
+    let receivedLimit = -1;
+    let receivedVersion = "";
+    let receivedName = "";
     const client = {
-      rpc: async (_name: string, args: { p_limit: number }) => {
-        received = args.p_limit;
+      rpc: async (name: string, args: { p_limit: number; p_classifier_version: string }) => {
+        receivedName = name;
+        receivedLimit = args.p_limit;
+        receivedVersion = args.p_classifier_version;
         return { data: [], error: null };
       },
     } as unknown as SupabaseClient;
     const writer = new TradeResearchWriter(client);
     await writer.listTerminalJobsMissingCertification(3);
-    expect(received).toBe(3);
+    expect(receivedName).toBe("select_terminal_research_jobs_missing_current_certification");
+    expect(receivedLimit).toBe(3);
+    expect(receivedVersion).toBe("trcert-v2");
     await writer.listTerminalJobsMissingCertification(500);
-    expect(received).toBe(50);
+    expect(receivedLimit).toBe(50);
   });
 
   it("propagates the RPC error verbatim (drain reconciliation reports it as transient)", async () => {
@@ -256,5 +275,91 @@ describe("T12 reliability — starvation-free reconciliation reader (RPC-backed)
     } as unknown as SupabaseClient;
     const writer = new TradeResearchWriter(client);
     await expect(writer.listTerminalJobsMissingCertification(5)).rejects.toMatchObject({ code: "PGRST_TRANSIENT" });
+  });
+
+  it("REMEDIATION: a job with ONLY a v1 (historical) cert row is SURFACED for re-classification under v2", async () => {
+    const j = job("iberia-legacy", "2026-09-29T05:00:00Z", "wsA");
+    const jobs: Job[] = [j];
+    // Only v1 row exists — no v2 row yet. Reader must return this job.
+    const certs: Array<Cert | CertV2> = [
+      { job_id: "iberia-legacy", workspace_id: "wsA", classifier_version: "trcert-v1" } as CertV2,
+    ];
+    const { client } = buildClient(jobs, certs);
+    const writer = new TradeResearchWriter(client);
+    const missing = await writer.listTerminalJobsMissingCertification(5);
+    expect(missing.map((m) => m.job.id)).toEqual(["iberia-legacy"]);
+  });
+
+  it("REMEDIATION: once a v2 cert row is written, the job is no longer surfaced on subsequent passes", async () => {
+    const j = job("iberia-legacy", "2026-09-29T05:00:00Z", "wsA");
+    const jobs: Job[] = [j];
+    const certs: Array<Cert | CertV2> = [
+      { job_id: "iberia-legacy", workspace_id: "wsA", classifier_version: "trcert-v1" } as CertV2,
+      { job_id: "iberia-legacy", workspace_id: "wsA", classifier_version: "trcert-v2" } as CertV2,
+    ];
+    const { client } = buildClient(jobs, certs);
+    const writer = new TradeResearchWriter(client);
+    const missing = await writer.listTerminalJobsMissingCertification(5);
+    expect(missing).toEqual([]);
+  });
+
+  it("REMEDIATION: historical v1 rows remain inspectable — reader does NOT delete or mutate them", async () => {
+    const j = job("j", "2026-09-29T05:00:00Z", "wsA");
+    const original: Array<Cert | CertV2> = [
+      { job_id: "j", workspace_id: "wsA", classifier_version: "trcert-v1" } as CertV2,
+    ];
+    const certsSnapshot = JSON.stringify(original);
+    const { client } = buildClient([j], original);
+    const writer = new TradeResearchWriter(client);
+    await writer.listTerminalJobsMissingCertification(5);
+    // Reader only SELECTs — the certs array is untouched.
+    expect(JSON.stringify(original)).toBe(certsSnapshot);
+  });
+});
+
+describe("T12 remediation — trusted / current certification selection", () => {
+  it("getCurrentCertificationForJob returns the v2 (highest classifier_version) row when both v1 and v2 exist", async () => {
+    const rows = [
+      { id: "row-v1", job_id: "j", workspace_id: "wsA", classifier_version: "trcert-v1", status: "legacy_unverified", created_at: "2026-09-28T00:00:00Z" },
+      { id: "row-v2", job_id: "j", workspace_id: "wsA", classifier_version: "trcert-v2", status: "certified", created_at: "2026-09-29T00:00:00Z" },
+    ];
+    let orderedBy: string[] = [];
+    const query: Record<string, unknown> = {};
+    query.select = function () { return query; };
+    query.eq = function () { return query; };
+    query.order = function (col: string) { orderedBy.push(col); return query; };
+    query.limit = function () { return query; };
+    query.maybeSingle = async () => {
+      // Simulate DB honouring `order classifier_version DESC`.
+      const sorted = [...rows].sort((a, b) => b.classifier_version.localeCompare(a.classifier_version));
+      return { data: sorted[0], error: null };
+    };
+    const client = { from: () => query } as unknown as SupabaseClient;
+    const writer = new TradeResearchWriter(client);
+    const current = await writer.getCurrentCertificationForJob(
+      "11111111-1111-4111-8111-111111111111",
+      "22222222-2222-4222-8222-222222222222",
+    );
+    expect(current).toMatchObject({ id: "row-v2", classifier_version: "trcert-v2", status: "certified" });
+    expect(orderedBy).toContain("classifier_version");
+  });
+
+  it("falls back to the v1 row when no v2 row exists yet", async () => {
+    const query: Record<string, unknown> = {};
+    query.select = function () { return query; };
+    query.eq = function () { return query; };
+    query.order = function () { return query; };
+    query.limit = function () { return query; };
+    query.maybeSingle = async () => ({
+      data: { id: "row-v1", job_id: "j", workspace_id: "wsA", classifier_version: "trcert-v1", status: "legacy_unverified" },
+      error: null,
+    });
+    const client = { from: () => query } as unknown as SupabaseClient;
+    const writer = new TradeResearchWriter(client);
+    const current = await writer.getCurrentCertificationForJob(
+      "11111111-1111-4111-8111-111111111111",
+      "22222222-2222-4222-8222-222222222222",
+    );
+    expect(current).toMatchObject({ classifier_version: "trcert-v1" });
   });
 });

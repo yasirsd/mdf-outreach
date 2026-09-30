@@ -197,7 +197,10 @@ describe("bounded trade research worker", () => {
     // Route the claim RPC to the null-composite and the reconciliation
     // RPC to an empty result so neither triggers job processing.
     const claimNames = new Set(["claim_buyer_trade_research_job"]);
-    const reconcileNames = new Set(["select_terminal_research_jobs_missing_certification"]);
+    const reconcileNames = new Set([
+      "select_terminal_research_jobs_missing_certification",
+      "select_terminal_research_jobs_missing_current_certification",
+    ]);
     const rpc = vi.fn(async (name: string) => {
       if (claimNames.has(name)) return { data: nullClaim, error: null };
       if (reconcileNames.has(name)) return { data: [], error: null };

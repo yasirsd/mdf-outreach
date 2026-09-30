@@ -512,13 +512,16 @@ export class TradeResearchWriter {
   }
   /**
    * T12 reconciliation reader — surfaces terminal research jobs that
-   * have NO row in `buyer_trade_research_certifications`, so
+   * have NO row in `buyer_trade_research_certifications` for the
+   * CURRENT classifier version, so
    * `reconcilePendingResearchCertifications` can heal transient
-   * certification-write losses.
+   * certification-write losses AND allow the v2 remediation to
+   * re-classify jobs that only have historical v1 rows.
    *
-   * Delegates to the `select_terminal_research_jobs_missing_certification`
-   * RPC (migration 0032). The RPC performs a Postgres NOT EXISTS
-   * anti-join on `(job_id, workspace_id)`, so:
+   * Delegates to the
+   * `select_terminal_research_jobs_missing_current_certification`
+   * RPC (migration 0033), which performs a Postgres NOT EXISTS
+   * anti-join on `(job_id, workspace_id, classifier_version)`:
    *
    *   * LIMIT applies to MISSING rows, not to arbitrary terminal
    *     rows. There is no application-side "scan cap" to starve
@@ -547,9 +550,10 @@ export class TradeResearchWriter {
     requireNonNegativeInteger(limit, "limit", "integer");
     if (limit === 0) return [];
     const clamped = Math.max(1, Math.min(50, limit));
+    const { CERTIFICATION_SCHEMA_VERSION } = await import("./certification");
     const { data, error } = await this.client.rpc(
-      "select_terminal_research_jobs_missing_certification",
-      { p_limit: clamped },
+      "select_terminal_research_jobs_missing_current_certification",
+      { p_limit: clamped, p_classifier_version: CERTIFICATION_SCHEMA_VERSION },
     );
     if (error) throw error;
     const rows = Array.isArray(data) ? data : [];
@@ -565,16 +569,25 @@ export class TradeResearchWriter {
    * for the same material state collapse to a single row via the
    * (job_id, snapshot_fingerprint) unique constraint. Never mutates
    * the finalized job itself.
+   *
+   * Authoritative context: the classifier consumes the row-level
+   * `research_context` and `context_fingerprint` columns directly
+   * (fix for the v1 missing-context bug where the classifier read
+   * only the `result_summary` JSON blob). Every persisted row emits
+   * the CURRENT `classifier_version` (migration 0033) so v2 rows
+   * co-exist with historical v1 rows without violating the
+   * append-only identity guard.
    */
   async certifyResearchJob(job: InternalJobRow, result: TradeResearchResultSummary): Promise<{
     outcome: "inserted" | "already_certified";
     status: "certified" | "legacy_unverified" | "quarantined";
     snapshotFingerprint: string;
+    classifierVersion: string;
   }> {
     requireInternalJobRow(job);
     // Local imports to avoid a repository→certification cycle at load
     // time; the certification module has no runtime dependencies here.
-    const { classifyResearchJobForCertification } = await import("./certification");
+    const { classifyResearchJobForCertification, CERTIFICATION_SCHEMA_VERSION } = await import("./certification");
     const jobLike = {
       status: job.status as string,
       outcome: (job.outcome ?? null) as string | null,
@@ -583,7 +596,10 @@ export class TradeResearchWriter {
       productId: (job.product_id ?? null) as string | null,
       marketCountryCode: job.country_code,
       researchGoal: (job.requested_goal ?? "screen_trade_activity") as "screen_trade_activity" | "find_target_product" | "check_india_origin",
-      research_context: job.research_context ?? null,
+      // Row-level authoritative context columns (fix for BUG 1). The
+      // classifier prefers these over the result_summary JSON blob.
+      research_context: (job.research_context ?? null) as ResearchContext | null,
+      context_fingerprint: (job.context_fingerprint ?? null) as string | null,
       result_summary: result,
     };
     const decision = classifyResearchJobForCertification(jobLike);
@@ -604,6 +620,7 @@ export class TradeResearchWriter {
       status: decision.status,
       status_reason: decision.reason,
       certified_at: decision.status === "certified" ? nowIso : null,
+      classifier_version: CERTIFICATION_SCHEMA_VERSION,
       automatic_spend_rupees: 0,
     };
     const { data, error } = await this.client
@@ -616,7 +633,32 @@ export class TradeResearchWriter {
       outcome: data ? "inserted" : "already_certified",
       status: decision.status,
       snapshotFingerprint: decision.identity.snapshotFingerprint,
+      classifierVersion: CERTIFICATION_SCHEMA_VERSION,
     };
+  }
+
+  /**
+   * T12 remediation — read the "current" (highest classifier version)
+   * certification row for a given job in a workspace. When a v2 row
+   * exists it is preferred; otherwise the historical v1 row is
+   * returned. Consumers picking a trusted certification for read use
+   * this method so a known-bad v1 row does not shadow the corrected
+   * v2 row.
+   */
+  async getCurrentCertificationForJob(jobId: string, workspaceId: string): Promise<Row | undefined> {
+    requireUuid(jobId, "buyer_trade_research_certifications.job_id");
+    requireUuid(workspaceId, "buyer_trade_research_certifications.workspace_id");
+    const { data, error } = await this.client
+      .from("buyer_trade_research_certifications")
+      .select("*")
+      .eq("job_id", jobId)
+      .eq("workspace_id", workspaceId)
+      .order("classifier_version", { ascending: false })
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (error) throw error;
+    return (data ?? undefined) as Row | undefined;
   }
   async finalize(job: InternalJobRow, worker: string, status: TradeResearchStatus, outcome: TradeResearchOutcome, result: TradeResearchResultSummary): Promise<InternalJobRow> {
     requireInternalJobRow(job);
