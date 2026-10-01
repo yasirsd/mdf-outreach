@@ -226,6 +226,98 @@ describe("BI4F 2A createTradeResearchBatchAction — inline kick", () => {
   });
 });
 
+describe("T14 Stage 1 — env-driven kick strategy (Netlify Background Function path)", () => {
+  const NETLIFY_URL = "https://staging.netlify.app/.netlify/functions/trade-research-drain-background";
+  const SECRET = "netlify-bg-secret-1234567890";
+
+  beforeEach(() => {
+    process.env.NETLIFY_BG_DRAIN_URL = NETLIFY_URL;
+    process.env.TRADE_RESEARCH_DRAIN_SECRET = SECRET;
+  });
+
+  it("when NETLIFY_BG_DRAIN_URL is set: server action POSTs to the background function and DOES NOT await a full inline drain", async () => {
+    requireMdfSessionMock.mockResolvedValue(OWNER_SESSION);
+    createBatchMock.mockResolvedValueOnce(BATCH);
+    const fetchSpy = vi.spyOn(globalThis, "fetch" as never)
+      .mockImplementation((async () => new Response("ok", { status: 202 })) as never);
+    try {
+      const started = Date.now();
+      const { createTradeResearchBatchAction } = await import("./tradeResearchActions");
+      const result = await createTradeResearchBatchAction([REQUEST]);
+      const elapsed = Date.now() - started;
+      expect(result).toEqual({ outcome: "created", batch: BATCH });
+      // Fire-and-forget: the inline drain worker MUST NOT be invoked
+      // when the Netlify Background Function URL is configured.
+      expect(drainMock).not.toHaveBeenCalled();
+      // The background function URL was called exactly once with the
+      // secret in the Authorization header — never in the query
+      // string, never in the body echoed to the caller.
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      const [url, init] = fetchSpy.mock.calls[0]!;
+      expect(String(url)).toBe(NETLIFY_URL);
+      const headers = (init as RequestInit).headers as Record<string, string>;
+      expect(headers.authorization).toBe(`Bearer ${SECRET}`);
+      // Server action returns quickly — the background function's own
+      // 15-minute ceiling is not consumed by the caller. Even with
+      // network jitter this should be well below the 10 s Netlify
+      // sync ceiling.
+      expect(elapsed).toBeLessThan(3_000);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("fire-and-forget invocation NEVER leaks TRADE_RESEARCH_DRAIN_SECRET to the caller's result", async () => {
+    requireMdfSessionMock.mockResolvedValue(OWNER_SESSION);
+    createBatchMock.mockResolvedValueOnce(BATCH);
+    const fetchSpy = vi.spyOn(globalThis, "fetch" as never)
+      .mockImplementation((async () => new Response("ok", { status: 202 })) as never);
+    try {
+      const { createTradeResearchBatchAction } = await import("./tradeResearchActions");
+      const result = await createTradeResearchBatchAction([REQUEST]);
+      expect(JSON.stringify(result)).not.toContain(SECRET);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("background function URL unreachable → server action still succeeds and returns the created batch", async () => {
+    requireMdfSessionMock.mockResolvedValue(OWNER_SESSION);
+    createBatchMock.mockResolvedValueOnce(BATCH);
+    const fetchSpy = vi.spyOn(globalThis, "fetch" as never)
+      .mockImplementation((async () => { throw new Error("network unreachable"); }) as never);
+    try {
+      const { createTradeResearchBatchAction } = await import("./tradeResearchActions");
+      const result = await createTradeResearchBatchAction([REQUEST]);
+      // Absorbed failure — the batch is safely queued and a future
+      // Supabase Cron tick will drain it.
+      expect(result).toEqual({ outcome: "created", batch: BATCH });
+      expect(revalidatePathMock).toHaveBeenCalledWith("/buyer-finder");
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("when NETLIFY_BG_DRAIN_URL is NOT set: Vercel behaviour is preserved — the inline drain kick still runs", async () => {
+    delete process.env.NETLIFY_BG_DRAIN_URL;
+    requireMdfSessionMock.mockResolvedValue(OWNER_SESSION);
+    createBatchMock.mockResolvedValueOnce(BATCH);
+    const fetchSpy = vi.spyOn(globalThis, "fetch" as never)
+      .mockImplementation((async () => new Response("no", { status: 500 })) as never);
+    try {
+      const { createTradeResearchBatchAction } = await import("./tradeResearchActions");
+      const result = await createTradeResearchBatchAction([REQUEST]);
+      expect(result).toEqual({ outcome: "created", batch: BATCH });
+      // Existing Vercel path — drain worker invoked, no HTTP call to
+      // a background function URL.
+      expect(drainMock).toHaveBeenCalledTimes(1);
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+});
+
 describe("T07 explicit research request binding", () => {
   const MANGO_REQUEST = { ...REQUEST, productId: "banganapalli-mango" };
 
@@ -375,9 +467,22 @@ describe("BI4F 2A createTradeResearchBatchAction — server-only surface", () =>
 
   it("declares \"use server\" and never exposes the drain secret string", () => {
     expect(body.startsWith('"use server";')).toBe(true);
-    expect(body).not.toMatch(/TRADE_RESEARCH_DRAIN_SECRET/);
+    // The secret NAME may appear ONLY inside a server-side env-var
+    // read (T14 Stage 1 introduced a server-to-server POST to the
+    // Netlify Background Function that legitimately reads
+    // `process.env.TRADE_RESEARCH_DRAIN_SECRET`). It must NEVER appear
+    // inline as a bare string literal, in a URL, or in any comment
+    // that could suggest client-side use.
+    const secretNameOccurrences = body.match(/TRADE_RESEARCH_DRAIN_SECRET/g) ?? [];
+    for (const _ of secretNameOccurrences) {
+      // Each occurrence must be prefixed by `process.env.` — the only
+      // legitimate way to reference this identifier in server code.
+      // (Multiple occurrences allowed as long as every one is an env read.)
+    }
+    const bareRefs = body.match(/(?<!process\.env\.)TRADE_RESEARCH_DRAIN_SECRET/g) ?? [];
+    expect(bareRefs).toEqual([]);
     expect(body).not.toMatch(/CRON_SECRET/);
-    // No client-visible fetch() to the drain route either.
+    // No client-visible fetch() to the internal drain route either.
     expect(body).not.toMatch(/\/api\/internal\/trade-research\/drain/);
     expect(body).not.toMatch(/\/api\/cron\/trade-research-drain/);
   });

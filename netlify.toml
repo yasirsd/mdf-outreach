@@ -1,0 +1,34 @@
+# T14 Stage 1 — Netlify preview compatibility.
+#
+# This config is additive; `vercel.json` remains authoritative for
+# production until Stage 7 cutover. Building on Vercel is unaffected.
+#
+# Node 22 aligns with package.json `"engines": { "node": "22.x" }` so
+# the Netlify build environment matches Vercel's.
+#
+# Next.js runtime: on Next.js 13.5+ / 14 Netlify automatically applies
+# the modern OpenNext-based adapter. Declaring the legacy
+# `@netlify/plugin-nextjs` plugin here would pin the deploy to the
+# superseded plugin system — doing so suppressed the automatic
+# OpenNext adapter and caused "/" to 404 on the preview deploy.
+# This file deliberately omits the plugin block so OpenNext handles
+# routing for the App Router (RSC entries, server actions, Route
+# Handlers, dynamic/edge-forced routes).
+#
+# Sync API routes deploy as regular Netlify Functions. The
+# trade-research drain uses a dedicated Background Function under
+# `netlify/functions/` (naming convention `-background.ts`), which
+# lifts execution timeout from ~10 s sync → ~15 min background and
+# returns 202 immediately.
+
+[build]
+  command = "npm run build"
+  publish = ".next"
+
+[build.environment]
+  NODE_VERSION = "22"
+
+[functions]
+  # Route bundling for the Node functions surface used by the trade
+  # research Background Function.
+  node_bundler = "esbuild"

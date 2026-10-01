@@ -214,13 +214,85 @@ export async function createTradeResearchBatchAction(
     }
     throw error;
   }
-  // Await a bounded drain execution so the first job normally reaches
-  // terminal state before the button un-freezes. Failures are absorbed —
-  // the batch is safely queued and the daily cron sweeper will still
-  // pick it up. NEVER an unawaited background promise.
-  await kickTradeResearchDrain(writer, read, batch.id);
+  // T14 Stage 1 — env-driven kick strategy.
+  //
+  // Historically (Vercel Hobby / Pro), we awaited a bounded 50 s
+  // inline drain here so the first job normally reached a terminal
+  // state before the button un-froze. That is safe on Vercel where
+  // server actions ride the 60 s function ceiling.
+  //
+  // On Netlify Free (Starter), synchronous functions cap at ~10 s.
+  // A 50 s awaited drain would time out. Instead, when the deploy is
+  // configured for the Netlify Background Function path
+  // (`NETLIFY_BG_DRAIN_URL` set), we perform a server-to-server
+  // POST to that URL with the drain secret; the Background Function
+  // returns 202 immediately and completes the drain asynchronously
+  // inside its own extended timeout. UX becomes "batch queued now,
+  // progress observed via existing polling", identical to the daily
+  // cron sweeper behavior.
+  //
+  // On Vercel (no `NETLIFY_BG_DRAIN_URL`), we keep the awaited inline
+  // kick exactly as before — zero behavioral change during migration.
+  // The secret NEVER leaves the server; the fetch is server-side.
+  await invokeTradeResearchDrainStrategy(writer, read, batch.id);
   revalidatePath("/buyer-finder");
   return { outcome: "created", batch };
+}
+
+async function invokeTradeResearchDrainStrategy(
+  writer: TradeResearchWriter,
+  read: ReturnType<typeof createTradeResearchReadRepository>,
+  batchId: string,
+): Promise<void> {
+  const bgUrl = process.env.NETLIFY_BG_DRAIN_URL?.trim();
+  const secret = process.env.TRADE_RESEARCH_DRAIN_SECRET?.trim();
+  if (bgUrl && secret) {
+    await fireNetlifyBackgroundDrain(bgUrl, secret, batchId);
+    return;
+  }
+  await kickTradeResearchDrain(writer, read, batchId);
+}
+
+/**
+ * Server-to-server POST to the Netlify Background Function. Awaits
+ * only the network round-trip (Netlify returns 202 immediately),
+ * NOT the full drain — the drain continues asynchronously on the
+ * platform. Absorbs failures so a Background Function outage never
+ * regresses a successful batch create; the daily cron sweeper and
+ * Supabase Cron (T14 Stage 4) both pick the batch up on the next
+ * tick regardless.
+ */
+async function fireNetlifyBackgroundDrain(url: string, secret: string, batchId: string): Promise<void> {
+  const started = Date.now();
+  logTradeResearchDiagnostic({
+    event: "inline_kick_started", batchId, jobsRequested: 0,
+  });
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 5_000);
+    try {
+      await fetch(url, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${secret}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ trigger: "server_action", batch_id: batchId }),
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+    logTradeResearchDiagnostic({
+      event: "inline_kick_finished", batchId, elapsedMs: Date.now() - started,
+    });
+  } catch (error) {
+    logTradeResearchDiagnostic({
+      event: "inline_kick_failed", batchId,
+      safeErrorCode: safeTradeResearchErrorCode(error),
+      elapsedMs: Date.now() - started,
+    });
+  }
 }
 
 /**
