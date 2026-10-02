@@ -201,12 +201,30 @@ export async function createTradeResearchBatchAction(
   try {
     const singleProduct = new Set(jobs.map((job) => job.productId));
     const singleCountry = new Set(jobs.map((job) => job.countryCode));
+    // TH07 DEFECT 02 — the batch-level plannerVersion must equal the
+    // canonical context's providerPlanVersion, which `canonicalizeResearchContext`
+    // may rewrite via MARKET_PROVIDER_PLAN_OVERRIDES (e.g. TH →
+    // "thailand-provider-plan-v1"). Both the client-side contract
+    // validator (`assertCreateBatchInput`) and the SQL RPC
+    // `create_trade_research_batch` (migration 0029) require this
+    // equality; prior to this fix the client passed the raw
+    // TRADE_RESEARCH_PLANNER_VERSION ("trade-planner-v1") which only
+    // matched for non-overridden markets (US/CA), making TH submissions
+    // throw `authoritative_field_mismatch`. All jobs in a batch share
+    // a `countryCode` (singleCountry check above and `fingerprint` →
+    // dedupe keys include market), so their canonical contexts share
+    // `providerPlanVersion`; defensively assert that invariant here.
+    const providerPlanVersions = new Set(jobs.map((job) => job.context.providerPlanVersion));
+    if (providerPlanVersions.size !== 1) {
+      throw new Error("TRADE_RESEARCH_BATCH_INVARIANT_PROVIDER_PLAN_VERSION_MIXED");
+    }
+    const canonicalPlannerVersion = jobs[0]!.context.providerPlanVersion;
     batch = await writer.createBatch({
       workspaceId: session.membership.workspaceId, createdBy: session.userId,
       requestedGoal: "screen_trade_activity",
       productId: singleProduct.size === 1 ? jobs[0]!.productId : "",
       countryCode: singleCountry.size === 1 ? jobs[0]!.countryCode : "",
-      plannerVersion: TRADE_RESEARCH_PLANNER_VERSION, jobs,
+      plannerVersion: canonicalPlannerVersion, jobs,
     });
   } catch (error) {
     if (typeof error === "object" && error && "code" in error && (error as { code?: string }).code === "23505") {

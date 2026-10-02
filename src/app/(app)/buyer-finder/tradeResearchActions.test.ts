@@ -583,6 +583,182 @@ describe("BI4F 2A createTradeResearchBatchAction — bounded stall-recovery loop
   });
 });
 
+describe("TH07 DEFECT 02 — Thailand batch-level plannerVersion matches canonical context", () => {
+  // Reproduce the exact production failure: a TH candidate submitting
+  // "Research trade activity" for guntur-dry-red-chilli. The client
+  // seeds the pre-canonical context with TRADE_RESEARCH_PLANNER_VERSION
+  // ("trade-planner-v1"); canonicalizeResearchContext then rewrites it
+  // to THAILAND_PROVIDER_PLAN_VERSION ("thailand-provider-plan-v1") via
+  // MARKET_PROVIDER_PLAN_OVERRIDES.TH. The batch-level plannerVersion
+  // we send to createBatch must follow the canonical value or both
+  // the client contract validator (assertCreateBatchInput) AND the SQL
+  // RPC (migration 0029) raise.
+
+  const TH_REQUEST = {
+    candidateId: CANDIDATE_ID,
+    marketCountryCode: "TH",
+    productId: "guntur-dry-red-chilli",
+    productForm: null,
+    researchGoal: "screen_trade_activity" as const,
+  };
+  const CA_REQUEST = { ...REQUEST, marketCountryCode: "CA" };
+
+  function thaiRepositories() {
+    return {
+      repos: {
+        buyerCandidates: {
+          list: async () => [{ id: CANDIDATE_ID, companyName: "Spunky Food Co.", country: "TH" }],
+        },
+        buyerCandidateProductMatches: {
+          listByCandidate: async () => [{ candidateId: CANDIDATE_ID, productId: "guntur-dry-red-chilli" }],
+        },
+      },
+    };
+  }
+
+  function canadianRepositories() {
+    return {
+      repos: {
+        buyerCandidates: {
+          list: async () => [{ id: CANDIDATE_ID, companyName: "Great Northern Foods", country: "CA" }],
+        },
+        buyerCandidateProductMatches: {
+          listByCandidate: async () => [{ candidateId: CANDIDATE_ID, productId: "guntur-dry-red-chilli" }],
+        },
+      },
+    };
+  }
+
+  it("1. canonical context providerPlanVersion = thailand-provider-plan-v1 for TH submissions", async () => {
+    requireMdfSessionMock.mockResolvedValue(OWNER_SESSION);
+    serverReposMock.mockResolvedValueOnce(thaiRepositories());
+    createBatchMock.mockResolvedValueOnce(BATCH);
+    const { createTradeResearchBatchAction } = await import("./tradeResearchActions");
+    await createTradeResearchBatchAction([TH_REQUEST]);
+    const input = createBatchMock.mock.calls[0]![0] as {
+      jobs: Array<{ context: Record<string, unknown> }>;
+    };
+    expect(input.jobs[0]!.context.providerPlanVersion).toBe("thailand-provider-plan-v1");
+    expect(input.jobs[0]!.context.marketCountryCode).toBe("TH");
+  });
+
+  it("2. batch-level plannerVersion equals the canonical context's providerPlanVersion (no authoritative_field_mismatch)", async () => {
+    requireMdfSessionMock.mockResolvedValue(OWNER_SESSION);
+    serverReposMock.mockResolvedValueOnce(thaiRepositories());
+    createBatchMock.mockResolvedValueOnce(BATCH);
+    const { createTradeResearchBatchAction } = await import("./tradeResearchActions");
+    await createTradeResearchBatchAction([TH_REQUEST]);
+    const input = createBatchMock.mock.calls[0]![0] as {
+      plannerVersion: string;
+      jobs: Array<{ context: Record<string, unknown> }>;
+    };
+    // The authoritative equality enforced by assertCreateBatchInput
+    // (repository.ts) and migration 0029's RPC.
+    expect(input.plannerVersion).toBe("thailand-provider-plan-v1");
+    expect(input.plannerVersion).toBe(input.jobs[0]!.context.providerPlanVersion);
+  });
+
+  it("3. every authoritative-field equality the SQL RPC enforces (migration 0029) holds on the captured payload", async () => {
+    requireMdfSessionMock.mockResolvedValue(OWNER_SESSION);
+    serverReposMock.mockResolvedValueOnce(thaiRepositories());
+    createBatchMock.mockResolvedValueOnce(BATCH);
+    const { createTradeResearchBatchAction } = await import("./tradeResearchActions");
+    await createTradeResearchBatchAction([TH_REQUEST]);
+    const input = createBatchMock.mock.calls[0]![0] as {
+      workspaceId: string;
+      requestedGoal: string;
+      plannerVersion: string;
+      jobs: Array<{
+        candidateId: string;
+        productId: string;
+        countryCode: string;
+        context: Record<string, unknown>;
+      }>;
+    };
+    const job = input.jobs[0]!;
+    // Exact mirror of repository.ts :: validateCreateBatchInput's
+    // authoritative-field check — the one that was raising
+    // TRADE_RESEARCH_CONTRACT_INVALID_JSONB :: authoritative_field_mismatch
+    // in production. ALL six equalities must hold.
+    expect(job.context.workspaceId).toBe(input.workspaceId);
+    expect(job.context.candidateId).toBe(job.candidateId);
+    expect(job.context.productId).toBe(job.productId);
+    expect(job.context.marketCountryCode).toBe(job.countryCode);
+    expect(job.context.researchGoal).toBe(input.requestedGoal);
+    expect(job.context.providerPlanVersion).toBe(input.plannerVersion);
+  });
+
+  it("4. canonical context's contextFingerprint still matches the stored context (same object end-to-end)", async () => {
+    requireMdfSessionMock.mockResolvedValue(OWNER_SESSION);
+    serverReposMock.mockResolvedValueOnce(thaiRepositories());
+    createBatchMock.mockResolvedValueOnce(BATCH);
+    const { createTradeResearchBatchAction } = await import("./tradeResearchActions");
+    await createTradeResearchBatchAction([TH_REQUEST]);
+    const input = createBatchMock.mock.calls[0]![0] as {
+      jobs: Array<{ context: Record<string, unknown>; contextFingerprint: string }>;
+    };
+    const { fingerprintResearchContext, canonicalizeResearchContext } = await vi.importActual<typeof import("@/lib/tradeResearch/context")>(
+      "@/lib/tradeResearch/context",
+    );
+    const recomputed = fingerprintResearchContext(canonicalizeResearchContext(
+      input.jobs[0]!.context as unknown as Parameters<typeof canonicalizeResearchContext>[0],
+    ));
+    expect(input.jobs[0]!.contextFingerprint).toBe(recomputed);
+  });
+
+  it("5. planner still produces exactly the active TH automated plans (two of them)", async () => {
+    requireMdfSessionMock.mockResolvedValue(OWNER_SESSION);
+    serverReposMock.mockResolvedValueOnce(thaiRepositories());
+    createBatchMock.mockResolvedValueOnce(BATCH);
+    const { createTradeResearchBatchAction } = await import("./tradeResearchActions");
+    await createTradeResearchBatchAction([TH_REQUEST]);
+    const input = createBatchMock.mock.calls[0]![0] as {
+      jobs: Array<{ plans: Array<{ providerId: string; eligibility: string }> }>;
+    };
+    const eligibleProviders = input.jobs[0]!.plans
+      .filter((p) => p.eligibility === "eligible")
+      .map((p) => p.providerId);
+    // The hoisted planner mock in this file marks every descriptor as
+    // eligible; the TH automated plan must include thai-customs-stats
+    // and public-website. Manual-only providers must never appear.
+    expect(eligibleProviders).toEqual(expect.arrayContaining(["thai-customs-stats", "public-website"]));
+    expect(eligibleProviders).not.toEqual(expect.arrayContaining(["thai-dbd"]));
+    expect(eligibleProviders).not.toEqual(expect.arrayContaining(["thai-customs-operator"]));
+    expect(eligibleProviders).not.toEqual(expect.arrayContaining(["thai-fda-importer"]));
+  });
+
+  it("6. US submission still works and plannerVersion stays trade-planner-v1 (regression safety)", async () => {
+    requireMdfSessionMock.mockResolvedValue(OWNER_SESSION);
+    createBatchMock.mockResolvedValueOnce(BATCH);
+    const { createTradeResearchBatchAction } = await import("./tradeResearchActions");
+    await createTradeResearchBatchAction([REQUEST]); // US REQUEST
+    const input = createBatchMock.mock.calls[0]![0] as {
+      plannerVersion: string;
+      jobs: Array<{ context: Record<string, unknown> }>;
+    };
+    // US is not in MARKET_PROVIDER_PLAN_OVERRIDES, so the raw
+    // caller-supplied planner version flows through unchanged.
+    expect(input.plannerVersion).toBe("trade-planner-v1");
+    expect(input.jobs[0]!.context.providerPlanVersion).toBe("trade-planner-v1");
+    expect(input.plannerVersion).toBe(input.jobs[0]!.context.providerPlanVersion);
+  });
+
+  it("7. CA submission still works and plannerVersion stays trade-planner-v1 (regression safety)", async () => {
+    requireMdfSessionMock.mockResolvedValue(OWNER_SESSION);
+    serverReposMock.mockResolvedValueOnce(canadianRepositories());
+    createBatchMock.mockResolvedValueOnce(BATCH);
+    const { createTradeResearchBatchAction } = await import("./tradeResearchActions");
+    await createTradeResearchBatchAction([CA_REQUEST]);
+    const input = createBatchMock.mock.calls[0]![0] as {
+      plannerVersion: string;
+      jobs: Array<{ context: Record<string, unknown> }>;
+    };
+    expect(input.plannerVersion).toBe("trade-planner-v1");
+    expect(input.jobs[0]!.context.providerPlanVersion).toBe("trade-planner-v1");
+    expect(input.plannerVersion).toBe(input.jobs[0]!.context.providerPlanVersion);
+  });
+});
+
 describe("BI4F 2A vercel.json — Hobby-compatible daily cron", () => {
   const HERE = process.cwd();
   const config = JSON.parse(readFileSync(path.resolve(HERE, "vercel.json"), "utf8")) as {
