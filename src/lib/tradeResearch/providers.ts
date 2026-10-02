@@ -8,6 +8,7 @@ import {
   type ProviderRole,
   type ResearchContext,
 } from "./types";
+import { THAILAND_PROVIDER_PLAN_VERSION } from "./thailand/versions";
 
 /**
  * MDF's product catalogue is 100 % food (spices + fresh produce), so a
@@ -31,7 +32,11 @@ export interface TradeResearchProviderDescriptor {
   automationAllowed: boolean;
   termsApproved: boolean;
   termsVersion: string;
-  datasetCadence: "quarterly" | "annual";
+  // TH04B Step 0 — `monthly` added for Thai Customs Data Catalog
+  // which releases ctm_06_11 resources monthly. US / Canada
+  // providers remain `quarterly` / `annual`; the shared type now
+  // tolerates all three without perturbing existing descriptors.
+  datasetCadence: "monthly" | "quarterly" | "annual";
   cacheMaxAgeDays: number;
   compatiblePlannerVersions: readonly string[];
 }
@@ -146,17 +151,83 @@ export const FDA_VQIP_DESCRIPTOR: TradeResearchProviderDescriptor = {
 };
 
 /**
+ * TH04A — Thai Customs Statistics provider descriptor.
+ *
+ * Market-level trade evidence for Thailand sourced from the
+ * official Customs Data Catalog dataset `ctm_06_11` (Imports by
+ * country of origin). The source is published by the Thai Customs
+ * Department under the Open Data Common license with no access
+ * conditions — ₹0 and ToS-compatible for an internal business
+ * application.
+ *
+ * NEVER emits company-level evidence. Semantically distinct from
+ * FSVP / VQIP / Canada CID which do candidate-name matching.
+ */
+export const THAI_CUSTOMS_STATS_DESCRIPTOR: TradeResearchProviderDescriptor = {
+  id: "thai-customs-stats",
+  displayName: "Thai Customs — Imports by Country of Origin",
+  version: "thai-customs-stats-v1",
+  costClass: "free",
+  countries: ["TH"],
+  roles: ["TRADE_ACTIVITY", "PRODUCT_SIGNAL", "ORIGIN_SIGNAL"],
+  automationAllowed: true,
+  termsApproved: true,
+  termsVersion: "open-data-common-v1",
+  // TH04B Step 0 — ctm_06_11 publishes monthly. The 45-day
+  // `cacheMaxAgeDays` is INTENTIONALLY longer than the release
+  // cadence: the executor's `selectLatestReleasedResource` always
+  // reads the current catalog state, so a new monthly resource is
+  // picked up by the first drain after it appears; the 45-day TTL
+  // only prevents refetching an immutable past month.
+  datasetCadence: "monthly",
+  cacheMaxAgeDays: 45,
+  // Thailand research contexts carry `providerPlanVersion =
+  // THAILAND_PROVIDER_PLAN_VERSION` by TH02's canonicalization —
+  // the TH descriptor must declare it compatible, or the planner
+  // marks the descriptor `unsupported` on every TH candidate.
+  compatiblePlannerVersions: [TRADE_RESEARCH_PLANNER_VERSION, THAILAND_PROVIDER_PLAN_VERSION],
+};
+
+/**
+ * TH04B — Public-website trade-research descriptor (Thailand V1 only).
+ *
+ * This is the SECOND Thailand automated provider from
+ * `THAILAND_PROVIDER_PLAN_V1`. It is additive — US / CA website
+ * evidence continues through the existing Buyer Finder
+ * free-enrichment path and the trade-research pipeline did not
+ * previously have a public-website provider. `countries: ["TH"]`
+ * keeps US / CA plans unchanged.
+ */
+export const PUBLIC_WEBSITE_DESCRIPTOR: TradeResearchProviderDescriptor = {
+  id: "public-website",
+  displayName: "Candidate Public Website",
+  version: "public-website-v1",
+  costClass: "free",
+  countries: ["TH"],
+  roles: ["COMPANY_MATCH", "PRODUCT_SIGNAL"],
+  automationAllowed: true,
+  termsApproved: true,
+  termsVersion: "candidate-site-public-content-v1",
+  datasetCadence: "monthly",
+  cacheMaxAgeDays: 14,
+  compatiblePlannerVersions: [TRADE_RESEARCH_PLANNER_VERSION, THAILAND_PROVIDER_PLAN_VERSION],
+};
+
+/**
  * Default descriptor registry — every production planner call site
  * should use this. Callers may still pass a custom `descriptors`
  * array in tests to isolate a single provider. Order is deterministic
  * and reflects planner sequence for multi-provider execution:
  *   US : FDA FSVP (sequence 1) → FDA VQIP (sequence 2)
  *   CA : Canada CID (sequence 3; only CA)
+ *   TH : Thai Customs Stats (sequence 4; only TH)
  */
 export const DEFAULT_TRADE_RESEARCH_DESCRIPTORS: readonly TradeResearchProviderDescriptor[] = [
   FDA_FSVP_DESCRIPTOR,
   FDA_VQIP_DESCRIPTOR,
   CANADA_CID_DESCRIPTOR,
+  THAI_CUSTOMS_STATS_DESCRIPTOR,
+  PUBLIC_WEBSITE_DESCRIPTOR,
 ];
 
 /**

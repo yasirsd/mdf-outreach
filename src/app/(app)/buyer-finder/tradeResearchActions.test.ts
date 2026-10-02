@@ -75,11 +75,21 @@ vi.mock("@/lib/tradeResearch/providers", () => {
   const FDA = { id: "fda_fsvp", version: "v1", costClass: "free", termsVersion: "v1" };
   const CID = { id: "canada-cid", version: "canada-cid-v1", costClass: "free", termsVersion: "ogl-canada-v2.0" };
   const VQIP = { id: "fda-vqip", version: "fda-vqip-v1", costClass: "free", termsVersion: "public-fda-list-v1" };
+  // TH04A — Thai Customs Stats descriptor must be present in the
+  // mock so `providerExecutors.ts` can resolve its import at
+  // module-eval time. The mock value is a minimal stub; the
+  // mocked `planTradeResearch` ignores descriptors beyond `[FDA]`
+  // by default.
+  const THAI = { id: "thai-customs-stats", version: "thai-customs-stats-v1", costClass: "free", termsVersion: "open-data-common-v1" };
+  // TH04B — public-website trade-research descriptor (TH only).
+  const WEB = { id: "public-website", version: "public-website-v1", costClass: "free", termsVersion: "candidate-site-public-content-v1" };
   return {
     FDA_FSVP_DESCRIPTOR: FDA,
     CANADA_CID_DESCRIPTOR: CID,
     FDA_VQIP_DESCRIPTOR: VQIP,
-    DEFAULT_TRADE_RESEARCH_DESCRIPTORS: [FDA, VQIP, CID],
+    THAI_CUSTOMS_STATS_DESCRIPTOR: THAI,
+    PUBLIC_WEBSITE_DESCRIPTOR: WEB,
+    DEFAULT_TRADE_RESEARCH_DESCRIPTORS: [FDA, VQIP, CID, THAI, WEB],
     planTradeResearch: (input: { descriptors?: unknown[] }) => (input.descriptors ?? [FDA]).map((descriptor) => ({
       descriptor,
       role: "primary", eligible: true, reason: "eligible", cacheHit: false,

@@ -3,6 +3,14 @@ import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { BuyerCandidate } from "@/lib/buyerFinder/types";
 import { canonicalizeResearchContext, fingerprintResearchContext } from "./context";
+
+/** TH06 Step 0D — lookup-basis values the aggregator trusts for authoritative not_found. */
+export type ThaiManualEvidenceLookupBasis =
+  | "juristic_number"
+  | "license_number"
+  | "exact_legal_name"
+  | "name_search"
+  | "other";
 import { aggregateTradeResearchEvidence } from "./aggregation";
 import { assertProviderResultCheckpoint } from "./checkpoints";
 import {
@@ -949,6 +957,156 @@ export class TradeResearchWriter {
     if (error) throw error;
     return data as SnapshotRow;
   }
+  /**
+   * TH04C — Insert a Thailand MANUAL_ONLY evidence row. Append-only;
+   * never updates in place (corrections use `supersedeThaiManualEvidence`).
+   * Writer validates the source-URL allowlist, requires a
+   * server-derived `capturedByUserId`, and enforces
+   * `automatic_spend_rupees = 0`.
+   */
+  /**
+   * TH06 Step 0 — Create a ROOT Thailand manual-evidence row
+   * atomically. Delegates to the `create_thai_manual_evidence` RPC
+   * (migration 0036) which acquires a `(workspace, candidate,
+   * provider)` advisory lock, verifies no active chain-leaf exists,
+   * then inserts. Rejects concurrent root creates with
+   * `MANUAL_EVIDENCE_ACTIVE_EXISTS`.
+   *
+   * The pre-TH06 non-RPC insert path has been removed so callers
+   * cannot bypass the chain-integrity invariants.
+   */
+  async insertThaiManualEvidence(input: {
+    workspaceId: string;
+    candidateId: string;
+    providerId: "thai-dbd" | "thai-customs-operator" | "thai-fda-importer";
+    capturedByUserId: string;
+    sourceUrl: string;
+    sourceLabel: string;
+    evidencePayload: unknown;
+    evidenceStatus: "verified" | "not_found" | "inconclusive";
+    lookupBasis?: ThaiManualEvidenceLookupBasis | null;
+    lookupBasisDetail?: string | null;
+    /** @deprecated — supersession goes through `supersedeThaiManualEvidence`. */
+    supersedesId?: string;
+  }): Promise<Row> {
+    if (input.supersedesId !== undefined) {
+      throw new Error("Use supersedeThaiManualEvidence for correction flows; this entrypoint creates ROOT rows only.");
+    }
+    requireUuid(input.workspaceId, "thai_manual_evidence.workspace_id");
+    requireUuid(input.candidateId, "thai_manual_evidence.candidate_id");
+    requireUuid(input.capturedByUserId, "thai_manual_evidence.captured_by_user_id");
+    requireText(input.sourceLabel, "thai_manual_evidence.source_label");
+    requireJson(input.evidencePayload, "thai_manual_evidence.evidence_payload");
+    requireConstrainedText(input.evidenceStatus, "thai_manual_evidence.evidence_status",
+      new Set(["verified", "not_found", "inconclusive"]));
+    requireConstrainedText(input.providerId, "thai_manual_evidence.provider_id",
+      new Set(["thai-dbd", "thai-customs-operator", "thai-fda-importer"]));
+    if (input.lookupBasis != null) {
+      requireConstrainedText(input.lookupBasis, "thai_manual_evidence.lookup_basis",
+        new Set(["juristic_number", "license_number", "exact_legal_name", "name_search", "other"]));
+    }
+    const { requireAllowedManualEvidenceSourceUrl } = await import("./thailand/manualEvidenceSourceAllowlist");
+    const normalizedUrl = requireAllowedManualEvidenceSourceUrl(input.providerId, input.sourceUrl);
+    const { data, error } = await this.client.rpc("create_thai_manual_evidence", {
+      p_workspace_id: input.workspaceId,
+      p_candidate_id: input.candidateId,
+      p_provider_id: input.providerId,
+      p_captured_by_user_id: input.capturedByUserId,
+      p_source_url: normalizedUrl,
+      p_source_label: input.sourceLabel,
+      p_evidence_payload: input.evidencePayload,
+      p_evidence_status: input.evidenceStatus,
+      p_lookup_basis: input.lookupBasis ?? null,
+      p_lookup_basis_detail: input.lookupBasisDetail ?? null,
+    });
+    if (error) throw error;
+    const row = singleRpcRow<Row>(data);
+    if (!row) throw new Error("MANUAL_EVIDENCE_CREATE_FAILED");
+    return row;
+  }
+
+  /**
+   * TH05 Step 0 — ATOMIC supersession of a Thailand MANUAL_ONLY
+   * evidence row.
+   *
+   * Delegates to the transactional `supersede_thai_manual_evidence`
+   * RPC (migration 0035). The RPC locks the previous row FOR
+   * UPDATE, verifies it is still a leaf AND not withdrawn, then
+   * inserts the replacement with `supersedes_id = previousId` in
+   * one transaction. Either both land or neither does — the
+   * previous leaf stays current on any failure.
+   *
+   * Append-only history preserved by migration 0031's triggers;
+   * the chain-integrity unique index (0035) prevents fork races.
+   */
+  async supersedeThaiManualEvidence(
+    previousId: string,
+    replacement: Omit<Parameters<TradeResearchWriter["insertThaiManualEvidence"]>[0], "supersedesId">,
+  ): Promise<Row> {
+    requireUuid(previousId, "thai_manual_evidence.supersedes_id");
+    requireUuid(replacement.workspaceId, "thai_manual_evidence.workspace_id");
+    requireUuid(replacement.candidateId, "thai_manual_evidence.candidate_id");
+    requireUuid(replacement.capturedByUserId, "thai_manual_evidence.captured_by_user_id");
+    requireText(replacement.sourceLabel, "thai_manual_evidence.source_label");
+    requireJson(replacement.evidencePayload, "thai_manual_evidence.evidence_payload");
+    requireConstrainedText(replacement.evidenceStatus, "thai_manual_evidence.evidence_status",
+      new Set(["verified", "not_found", "inconclusive"]));
+    requireConstrainedText(replacement.providerId, "thai_manual_evidence.provider_id",
+      new Set(["thai-dbd", "thai-customs-operator", "thai-fda-importer"]));
+    if (replacement.lookupBasis != null) {
+      requireConstrainedText(replacement.lookupBasis, "thai_manual_evidence.lookup_basis",
+        new Set(["juristic_number", "license_number", "exact_legal_name", "name_search", "other"]));
+    }
+    const { requireAllowedManualEvidenceSourceUrl } = await import("./thailand/manualEvidenceSourceAllowlist");
+    const normalizedUrl = requireAllowedManualEvidenceSourceUrl(replacement.providerId, replacement.sourceUrl);
+    const { data, error } = await this.client.rpc("supersede_thai_manual_evidence", {
+      p_previous_id: previousId,
+      p_workspace_id: replacement.workspaceId,
+      p_candidate_id: replacement.candidateId,
+      p_provider_id: replacement.providerId,
+      p_captured_by_user_id: replacement.capturedByUserId,
+      p_source_url: normalizedUrl,
+      p_source_label: replacement.sourceLabel,
+      p_evidence_payload: replacement.evidencePayload,
+      p_evidence_status: replacement.evidenceStatus,
+      p_lookup_basis: replacement.lookupBasis ?? null,
+      p_lookup_basis_detail: replacement.lookupBasisDetail ?? null,
+    });
+    if (error) throw error;
+    const row = singleRpcRow<Row>(data);
+    if (!row) throw new Error("MANUAL_EVIDENCE_SUPERSESSION_FAILED");
+    return row;
+  }
+
+  /**
+   * TH04C — Mark an active Thailand MANUAL_ONLY evidence row as
+   * `withdrawn`. The trigger permits this specific transition
+   * in-place (no new row created); every other identity field stays
+   * immutable.
+   */
+  async withdrawThaiManualEvidence(id: string, workspaceId: string): Promise<void> {
+    requireUuid(id, "thai_manual_evidence.id");
+    requireUuid(workspaceId, "thai_manual_evidence.workspace_id");
+    const { error } = await this.client
+      .from("buyer_trade_research_thai_manual_evidence")
+      .update({ evidence_status: "withdrawn" })
+      .eq("id", id).eq("workspace_id", workspaceId);
+    if (error) throw error;
+  }
+
+  async listThaiManualEvidenceForCandidate(workspaceId: string, candidateId: string): Promise<Row[]> {
+    requireUuid(workspaceId, "thai_manual_evidence.workspace_id");
+    requireUuid(candidateId, "thai_manual_evidence.candidate_id");
+    const { data, error } = await this.client
+      .from("buyer_trade_research_thai_manual_evidence")
+      .select("*")
+      .eq("workspace_id", workspaceId)
+      .eq("candidate_id", candidateId)
+      .order("created_at", { ascending: false });
+    if (error) throw error;
+    return (data ?? []) as Row[];
+  }
+
   async refreshSnapshotExpiry(id: string, retrievedAt: string, expiresAt: string): Promise<SnapshotRow> {
     requireUuid(id, "buyer_trade_source_snapshots.id");
     requireTimestamp(retrievedAt, "retrieved_at");

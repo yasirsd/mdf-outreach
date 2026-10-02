@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { THAILAND_PROVIDER_PLAN_VERSION } from "./thailand/versions";
 import type {
   ResearchContext,
   ResearchContextField,
@@ -20,6 +21,41 @@ export class ResearchContextValidationError extends Error {
     super(`INVALID_RESEARCH_CONTEXT_${field}`);
     this.name = "ResearchContextValidationError";
   }
+}
+
+/**
+ * TH02 hardening — market-aware provider plan version resolver.
+ *
+ * Returns the AUTHORITATIVE provider plan version for the given
+ * market, OR `undefined` when the market has no market-level
+ * override and the caller-supplied `providerPlanVersion` on the
+ * context remains authoritative.
+ *
+ *   US / CA / <any other market>  → undefined
+ *       (preserves the historical semantics; the caller's
+ *       `providerPlanVersion` value is used verbatim after
+ *       canonicalization, so US and Canada context fingerprints are
+ *       byte-identical to pre-TH02 state.)
+ *
+ *   TH                            → "thailand-provider-plan-v1"
+ *       (Thailand's plan is market-dictated; any
+ *       `providerPlanVersion` the caller supplies is ignored and
+ *       the Thailand-plan version is substituted at canonicalization
+ *       time, so Thailand context fingerprints include it as part
+ *       of research identity per T06/T07 intent.)
+ *
+ * Bumping Thailand's plan version is a reviewed data change here —
+ * every Thailand context fingerprint changes accordingly, which is
+ * exactly the T06/T07 contract.
+ */
+const MARKET_PROVIDER_PLAN_OVERRIDES: Record<string, string> = {
+  TH: THAILAND_PROVIDER_PLAN_VERSION,
+};
+
+export function resolveProviderPlanVersion(marketCountryCode: string): string | undefined {
+  if (typeof marketCountryCode !== "string") return undefined;
+  const code = marketCountryCode.toUpperCase();
+  return MARKET_PROVIDER_PLAN_OVERRIDES[code];
 }
 
 function canonicalText(value: unknown, field: ResearchContextField): string {
@@ -48,6 +84,16 @@ export function canonicalizeResearchContext(input: ResearchContext): ResearchCon
     ? null
     : input.productForm.normalize("NFKC").trim().replace(/\s+/g, " ").toLowerCase() || null;
 
+  // Validate the caller-supplied providerPlanVersion as a non-empty
+  // canonical string, then let the market override win when the
+  // market dictates a plan version (TH02 hardening). Markets without
+  // an override keep the caller's canonical value verbatim, so US
+  // and Canada context fingerprints are byte-identical to the
+  // pre-TH02 baseline.
+  const callerProviderPlanVersion = canonicalText(input.providerPlanVersion, "providerPlanVersion");
+  const marketOverride = resolveProviderPlanVersion(marketCountryCode);
+  const providerPlanVersion = marketOverride ?? callerProviderPlanVersion;
+
   return {
     workspaceId,
     candidateId,
@@ -55,7 +101,7 @@ export function canonicalizeResearchContext(input: ResearchContext): ResearchCon
     productId: canonicalText(input.productId, "productId"),
     productForm,
     researchGoal,
-    providerPlanVersion: canonicalText(input.providerPlanVersion, "providerPlanVersion"),
+    providerPlanVersion,
     interpretationVersion: canonicalText(input.interpretationVersion, "interpretationVersion"),
   };
 }

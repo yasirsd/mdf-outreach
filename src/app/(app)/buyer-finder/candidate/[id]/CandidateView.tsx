@@ -61,6 +61,7 @@ import { BuyerIntelligenceWebsiteResearch } from "@/components/buyerFinder/Buyer
 import { hasUsableEmailForConversion } from "@/lib/buyerFinder/conversion";
 import { emptyBuyerIntelligenceViewModel } from "@/lib/buyerIntelligence/viewModel";
 import { CandidateTradeResearchPanel } from "@/components/buyerFinder/TradeResearchPanel";
+import { ThailandResearchSection } from "@/app/(app)/buyer-finder/thailand/ThailandResearchSection";
 import { codeForCountryName, findCountryByCode } from "@/lib/catalogue/countries";
 
 function productName(id: string): string {
@@ -246,6 +247,14 @@ export function CandidateView({
             marketCountryCode={tradeResearchMarketCode}
             marketLabel={tradeResearchMarket?.name ?? candidate.country}
             isOwner={isOwner}
+          />
+
+          {/* TH06 FINAL — Thailand-specific evidence + manual-check surface.
+              Market-gated at the component level: nothing renders when the
+              candidate's market is US / CA. */}
+          <ThailandResearchSection
+            candidateId={candidate.id}
+            marketCountryCode={tradeResearchMarketCode}
           />
 
           {others.length > 0 && (

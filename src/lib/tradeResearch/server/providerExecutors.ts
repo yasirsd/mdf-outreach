@@ -37,9 +37,41 @@ import {
   DEFAULT_TRADE_RESEARCH_DESCRIPTORS,
   FDA_FSVP_DESCRIPTOR,
   FDA_VQIP_DESCRIPTOR,
+  PUBLIC_WEBSITE_DESCRIPTOR,
+  THAI_CUSTOMS_STATS_DESCRIPTOR,
   canonicalHs6ForProduct,
   type TradeResearchProviderDescriptor,
 } from "../providers";
+import {
+  DEFAULT_PUBLIC_WEBSITE_USER_AGENT,
+  PUBLIC_WEBSITE_ATTRIBUTION,
+  PUBLIC_WEBSITE_INTERPRETATION_VERSION,
+  PUBLIC_WEBSITE_PARSER_VERSION,
+  extractPublicWebsiteSignals,
+  isPathAllowedByRobots,
+  mergePublicWebsiteSignals,
+  selectSameOriginSubpages,
+  type MergedPublicWebsiteSignals,
+  type PublicWebsiteSignals,
+} from "../publicWebsite";
+import { findThailandHsMapping } from "../thailand/hsMapping";
+import {
+  THAI_CUSTOMS_STATS_ATTRIBUTION,
+  THAI_CUSTOMS_STATS_SOURCE_URL,
+} from "../thaiCustomsStats";
+import {
+  fetchThaiCustomsStatsCatalog,
+  filterThaiCustomsStatsRows,
+  parseThaiCustomsStatsCsv,
+  projectThaiCustomsMarketEvidence,
+  selectLatestReleasedResource,
+  THAI_CUSTOMS_STATS_DATASET_ID,
+  THAI_CUSTOMS_STATS_INTERPRETATION_VERSION,
+  THAI_CUSTOMS_STATS_PARSER_VERSION,
+  ThaiCustomsStatsCatalogError,
+  ThaiCustomsStatsParserError,
+} from "../thaiCustomsStats";
+import { createHash } from "node:crypto";
 import type { InternalJobRow, SnapshotRow, TradeResearchWriter } from "../repository";
 import type {
   ResearchContext,
@@ -474,10 +506,554 @@ export const CANADA_CID_EXECUTOR: TradeResearchProviderExecutor = {
   },
 };
 
+/**
+ * TH04A — Thai Customs Statistics executor.
+ *
+ * MARKET-LEVEL ONLY. There is no candidate-name matching:
+ * `writer.getCandidate` is never called by this executor. The
+ * provider emits a `TradeResearchProviderResult` whose evidence
+ * reports Thailand-level import flows at HS 09042110 and any
+ * India-origin component. `companyEvidence` is always
+ * `not_available`; `shipmentEvidence` always `not_verified`.
+ */
+export const THAI_CUSTOMS_STATS_EXECUTOR: TradeResearchProviderExecutor = {
+  providerId: THAI_CUSTOMS_STATS_DESCRIPTOR.id,
+  descriptor: THAI_CUSTOMS_STATS_DESCRIPTOR,
+  requiredStartBudgetMs: 25_000,
+  hasFreshSnapshot: async ({ writer, now }) => Boolean(
+    await getCompatibleProviderSnapshot(writer, THAI_CUSTOMS_STATS_DESCRIPTOR.id, THAI_CUSTOMS_STATS_DATASET_ID, now()),
+  ),
+  async execute(input) {
+    const context = input.context;
+    const mapping = findThailandHsMapping(context.productId, context.productForm);
+    if (!mapping || mapping.thaiQueryCodes.length === 0) {
+      return { status: "failed_terminal", safeErrorCode: "UNSUPPORTED_PRODUCT_MAPPING", retryable: false };
+    }
+    const hs8 = mapping.thaiQueryCodes[0]!;
+    const now = input.now();
+    const fetchImpl = input.fetchImpl ?? fetch;
+    const deadlineAt = input.deadline.deadlineAt;
+
+    // Try cache first.
+    const cached = await getCompatibleProviderSnapshot(
+      input.writer, THAI_CUSTOMS_STATS_DESCRIPTOR.id, THAI_CUSTOMS_STATS_DATASET_ID, now,
+    );
+
+    let snapshot: SnapshotRow;
+    let cacheHit = false;
+
+    if (cached) {
+      snapshot = cached;
+      cacheHit = true;
+    } else {
+      // Discover a released resource.
+      let resources;
+      try {
+        const catalogController = new AbortController();
+        const catalogTimeout = setTimeout(() => catalogController.abort(), Math.min(FETCH_TIMEOUT_MS, input.deadline.remainingMs()));
+        try {
+          resources = await fetchThaiCustomsStatsCatalog({ fetchImpl, signal: catalogController.signal });
+        } finally { clearTimeout(catalogTimeout); }
+      } catch (error) {
+        if (error instanceof ThaiCustomsStatsCatalogError) {
+          return { status: error.retryable ? "failed_retryable" : "failed_terminal", safeErrorCode: error.code, retryable: error.retryable };
+        }
+        return { status: "failed_retryable", safeErrorCode: "CATALOG_FETCH_UNKNOWN", retryable: true };
+      }
+      const resource = selectLatestReleasedResource(resources);
+      if (!resource) {
+        return { status: "failed_terminal", safeErrorCode: "NO_RELEASED_RESOURCE", retryable: false };
+      }
+
+      // Download CSV once.
+      let csvBytes: Uint8Array;
+      let contentType = "text/csv";
+      try {
+        const csvController = new AbortController();
+        const csvTimeout = setTimeout(() => csvController.abort(), Math.min(FETCH_TIMEOUT_MS, Math.max(5_000, input.deadline.remainingMs())));
+        try {
+          const r = await fetchImpl(resource.url, { signal: csvController.signal });
+          if (!r.ok) {
+            const retryable = r.status >= 500 || r.status === 429 || r.status === 408;
+            return { status: retryable ? "failed_retryable" : "failed_terminal", safeErrorCode: `RESOURCE_HTTP_${r.status}`, retryable };
+          }
+          contentType = r.headers.get("content-type") ?? "text/csv";
+          const buf = await r.arrayBuffer();
+          csvBytes = new Uint8Array(buf);
+        } finally { clearTimeout(csvTimeout); }
+      } catch {
+        return { status: "failed_retryable", safeErrorCode: "RESOURCE_FETCH_FAILED", retryable: true };
+      }
+
+      // Dataset version = sha256(raw CSV bytes).
+      const digest = createHash("sha256").update(csvBytes).digest("hex");
+      const materialHash = `sha256:${digest}`;
+
+      // Parse (schema mismatch → quarantine via T12 v2 at classification time).
+      let csvText: string;
+      try {
+        csvText = new TextDecoder("utf-8", { fatal: false }).decode(csvBytes);
+      } catch {
+        return { status: "failed_terminal", safeErrorCode: "CSV_DECODE_FAILED", retryable: false };
+      }
+      let rows;
+      try {
+        rows = parseThaiCustomsStatsCsv(csvText);
+      } catch (error) {
+        const code = error instanceof ThaiCustomsStatsParserError ? error.code : "PARSER_FAILED";
+        return { status: "failed_terminal", safeErrorCode: code, retryable: false };
+      }
+      // Save the dataset-wide normalized rows to the snapshot cache so
+      // repeat runs within TTL skip the fetch entirely.
+      const retrievedAt = now.toISOString();
+      const expiresAt = new Date(now.getTime() + THAI_CUSTOMS_STATS_DESCRIPTOR.cacheMaxAgeDays * 24 * 60 * 60 * 1000).toISOString();
+      snapshot = await input.writer.saveSnapshot({
+        provider_id: THAI_CUSTOMS_STATS_DESCRIPTOR.id,
+        dataset_id: THAI_CUSTOMS_STATS_DATASET_ID,
+        published_period: resource.sourcePeriod,
+        source_url: resource.url,
+        material_hash: materialHash,
+        fetched_at: retrievedAt,
+        retrieved_at: retrievedAt,
+        expires_at: expiresAt,
+        row_count: rows.length,
+        coverage: { hs8: [hs8], originCountryCode: "IN", datasetId: THAI_CUSTOMS_STATS_DATASET_ID, resourceId: resource.id },
+        safe_metadata: {
+          contentType,
+          byteSize: csvBytes.byteLength,
+          sourcePeriod: resource.sourcePeriod,
+          resourceId: resource.id,
+          attribution: THAI_CUSTOMS_STATS_ATTRIBUTION,
+        },
+        normalized_rows: rows as unknown as Array<{ companyName: string; stateCode: string }>,
+        parse_version: THAI_CUSTOMS_STATS_PARSER_VERSION,
+        status: "ready",
+      } as Record<string, unknown>);
+    }
+
+    // Project market-level evidence from the (now-guaranteed) snapshot rows.
+    const persistedRows = Array.isArray(snapshot.normalized_rows)
+      ? (snapshot.normalized_rows as unknown as readonly { hs8: string; originCountryCode: string; importValueThb: number | null; statisticalCode: string | null }[])
+      : [];
+    const hsRows = filterThaiCustomsStatsRows(persistedRows as never, { hs8 });
+    const projection = projectThaiCustomsMarketEvidence({
+      hsRows: hsRows as never,
+      indiaSourceKey: "IN",
+      sourcePeriod: snapshot.published_period,
+    });
+
+    // Build a market-level provider result. There is no candidate
+    // match; `matchDecision` is "none" because the executor never
+    // attempts company identity on this dataset. Downstream T05
+    // aggregator will read market-level evidence from this provider
+    // without promoting it to company-level claims.
+    const observationExplanation = [
+      `Thai Customs ctm_06_11 (${snapshot.published_period}): HS8 ${hs8} rows observed = ${projection.totalMarketRows}; India-origin rows = ${projection.indiaMarketRows}.`,
+      `Total market import value (THB) at HS8 ${hs8} = ${projection.totalMarketImportValueThb.toLocaleString("en-US")}.`,
+      `India-origin market import value (THB) = ${projection.indiaMarketImportValueThb.toLocaleString("en-US")}.`,
+      "Market-level evidence only — never a company-level claim.",
+      THAI_CUSTOMS_STATS_ATTRIBUTION,
+    ].join(" ");
+    const coverageExplanation = projection.marketImportActivity === "observed"
+      ? `Thailand HS8 ${hs8} import flows observed at MARKET level in ${projection.sourcePeriod}. India-origin market activity: ${projection.indiaOriginMarketActivity}.`
+      : `No Thailand import rows observed at HS8 ${hs8} in ${projection.sourcePeriod}; market-level not_observed (never a candidate-level negative claim).`;
+
+    const status: Extract<TradeResearchProviderExecutionState, "completed" | "no_match" | "cached"> =
+      cacheHit ? "cached" : (projection.marketImportActivity === "observed" ? "completed" : "no_match");
+
+    const source: TradeResearchSourceEvidence = {
+      providerId: THAI_CUSTOMS_STATS_DESCRIPTOR.id as never,
+      outcome: cacheHit ? "cache_hit" : (status === "no_match" ? "no_match" : "completed"),
+      source: "Thai Customs Data Catalog — ctm_06_11",
+      datasetPeriod: snapshot.published_period,
+      retrievedAt: snapshot.retrieved_at,
+      // No candidate match performed; the fields that only make sense
+      // under a company match are left undefined.
+      matchedSourceName: undefined,
+      matchedState: undefined,
+      candidateName: undefined,
+      candidateState: undefined,
+      identityDecision: "none",
+      matchReason: observationExplanation,
+      coverageExplanation,
+      companyEvidence: "not_available",
+      productEvidence: projection.productRelevance === "observed" ? "supporting" : "not_available",
+      originEvidence: projection.indiaOriginMarketActivity === "observed" ? "supporting" : "not_available",
+      shipmentEvidence: "not_verified",
+      attribution: THAI_CUSTOMS_STATS_ATTRIBUTION,
+    };
+
+    const providerResult: TradeResearchProviderResult = {
+      providerId: THAI_CUSTOMS_STATS_DESCRIPTOR.id,
+      datasetId: THAI_CUSTOMS_STATS_DATASET_ID,
+      datasetVersion: snapshot.material_hash ?? null,
+      parserVersion: THAI_CUSTOMS_STATS_PARSER_VERSION,
+      sourceRecordIds: [`${THAI_CUSTOMS_STATS_DATASET_ID}:${snapshot.published_period}:${hs8}`],
+      sourcePeriod: snapshot.published_period,
+      retrievedAt: snapshot.retrieved_at,
+      execution: { status, safeErrorCode: null },
+      evidence: {
+        matchDecision: "none",
+        companyEvidence: { state: "not_available", explanation: "Market-level dataset — no candidate matching." },
+        productEvidence: { state: projection.productRelevance === "observed" ? "supporting" : "not_available", explanation: `HS8 ${hs8} rows: ${projection.totalMarketRows}.` },
+        originEvidence: { state: projection.indiaOriginMarketActivity === "observed" ? "supporting" : "not_available", explanation: `India-origin market rows at HS8 ${hs8}: ${projection.indiaMarketRows}.` },
+        indiaOriginEvidence: { state: projection.indiaOriginMarketActivity === "observed" ? "supporting" : "not_verified", explanation: `India-origin market rows at HS8 ${hs8}: ${projection.indiaMarketRows}. Market-level only.` },
+        shipmentEvidence: { state: "not_verified", explanation: "Dataset does not carry per-company shipment records." },
+        programEvidence: { state: "not_available", explanation: "Not a program-participant list." },
+        coverage: {
+          state: projection.marketImportActivity === "observed" ? "partially_covered" : "not_covered",
+          explanation: coverageExplanation,
+        },
+        limitations: [
+          "Thai Customs ctm_06_11 is a market-level aggregate (HS × origin × period). No candidate identity is matched.",
+          "`company_shipment_activity` is NEVER set to a positive claim by this provider.",
+        ],
+        attribution: THAI_CUSTOMS_STATS_ATTRIBUTION,
+        mappingScope: {
+          marketCountryCode: context.marketCountryCode,
+          productId: context.productId,
+          productForm: context.productForm,
+          sourceProductCodes: [hs8, ...projection.observedStatisticalCodes],
+          companyGrain: "not_available",
+          productGrain: "market_product",
+          originGrain: "market_product_origin",
+          shipmentGrain: "not_available",
+          programGrain: "not_available",
+        },
+        interpretationVersion: THAI_CUSTOMS_STATS_INTERPRETATION_VERSION,
+        conflicts: [],
+      },
+    };
+
+    return {
+      status,
+      providerResult,
+      sourceEvidence: source,
+      recordCount: snapshot.row_count,
+      matchCount: projection.totalMarketRows,
+    };
+  },
+};
+
+// `THAI_CUSTOMS_STATS_SOURCE_URL` is re-exported so tests and the UI
+// can reference the human-readable catalog page for the dataset.
+export { THAI_CUSTOMS_STATS_SOURCE_URL } from "../thaiCustomsStats";
+
+/**
+ * TH04B — Public-website trade-research executor.
+ *
+ * COMPANY_SITE grain only. Fetches the candidate's own homepage
+ * (bounded, HTML-only, max 256 KiB, timeout 8 s, one redirect
+ * allowed), extracts Thai-aware signals via TH03 helpers, and
+ * projects to `supporting` evidence at best. NEVER promotes to
+ * `verified` identity, never emits shipment / India-origin /
+ * regulatory evidence. If `candidate.website` is missing or the
+ * URL cannot be parsed as HTTP(S), the provider is `unavailable`.
+ *
+ * Reused safety:
+ *   - robots.txt is honored by checking the candidate domain's
+ *     `/robots.txt` for a generic Disallow against the user-agent
+ *     path we are about to fetch. If disallowed, we skip.
+ *   - no browser automation, no CAPTCHA bypass.
+ *   - no cookies persist; no credentials.
+ */
+const PUBLIC_WEBSITE_FETCH_TIMEOUT_MS = 8_000;
+const PUBLIC_WEBSITE_MAX_BODY_BYTES = 256 * 1024;
+const PUBLIC_WEBSITE_USER_AGENT = DEFAULT_PUBLIC_WEBSITE_USER_AGENT;
+const PUBLIC_WEBSITE_MAX_CONTENT_PAGES = 3;
+
+function toHomepageUrl(raw: string | undefined | null): URL | null {
+  if (!raw) return null;
+  try {
+    const url = new URL(raw.startsWith("http") ? raw : `https://${raw}`);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+    const host = url.hostname.toLowerCase();
+    // Minimal SSRF guard — refuse localhost / RFC1918 / loopback-ish patterns.
+    if (!host || host === "localhost" || host.endsWith(".localhost")) return null;
+    if (/^(127\.|10\.|192\.168\.|169\.254\.)/.test(host)) return null;
+    if (/^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(host)) return null;
+    // Strip query/fragment; use origin + /.
+    return new URL("/", url);
+  } catch { return null; }
+}
+
+async function bounded_fetch_html(url: URL, fetchImpl: typeof fetch, now: () => Date): Promise<{ ok: true; html: string; finalUrl: string } | { ok: false; code: string; retryable: boolean }> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), PUBLIC_WEBSITE_FETCH_TIMEOUT_MS);
+  try {
+    const response = await fetchImpl(url.toString(), {
+      method: "GET",
+      headers: { "user-agent": PUBLIC_WEBSITE_USER_AGENT, accept: "text/html" },
+      redirect: "follow",
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      const retryable = response.status >= 500 || response.status === 429 || response.status === 408;
+      return { ok: false, code: `WEBSITE_HTTP_${response.status}`, retryable };
+    }
+    const contentType = (response.headers.get("content-type") ?? "").toLowerCase();
+    if (!contentType.includes("text/html") && !contentType.includes("application/xhtml")) {
+      return { ok: false, code: "WEBSITE_NOT_HTML", retryable: false };
+    }
+    const buf = await response.arrayBuffer();
+    if (buf.byteLength > PUBLIC_WEBSITE_MAX_BODY_BYTES) {
+      return { ok: false, code: "WEBSITE_TOO_LARGE", retryable: false };
+    }
+    const html = new TextDecoder("utf-8", { fatal: false }).decode(buf);
+    void now;
+    return { ok: true, html, finalUrl: response.url || url.toString() };
+  } catch (error) {
+    const name = error instanceof Error ? error.name : "UnknownError";
+    const retryable = name === "AbortError" || name === "TypeError";
+    return { ok: false, code: name === "AbortError" ? "WEBSITE_TIMEOUT" : "WEBSITE_FETCH_FAILED", retryable };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * TH04C Step 0A — fetches robots.txt ONCE per candidate host and
+ * returns an evaluator closed over the parsed body. `allowsPath` is
+ * then safe to call for every candidate URL on that host.
+ *
+ * Conservative on fetch failure: a network error returns an
+ * evaluator that permits every path (matches the previous policy),
+ * while a 200 OK with malformed content → evaluator returns `false`
+ * for everything (`isPathAllowedByRobots` is strict).
+ */
+async function loadRobotsEvaluator(host: string, fetchImpl: typeof fetch): Promise<(requestPath: string) => boolean> {
+  let body: string | null = null;
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 3_000);
+    try {
+      const r = await fetchImpl(`https://${host}/robots.txt`, {
+        headers: { "user-agent": PUBLIC_WEBSITE_USER_AGENT, accept: "text/plain" },
+        signal: controller.signal,
+      });
+      body = r.ok ? await r.text() : null;
+    } finally { clearTimeout(timer); }
+  } catch { body = null; }
+  return (requestPath: string) => isPathAllowedByRobots(body, requestPath, PUBLIC_WEBSITE_USER_AGENT);
+}
+
+function evidenceLevel(signals: PublicWebsiteSignals): {
+  productState: "supporting" | "not_available";
+  companyState: "supporting" | "not_available";
+  productExplanation: string;
+  companyExplanation: string;
+  coverageState: "partially_covered" | "not_covered";
+  coverageExplanation: string;
+  observationExplanation: string;
+} {
+  const productState = signals.productSignals.length > 0 ? "supporting" : "not_available";
+  const identity = signals.identityComparison;
+  const companyState = identity && (
+    identity.matchLevel === "exact" || identity.matchLevel === "strong"
+  ) ? "supporting" : "not_available";
+  const productExplanation = signals.productSignals.length > 0
+    ? `Observed product-signal keywords on the company's own website: ${signals.productSignals.slice(0, 6).join(", ")}. COMPANY-SITE grain only.`
+    : "No product-signal keywords observed on the fetched page(s). Language coverage may be incomplete — not a company-level negative claim.";
+  const companyExplanation = companyState === "supporting"
+    ? `Candidate company identity supported by website evidence (${identity!.matchLevel}): ${identity!.reasons.join(", ")}. Supporting — never 'verified' from website alone.`
+    : "No strong on-site identity signal (requires exact Thai/English legal-name match or juristic number).";
+  const coverageState = (productState === "supporting" || companyState === "supporting" || signals.observedPublicEmails.length > 0 || signals.observedPublicPhones.length > 0) ? "partially_covered" : "not_covered";
+  const coverageExplanation = `Pages inspected: 1 (homepage). Role signals observed: ${signals.roleSignals.length}. Public emails observed: ${signals.observedPublicEmails.length}. Public phones observed: ${signals.observedPublicPhones.length}.`;
+  const observationExplanation = [
+    `Website: ${signals.pageUrl}.`,
+    signals.pageTitle ? `Title: "${signals.pageTitle}".` : "",
+    signals.productSignals.length ? `Product signals: ${signals.productSignals.slice(0, 6).join(", ")}.` : "",
+    signals.roleSignals.length ? `Role signals (website claims only): ${signals.roleSignals.slice(0, 6).join(", ")}.` : "",
+    signals.observedPublicEmails.length ? `Public email(s) observed: ${signals.observedPublicEmails.length}.` : "",
+    PUBLIC_WEBSITE_ATTRIBUTION,
+  ].filter(Boolean).join(" ");
+  return { productState, companyState, productExplanation, companyExplanation, coverageState, coverageExplanation, observationExplanation };
+}
+
+export const PUBLIC_WEBSITE_EXECUTOR: TradeResearchProviderExecutor = {
+  providerId: PUBLIC_WEBSITE_DESCRIPTOR.id,
+  descriptor: PUBLIC_WEBSITE_DESCRIPTOR,
+  requiredStartBudgetMs: 15_000,
+  // No snapshot cache for website fetches — each run inspects the
+  // candidate's current public page content. `hasFreshSnapshot`
+  // always returns false so the executor fetches when claimed.
+  hasFreshSnapshot: async () => false,
+  async execute(input) {
+    const candidate = await input.writer.getCandidate(input.job);
+    const url = toHomepageUrl(candidate.website ?? candidate.domain ?? null);
+    if (!url) {
+      return { status: "failed_terminal", safeErrorCode: "WEBSITE_UNAVAILABLE", retryable: false };
+    }
+    const fetchImpl = input.fetchImpl ?? fetch;
+    const host = url.hostname.toLowerCase();
+
+    // TH04C Step 0A — fetch robots.txt once, evaluate per path.
+    const robotsAllows = await loadRobotsEvaluator(host, fetchImpl);
+    if (!robotsAllows(url.pathname || "/")) {
+      return { status: "failed_terminal", safeErrorCode: "WEBSITE_ROBOTS_DISALLOW", retryable: false };
+    }
+
+    // 1. Homepage.
+    const homepage = await bounded_fetch_html(url, fetchImpl, input.now);
+    if (!homepage.ok) {
+      return { status: homepage.retryable ? "failed_retryable" : "failed_terminal", safeErrorCode: homepage.code, retryable: homepage.retryable };
+    }
+    const homepageSignals = extractPublicWebsiteSignals({
+      html: homepage.html,
+      url: homepage.finalUrl,
+      candidateCompanyName: candidate.companyName ?? null,
+      candidateDomain: candidate.domain ?? null,
+      candidateJuristicRegistrationNumber: null,
+    });
+
+    // 2. Discover + fetch up to two bounded same-origin subpages.
+    const subpagePicks = selectSameOriginSubpages({
+      homepageHtml: homepage.html,
+      homepageUrl: homepage.finalUrl,
+    });
+    const perPage: Array<{ category: "homepage" | "contact" | "product"; signals: PublicWebsiteSignals }> = [
+      { category: "homepage", signals: homepageSignals },
+    ];
+    const subpageCategories: Array<"contact" | "product"> = ["contact", "product"];
+    for (const cat of subpageCategories) {
+      if (perPage.length >= PUBLIC_WEBSITE_MAX_CONTENT_PAGES) break;
+      const target = subpagePicks[cat];
+      if (!target) continue;
+      let parsed: URL;
+      try { parsed = new URL(target); } catch { continue; }
+      if (parsed.hostname.toLowerCase() !== host) continue;
+      if (!robotsAllows(parsed.pathname || "/")) continue;
+      const fetched = await bounded_fetch_html(parsed, fetchImpl, input.now);
+      if (!fetched.ok) continue; // optional subpage: 404 / failure skipped, do NOT fail the provider.
+      perPage.push({
+        category: cat,
+        signals: extractPublicWebsiteSignals({
+          html: fetched.html,
+          url: fetched.finalUrl,
+          candidateCompanyName: candidate.companyName ?? null,
+          candidateDomain: candidate.domain ?? null,
+          candidateJuristicRegistrationNumber: null,
+        }),
+      });
+    }
+
+    const merged: MergedPublicWebsiteSignals = mergePublicWebsiteSignals({
+      homepageUrl: homepage.finalUrl,
+      perPage,
+    });
+    // Build a signals object compatible with the single-page `evidenceLevel`
+    // projection by projecting merged terms to the simpler shape.
+    const signals: PublicWebsiteSignals = {
+      pageUrl: homepage.finalUrl,
+      pageTitle: homepageSignals.pageTitle,
+      productSignals: merged.productSignals.map((p) => p.term),
+      roleSignals: merged.roleSignals.map((r) => r.term),
+      contactSignals: merged.contactSignals.map((c) => c.term),
+      observedPublicEmails: merged.observedPublicEmails.map((e) => e.email),
+      observedPublicPhones: merged.observedPublicPhones.map((p) => p.e164),
+      observedThaiLegalNameSnapshot: merged.observedThaiLegalNameSnapshot,
+      observedEnglishLegalNameSnapshot: merged.observedEnglishLegalNameSnapshot,
+      observedJuristicNumberSnapshot: merged.observedJuristicNumberSnapshot,
+      identityComparison: merged.identityMatchLevel
+        ? { matchLevel: merged.identityMatchLevel, reasons: [], matchedFields: [] }
+        : null,
+      rawTextLengthChars: homepageSignals.rawTextLengthChars,
+    };
+    const projection = evidenceLevel(signals);
+    const now = input.now();
+    const anyEvidenceObserved =
+      signals.productSignals.length > 0
+      || signals.observedPublicEmails.length > 0
+      || signals.observedPublicPhones.length > 0
+      || (signals.identityComparison?.matchLevel === "exact" || signals.identityComparison?.matchLevel === "strong");
+    const status: Extract<TradeResearchProviderExecutionState, "completed" | "no_match"> =
+      anyEvidenceObserved ? "completed" : "no_match";
+
+    const source: TradeResearchSourceEvidence = {
+      providerId: "public-website" as never,
+      source: "Candidate Public Website",
+      outcome: status === "no_match" ? "no_match" : "completed",
+      datasetPeriod: now.toISOString().slice(0, 7),
+      retrievedAt: now.toISOString(),
+      matchedSourceName: signals.pageTitle ?? undefined,
+      candidateName: candidate.companyName ?? undefined,
+      identityDecision: signals.identityComparison?.matchLevel === "exact"
+        ? "exact"
+        : signals.identityComparison?.matchLevel === "strong"
+        ? "strong"
+        : signals.identityComparison?.matchLevel === "possible"
+        ? "ambiguous"
+        : "none",
+      matchReason: projection.observationExplanation,
+      coverageExplanation: projection.coverageExplanation,
+      companyEvidence: projection.companyState,
+      productEvidence: projection.productState,
+      originEvidence: "not_available",
+      shipmentEvidence: "not_verified",
+      attribution: PUBLIC_WEBSITE_ATTRIBUTION,
+    };
+
+    const providerResult: TradeResearchProviderResult = {
+      providerId: PUBLIC_WEBSITE_DESCRIPTOR.id,
+      datasetId: "public-website-homepage",
+      datasetVersion: null,
+      parserVersion: PUBLIC_WEBSITE_PARSER_VERSION,
+      sourceRecordIds: [`website:${host}`],
+      sourcePeriod: now.toISOString().slice(0, 7),
+      retrievedAt: now.toISOString(),
+      execution: { status, safeErrorCode: null },
+      evidence: {
+        matchDecision: signals.identityComparison?.matchLevel === "exact"
+          ? "exact"
+          : signals.identityComparison?.matchLevel === "strong"
+          ? "strong"
+          : signals.identityComparison?.matchLevel === "possible"
+          ? "ambiguous"
+          : "none",
+        companyEvidence: { state: projection.companyState, explanation: projection.companyExplanation },
+        productEvidence: { state: projection.productState, explanation: projection.productExplanation },
+        originEvidence: { state: "not_available", explanation: "Public website is not an origin source." },
+        indiaOriginEvidence: { state: "not_verified", explanation: "Public website never establishes India origin." },
+        shipmentEvidence: { state: "not_verified", explanation: "Public website never establishes shipment activity." },
+        programEvidence: { state: "not_available", explanation: "Public website is not a program-participant list." },
+        coverage: { state: projection.coverageState, explanation: projection.coverageExplanation },
+        limitations: [
+          "Public-website evidence is COMPANY_SITE grain. Never regulatory, trade, shipment, India-origin, or buyer-intent evidence.",
+          "Thai-language coverage may be incomplete; a product-keyword miss is NOT a company-level negative.",
+        ],
+        attribution: PUBLIC_WEBSITE_ATTRIBUTION,
+        mappingScope: {
+          marketCountryCode: input.context.marketCountryCode,
+          productId: input.context.productId,
+          productForm: input.context.productForm,
+          sourceProductCodes: [],
+          companyGrain: "company_record",
+          productGrain: "company_product",
+          originGrain: "not_available",
+          shipmentGrain: "not_available",
+          programGrain: "not_available",
+        },
+        interpretationVersion: PUBLIC_WEBSITE_INTERPRETATION_VERSION,
+        conflicts: [],
+      },
+    };
+
+    return {
+      status,
+      providerResult,
+      sourceEvidence: source,
+      recordCount: signals.rawTextLengthChars,
+      matchCount: signals.productSignals.length,
+    };
+  },
+};
+
 const EXECUTORS_BY_DESCRIPTOR = new Map<string, TradeResearchProviderExecutor>([
   [FDA_FSVP_EXECUTOR.providerId, FDA_FSVP_EXECUTOR],
   [FDA_VQIP_EXECUTOR.providerId, FDA_VQIP_EXECUTOR],
   [CANADA_CID_EXECUTOR.providerId, CANADA_CID_EXECUTOR],
+  [THAI_CUSTOMS_STATS_EXECUTOR.providerId, THAI_CUSTOMS_STATS_EXECUTOR],
+  [PUBLIC_WEBSITE_EXECUTOR.providerId, PUBLIC_WEBSITE_EXECUTOR],
 ]);
 
 /** The executor registry is derived from the existing descriptor registry. */

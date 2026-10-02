@@ -91,12 +91,16 @@ export interface TradeResearchBatchSnapshot {
 }
 
 export interface TradeResearchEvidenceDetail {
-  source: "FDA FSVP" | "Canadian Importers Database" | "FDA VQIP";
+  source: "FDA FSVP" | "Canadian Importers Database" | "FDA VQIP" | "Thai Customs Data Catalog — ctm_06_11" | "Candidate Public Website";
   datasetPeriod: string;
   retrievedAt: string;
   matchedSourceName?: string;
   matchedState?: string;
-  candidateName: string;
+  // TH04A — Thailand's market-level provider does NOT match a
+  // candidate. `candidateName` is optional so market-level evidence
+  // entries can omit it without fabricating a value. US / Canada
+  // providers continue to populate it as before.
+  candidateName?: string;
   candidateState?: string;
   identityDecision: "exact" | "strong" | "ambiguous" | "rejected" | "none";
   matchReason: string;
@@ -356,7 +360,7 @@ export interface TradeResearchResultSummary {
 }
 
 export interface TradeResearchSourceEvidence extends TradeResearchEvidenceDetail {
-  providerId: "fda-fsvp" | "canada-cid" | "fda-vqip";
+  providerId: "fda-fsvp" | "canada-cid" | "fda-vqip" | "thai-customs-stats";
   outcome: "completed" | "cache_hit" | "no_match" | "provider_failed" | "not_evaluated";
   companyEvidence:
     | "verified"
