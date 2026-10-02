@@ -43,7 +43,7 @@ describe("TH06 FINAL — Thailand market gate in CandidateView", () => {
     expect(text).toContain("DBD Company Registry");
     expect(text).toContain("Thai Customs Operator Registry");
     expect(text).toContain("Thai FDA Food Import Licence");
-    expect(getAggregateMock).toHaveBeenCalledWith(CANDIDATE);
+    expect(getAggregateMock).toHaveBeenCalledWith(CANDIDATE, expect.objectContaining({ candidateProductIds: expect.anything() }));
   });
 
   it("2. US candidate → Thailand panel absent (nothing renders)", async () => {

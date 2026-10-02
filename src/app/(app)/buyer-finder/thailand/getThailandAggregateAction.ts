@@ -46,6 +46,28 @@ export interface GetThailandAggregateResult {
   readonly unsupportedProductMessage?: string;
 }
 
+/**
+ * TH07 DEFECT 01 — Pre-research eligibility input.
+ *
+ * The UI knows the candidate's currently-selectable product set
+ * (same list `CandidateTradeResearchPanel` uses). Before the FIRST
+ * Thailand research job exists there is no persisted ResearchContext,
+ * so eligibility must be derived from the candidate's current
+ * product selection — not from a fabricated job.
+ *
+ * We trust this list ONLY for the pre-research `productSupported`
+ * decision. It is NEVER used as provider evidence or to synthesize
+ * aggregate results — if no persisted TH job exists the aggregate
+ * stays empty (automated 0/2, manual pending 3).
+ *
+ * Even if a client tampered with this list, the only observable
+ * effect is a different "unsupported product" banner state — no
+ * data is written, no provider is invoked, no spend occurs.
+ */
+export interface GetThailandAggregateOptions {
+  readonly candidateProductIds?: readonly string[];
+}
+
 function toTopLevel(status: string): "completed" | "no_match" | "cached" | "failed_retryable" | "failed_terminal" | "unsupported" | "not_evaluated" {
   if (status === "completed" || status === "no_match" || status === "cached") return status;
   if (status === "failed_retryable" || status === "failed_terminal" || status === "unsupported") return status;
@@ -108,7 +130,10 @@ function buildCandidateIdentity(candidate: { companyName?: string | null; addres
   };
 }
 
-export async function getThailandAggregateForCandidateAction(candidateId: string): Promise<GetThailandAggregateResult> {
+export async function getThailandAggregateForCandidateAction(
+  candidateId: string,
+  options: GetThailandAggregateOptions = {},
+): Promise<GetThailandAggregateResult> {
   const session = await requireMdfSession();
   if (!UUID.test(candidateId)) return { isThailandMarket: false };
   const supabase = createClient(cookies());
@@ -152,6 +177,21 @@ export async function getThailandAggregateForCandidateAction(candidateId: string
     && mapping !== undefined
     && mapping.thaiQueryCodes.length > 0;
 
+  // TH07 DEFECT 01 — pre-research eligibility. Only consulted when
+  // no persisted job matches the Thailand automated contract (which
+  // covers both "no job at all" and "a job that was planned under a
+  // different contract, e.g. a US job on the same candidate"). The
+  // candidate's current product set determines whether the operator
+  // can still kick off Thailand research. Provider evidence is NEVER
+  // sourced from this path; the aggregate stays empty (automated
+  // 0/2, manual pending 3) until a real TH job runs.
+  const preResearchSupported = !jobMatchesThailandContract
+    && (options.candidateProductIds ?? []).some((pid) => {
+      if (typeof pid !== "string" || !pid) return false;
+      const m = findThailandHsMapping(pid, null);
+      return m !== undefined && m.thaiQueryCodes.length > 0;
+    });
+
   const providerResults: readonly TradeResearchProviderResult[] = jobMatchesThailandContract && latest?.result?.providerResults
     ? latest.result.providerResults
     : [];
@@ -186,11 +226,24 @@ export async function getThailandAggregateForCandidateAction(candidateId: string
     candidateIdentity,
   });
 
-  // TH06 FINAL — productSupported reflects whether the persisted
-  // Thailand job (if any) exists AND matches the automated contract.
-  // When no supported TH job has run, the UI copy makes this clear
-  // instead of silently reading an unrelated job.
-  const productSupported = jobMatchesThailandContract;
+  // TH07 DEFECT 01 — Two separate concepts:
+  //
+  //   1. Is the candidate currently eligible for Thailand research?
+  //      • If a persisted TH job exists, use its stored context
+  //        (jobMatchesThailandContract).
+  //      • Otherwise fall back to the current candidate's product
+  //        selection — the same input `CandidateTradeResearchPanel`
+  //        uses to let the operator click "Research trade activity".
+  //
+  //   2. Which persisted job's provider results are authoritative?
+  //      • ONLY the latest persisted job (see providerResults above).
+  //      • NEVER synthesized from the eligibility hint.
+  //
+  // The unsupported-product banner only appears when BOTH signals
+  // say the current product/form is unsupported, so a brand-new TH
+  // candidate with a supported product selection sees the empty
+  // aggregate instead of the "not available" copy.
+  const productSupported = jobMatchesThailandContract || preResearchSupported;
 
   return {
     isThailandMarket: true,

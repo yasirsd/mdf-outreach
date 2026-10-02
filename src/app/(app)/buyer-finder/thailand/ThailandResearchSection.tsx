@@ -29,9 +29,17 @@ import type { ThailandManualEvidenceReadResult } from "@/lib/tradeResearch/thail
 export function ThailandResearchSection({
   candidateId,
   marketCountryCode,
+  candidateProductIds,
 }: {
   candidateId: string;
   marketCountryCode?: string;
+  /**
+   * TH07 DEFECT 01 — the candidate's current product-match product
+   * ids. Used by `getThailandAggregateForCandidateAction` for
+   * pre-research eligibility ONLY (before the first TH job exists).
+   * Not used as provider evidence or to synthesize aggregate.
+   */
+  candidateProductIds?: readonly string[];
 }) {
   const router = useRouter();
   const [agg, setAgg] = useState<GetThailandAggregateResult | null>(null);
@@ -48,7 +56,9 @@ export function ThailandResearchSection({
     setLoading(true);
     try {
       const [a, m, h] = await Promise.all([
-        getThailandAggregateForCandidateAction(candidateId),
+        getThailandAggregateForCandidateAction(candidateId, {
+          candidateProductIds: candidateProductIds ?? [],
+        }),
         getThailandManualEvidenceForCandidateAction(candidateId),
         getThailandManualEvidenceHistoryAction(candidateId),
       ]);
@@ -60,7 +70,7 @@ export function ThailandResearchSection({
     } finally {
       setLoading(false);
     }
-  }, [candidateId]);
+  }, [candidateId, candidateProductIds]);
 
   useEffect(() => {
     if (!isThailand) {
@@ -71,7 +81,7 @@ export function ThailandResearchSection({
       return;
     }
     void load();
-  }, [isThailand, load]);
+  }, [isThailand, load, candidateProductIds]);
 
   // Market gate — nothing renders for US/CA.
   if (!isThailand) return null;

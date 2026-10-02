@@ -255,6 +255,7 @@ export function CandidateView({
           <ThailandResearchSection
             candidateId={candidate.id}
             marketCountryCode={tradeResearchMarketCode}
+            candidateProductIds={tradeResearchProducts.map((p) => p.id)}
           />
 
           {others.length > 0 && (
