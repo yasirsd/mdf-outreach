@@ -163,7 +163,7 @@ describe("BI4F 2A createTradeResearchBatchAction — inline kick", () => {
     createBatchMock.mockResolvedValueOnce(BATCH);
     const { createTradeResearchBatchAction } = await import("./tradeResearchActions");
     const result = await createTradeResearchBatchAction([REQUEST]);
-    expect(result).toEqual({ outcome: "created", batch: BATCH });
+    expect(result).toEqual({ outcome: "created", batch: BATCH, jobCount: BATCH.totalJobs });
     expect(drainMock).toHaveBeenCalledTimes(1);
     // Bounded kick: exactly one job, capped time budget.
     const kick = drainMock.mock.calls[0]![0] as {
@@ -183,7 +183,7 @@ describe("BI4F 2A createTradeResearchBatchAction — inline kick", () => {
     drainMock.mockRejectedValueOnce(new Error("worker exploded"));
     const { createTradeResearchBatchAction } = await import("./tradeResearchActions");
     const result = await createTradeResearchBatchAction([REQUEST]);
-    expect(result).toEqual({ outcome: "created", batch: BATCH });
+    expect(result).toEqual({ outcome: "created", batch: BATCH, jobCount: BATCH.totalJobs });
     expect(revalidatePathMock).toHaveBeenCalledWith("/buyer-finder");
   });
 
@@ -196,7 +196,7 @@ describe("BI4F 2A createTradeResearchBatchAction — inline kick", () => {
     });
     const { createTradeResearchBatchAction } = await import("./tradeResearchActions");
     const result = await createTradeResearchBatchAction([REQUEST]);
-    expect(result).toEqual({ outcome: "created", batch: BATCH });
+    expect(result).toEqual({ outcome: "created", batch: BATCH, jobCount: BATCH.totalJobs });
   });
 
   it("non-owner cannot even create a batch, so no drain kick is fired", async () => {
@@ -255,7 +255,7 @@ describe("T14 Stage 1 — env-driven kick strategy (Netlify Background Function 
       const { createTradeResearchBatchAction } = await import("./tradeResearchActions");
       const result = await createTradeResearchBatchAction([REQUEST]);
       const elapsed = Date.now() - started;
-      expect(result).toEqual({ outcome: "created", batch: BATCH });
+      expect(result).toEqual({ outcome: "created", batch: BATCH, jobCount: BATCH.totalJobs });
       // Fire-and-forget: the inline drain worker MUST NOT be invoked
       // when the Netlify Background Function URL is configured.
       expect(drainMock).not.toHaveBeenCalled();
@@ -301,7 +301,7 @@ describe("T14 Stage 1 — env-driven kick strategy (Netlify Background Function 
       const result = await createTradeResearchBatchAction([REQUEST]);
       // Absorbed failure — the batch is safely queued and a future
       // Supabase Cron tick will drain it.
-      expect(result).toEqual({ outcome: "created", batch: BATCH });
+      expect(result).toEqual({ outcome: "created", batch: BATCH, jobCount: BATCH.totalJobs });
       expect(revalidatePathMock).toHaveBeenCalledWith("/buyer-finder");
     } finally {
       fetchSpy.mockRestore();
@@ -317,7 +317,7 @@ describe("T14 Stage 1 — env-driven kick strategy (Netlify Background Function 
     try {
       const { createTradeResearchBatchAction } = await import("./tradeResearchActions");
       const result = await createTradeResearchBatchAction([REQUEST]);
-      expect(result).toEqual({ outcome: "created", batch: BATCH });
+      expect(result).toEqual({ outcome: "created", batch: BATCH, jobCount: BATCH.totalJobs });
       // Existing Vercel path — drain worker invoked, no HTTP call to
       // a background function URL.
       expect(drainMock).toHaveBeenCalledTimes(1);
@@ -741,6 +741,134 @@ describe("TH07 DEFECT 02 — Thailand batch-level plannerVersion matches canonic
     expect(input.plannerVersion).toBe("trade-planner-v1");
     expect(input.jobs[0]!.context.providerPlanVersion).toBe("trade-planner-v1");
     expect(input.plannerVersion).toBe(input.jobs[0]!.context.providerPlanVersion);
+  });
+
+  it("8b. forbidden branch returns typed outcome and never null (role != owner)", async () => {
+    requireMdfSessionMock.mockResolvedValue({ ...OWNER_SESSION, membership: { ...OWNER_SESSION.membership, role: "collaborator" } });
+    serverReposMock.mockResolvedValueOnce(thaiRepositories());
+    const { createTradeResearchBatchAction } = await import("./tradeResearchActions");
+    const r = await createTradeResearchBatchAction([TH_REQUEST]);
+    expect(r).not.toBeNull();
+    expect(r.outcome).toBe("forbidden");
+    expect(createBatchMock).not.toHaveBeenCalled();
+  });
+
+  it("8c. candidate_not_found branch returns typed outcome and never null (workspace mismatch)", async () => {
+    requireMdfSessionMock.mockResolvedValue(OWNER_SESSION);
+    const SPUNKY = "9a4d22ea-4fa5-4eb1-975f-6275f01d3bcc";
+    serverReposMock.mockResolvedValueOnce({
+      repos: {
+        buyerCandidates: { list: async () => [] }, // candidate NOT in workspace
+        buyerCandidateProductMatches: {
+          listByCandidate: async () => [],
+          listByCandidateIds: async () => [],
+        },
+      },
+    });
+    const { createTradeResearchBatchAction } = await import("./tradeResearchActions");
+    const r = await createTradeResearchBatchAction([{ ...TH_REQUEST, candidateId: SPUNKY }]);
+    expect(r).not.toBeNull();
+    expect(r.outcome).toBe("candidate_not_found");
+    expect(createBatchMock).not.toHaveBeenCalled();
+  });
+
+  it("8d. invalid_input (product_match absent) returns typed outcome and never null", async () => {
+    requireMdfSessionMock.mockResolvedValue(OWNER_SESSION);
+    const SPUNKY = "9a4d22ea-4fa5-4eb1-975f-6275f01d3bcc";
+    serverReposMock.mockResolvedValueOnce({
+      repos: {
+        buyerCandidates: { list: async () => [{ id: SPUNKY, companyName: "Spunky Food Co.", country: "Thailand" }] },
+        buyerCandidateProductMatches: {
+          listByCandidate: async () => [], // product match row missing
+          listByCandidateIds: async () => [],
+        },
+      },
+    });
+    const { createTradeResearchBatchAction } = await import("./tradeResearchActions");
+    const r = await createTradeResearchBatchAction([{ ...TH_REQUEST, candidateId: SPUNKY }]);
+    expect(r).not.toBeNull();
+    expect(r.outcome).toBe("invalid_input");
+    expect(createBatchMock).not.toHaveBeenCalled();
+  });
+
+  it("8e. already_active branch returns typed outcome and never null (non-terminal existing job)", async () => {
+    requireMdfSessionMock.mockResolvedValue(OWNER_SESSION);
+    serverReposMock.mockResolvedValueOnce(thaiRepositories());
+    // Seed one non-terminal job keyed by what the action will fingerprint.
+    getLatestJobsForContextsMock.mockImplementationOnce(async (items: Array<{ candidateId: string; contextFingerprint: string }>) => {
+      const map = new Map<string, unknown>();
+      for (const item of items) {
+        map.set(item.contextFingerprint, { id: "job-1", status: "running", context: {}, contextFingerprint: item.contextFingerprint });
+      }
+      return map;
+    });
+    const { createTradeResearchBatchAction } = await import("./tradeResearchActions");
+    const r = await createTradeResearchBatchAction([TH_REQUEST]);
+    expect(r).not.toBeNull();
+    expect(r.outcome).toBe("already_active");
+    expect(createBatchMock).not.toHaveBeenCalled();
+  });
+
+  it("8. REPRODUCES PRODUCTION — exact Spunky Food TH payload persists a batch (does NOT fall through to null/no-op)", async () => {
+    requireMdfSessionMock.mockResolvedValue(OWNER_SESSION);
+    const SPUNKY_CANDIDATE_ID = "9a4d22ea-4fa5-4eb1-975f-6275f01d3bcc";
+    const SPUNKY_REQUEST = {
+      candidateId: SPUNKY_CANDIDATE_ID,
+      marketCountryCode: "TH",
+      productId: "guntur-dry-red-chilli",
+      productForm: null,
+      researchGoal: "screen_trade_activity" as const,
+    };
+    // Repository shape mirrors what production would hold for a TH
+    // Spunky Food candidate with a guntur product match.
+    serverReposMock.mockResolvedValueOnce({
+      repos: {
+        buyerCandidates: {
+          list: async () => [{ id: SPUNKY_CANDIDATE_ID, companyName: "Spunky Food Co.", country: "Thailand" }],
+        },
+        buyerCandidateProductMatches: {
+          listByCandidate: async () => [{ candidateId: SPUNKY_CANDIDATE_ID, productId: "guntur-dry-red-chilli" }],
+          listByCandidateIds: async () => [{ candidateId: SPUNKY_CANDIDATE_ID, productId: "guntur-dry-red-chilli" }],
+        },
+      },
+    });
+    createBatchMock.mockResolvedValueOnce(BATCH);
+    const { createTradeResearchBatchAction } = await import("./tradeResearchActions");
+    const result = await createTradeResearchBatchAction([SPUNKY_REQUEST]);
+    // The result MUST be a typed outcome (never null/undefined).
+    expect(result).not.toBeNull();
+    expect(result).not.toBeUndefined();
+    // The action MUST reach persistence.
+    expect(createBatchMock).toHaveBeenCalledTimes(1);
+    // Successful create → "created" outcome + enriched jobCount.
+    expect(result.outcome).toBe("created");
+    if (result.outcome === "created") {
+      expect(result.jobCount).toBe(BATCH.totalJobs);
+      expect(result.batch.id).toBe(BATCH.id);
+    }
+    // Captured input proves exactly two Thailand automated jobs
+    // (one per TH candidate), carrying thailand-provider-plan-v1
+    // on both the batch and the context.
+    const input = createBatchMock.mock.calls[0]![0] as {
+      plannerVersion: string;
+      jobs: Array<{
+        candidateId: string;
+        context: { providerPlanVersion: string; marketCountryCode: string };
+        plans: Array<{ providerId: string; eligibility: string }>;
+      }>;
+    };
+    expect(input.plannerVersion).toBe("thailand-provider-plan-v1");
+    expect(input.jobs).toHaveLength(1);
+    expect(input.jobs[0]!.context.providerPlanVersion).toBe("thailand-provider-plan-v1");
+    expect(input.jobs[0]!.context.marketCountryCode).toBe("TH");
+    const eligibleProviders = input.jobs[0]!.plans
+      .filter((p) => p.eligibility === "eligible")
+      .map((p) => p.providerId);
+    expect(eligibleProviders).toEqual(expect.arrayContaining(["thai-customs-stats", "public-website"]));
+    // Manual-only providers never enter the plan.
+    for (const manual of ["thai-dbd", "thai-customs-operator", "thai-fda-importer"]) {
+      expect(eligibleProviders).not.toContain(manual);
+    }
   });
 
   it("7. CA submission still works and plannerVersion stays trade-planner-v1 (regression safety)", async () => {

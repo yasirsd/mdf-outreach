@@ -64,7 +64,7 @@ const INLINE_KICK_MAX_ITERATIONS = 2;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export type CreateTradeResearchBatchResult =
-  | { outcome: "created"; batch: TradeResearchBatchSnapshot }
+  | { outcome: "created"; batch: TradeResearchBatchSnapshot; jobCount: number }
   | { outcome: "forbidden" | "invalid_input" | "candidate_not_found" | "already_active"; message: string };
 
 function canonicalRequest(input: TradeResearchRequest): TradeResearchRequest | undefined {
@@ -105,13 +105,36 @@ function serverResearchContext(
 export async function createTradeResearchBatchAction(
   requests: readonly TradeResearchRequest[],
 ): Promise<CreateTradeResearchBatchResult> {
+  // TH07 DEFECT 03 — every branch below emits a diagnostic. In
+  // production, "action returned without persistence" could only
+  // happen if a typed early-return fired silently (the function
+  // itself has no `return null` path). Logging the exact branch
+  // and reason makes the "200 with no DB row" symptom debuggable
+  // and ensures the operator sees proof of which gate rejected.
+  logTradeResearchDiagnostic({
+    event: "batch_action_entered",
+    requestCount: Array.isArray(requests) ? requests.length : 0,
+  });
   const session = await requireMdfSession();
-  if (session.membership.role !== "owner") return { outcome: "forbidden", message: "Only a workspace owner can start trade research." };
+  if (session.membership.role !== "owner") {
+    logTradeResearchDiagnostic({ event: "batch_action_forbidden", reason: "role_not_owner" });
+    return { outcome: "forbidden", message: "Only a workspace owner can start trade research." };
+  }
   if (!Array.isArray(requests) || requests.length === 0 || requests.length > 500) {
+    logTradeResearchDiagnostic({
+      event: "batch_action_invalid_input",
+      reason: !Array.isArray(requests) ? "not_an_array" : requests.length === 0 ? "empty_array" : "too_many_requests",
+      requestCount: Array.isArray(requests) ? requests.length : 0,
+    });
     return { outcome: "invalid_input", message: "Select between 1 and 500 valid research contexts." };
   }
   const normalized = requests.map(canonicalRequest);
   if (normalized.some((request) => !request)) {
+    logTradeResearchDiagnostic({
+      event: "batch_action_invalid_input",
+      reason: "canonical_request_rejected",
+      requestCount: requests.length,
+    });
     return { outcome: "invalid_input", message: "Choose a valid market and associated product before starting research." };
   }
   const normalizedRequests = normalized as TradeResearchRequest[];
@@ -137,12 +160,22 @@ export async function createTradeResearchBatchAction(
   for (const request of normalizedRequests) {
     const candidate = candidates.get(request.candidateId);
     if (!candidate) {
+      logTradeResearchDiagnostic({
+        event: "batch_action_candidate_not_found",
+        candidateId: request.candidateId,
+        reason: "candidate_missing_from_workspace_scope",
+      });
       return { outcome: "candidate_not_found", message: "A selected candidate is not available in this workspace." };
     }
     const ownsProductContext = productMatches.some((match) =>
       match.candidateId === request.candidateId && match.productId === request.productId
     );
     if (!ownsProductContext) {
+      logTradeResearchDiagnostic({
+        event: "batch_action_invalid_input",
+        candidateId: request.candidateId,
+        reason: `product_match_absent_for_${request.productId}`,
+      });
       return { outcome: "invalid_input", message: `${candidate.companyName} is not associated with the selected product context.` };
     }
   }
@@ -165,7 +198,15 @@ export async function createTradeResearchBatchAction(
   for (const { context, contextFingerprint } of requestedContexts) {
     const candidate = candidates.get(context.candidateId)!;
     const latest = latestJobs.get(contextFingerprint);
-    if (latest && !isTerminalTradeResearchStatus(latest.status)) return { outcome: "already_active", message: `${candidate.companyName} already has active trade research.` };
+    if (latest && !isTerminalTradeResearchStatus(latest.status)) {
+      logTradeResearchDiagnostic({
+        event: "batch_action_already_active",
+        candidateId: context.candidateId,
+        jobId: latest.id,
+        status: latest.status,
+      });
+      return { outcome: "already_active", message: `${candidate.companyName} already has active trade research.` };
+    }
     // Phase 2B — evaluate BOTH FDA FSVP and Canada CID descriptors
     // for every candidate. `planTradeResearch` refuses the wrong-
     // country provider (`wrong_country` reason), so US candidates get
@@ -196,6 +237,19 @@ export async function createTradeResearchBatchAction(
         cacheKey: plan.cacheHit ? `${plan.descriptor.id}:current` : "",
       })),
     });
+  }
+  // TH07 DEFECT 03 — defensive invariant. If the per-context loop
+  // somehow finishes with zero jobs for a non-empty request set (a
+  // path that would otherwise reach createBatch with an empty jobs
+  // array and silently 500 against the validator), surface it as
+  // an observable server-side failure instead of a mystery.
+  if (jobs.length === 0) {
+    logTradeResearchDiagnostic({
+      event: "batch_action_zero_jobs_invariant",
+      reason: "planning_loop_produced_zero_jobs",
+      requestCount: normalizedRequests.length,
+    });
+    throw new Error("TRADE_RESEARCH_BATCH_INVARIANT_ZERO_JOBS");
   }
   let batch: TradeResearchBatchSnapshot;
   try {
@@ -228,8 +282,22 @@ export async function createTradeResearchBatchAction(
     });
   } catch (error) {
     if (typeof error === "object" && error && "code" in error && (error as { code?: string }).code === "23505") {
+      logTradeResearchDiagnostic({
+        event: "batch_action_duplicate_23505",
+        reason: "db_unique_violation",
+      });
       return { outcome: "already_active", message: "One or more candidates already have active trade research." };
     }
+    // TH07 DEFECT 03 — do not swallow any other createBatch error.
+    // Re-throwing surfaces it to the Next.js server-action error
+    // path (visible in Vercel logs with an error digest) instead
+    // of silently returning null. Prior behavior already re-threw;
+    // we additionally log the branch so the pre-throw record exists.
+    logTradeResearchDiagnostic({
+      event: "batch_action_invalid_input",
+      reason: "create_batch_rejected",
+      safeErrorCode: safeTradeResearchErrorCode(error),
+    });
     throw error;
   }
   // T14 Stage 1 — env-driven kick strategy.
@@ -254,7 +322,17 @@ export async function createTradeResearchBatchAction(
   // The secret NEVER leaves the server; the fetch is server-side.
   await invokeTradeResearchDrainStrategy(writer, read, batch.id);
   revalidatePath("/buyer-finder");
-  return { outcome: "created", batch };
+  // TH07 DEFECT 03 — enriched return. `jobCount` is persisted-truth
+  // from the batch snapshot the RPC returned, so the client (and any
+  // RSC flight reader) can confirm "action completed AND N jobs were
+  // committed" rather than guessing from an opaque success value.
+  logTradeResearchDiagnostic({
+    event: "batch_action_created",
+    batchId: batch.id,
+    requestCount: normalizedRequests.length,
+    jobCount: batch.totalJobs,
+  });
+  return { outcome: "created", batch, jobCount: batch.totalJobs };
 }
 
 async function invokeTradeResearchDrainStrategy(

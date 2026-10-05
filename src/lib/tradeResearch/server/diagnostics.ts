@@ -7,7 +7,16 @@ export type TradeResearchDiagnostic = {
     "job_claimed" | "stage_started" | "stage_completed" | "job_requeued" | "job_failed" |
     "inline_kick_started" | "inline_kick_finished" | "inline_kick_budget_exhausted" | "inline_kick_failed" |
     "job_checkpointed_runtime_budget" |
-    "research_snapshot_certified" | "research_snapshot_certification_failed";
+    "research_snapshot_certified" | "research_snapshot_certification_failed" |
+    // TH07 DEFECT 03 — per-branch observability for createTradeResearchBatchAction.
+    // Every early-return branch logs one of these so the operator can see
+    // which specific gate (forbidden / invalid_input / candidate_not_found /
+    // already_active / 23505 / zero_jobs_invariant) fired, instead of a
+    // silent 200 with no DB row.
+    "batch_action_entered" | "batch_action_forbidden" | "batch_action_invalid_input" |
+    "batch_action_candidate_not_found" | "batch_action_already_active" |
+    "batch_action_duplicate_23505" | "batch_action_zero_jobs_invariant" |
+    "batch_action_created";
   elapsedMs?: number;
   remainingBudgetMs?: number;
   remainingMs?: number;
@@ -32,6 +41,10 @@ export type TradeResearchDiagnostic = {
   expectedSqlType?: string;
   suppliedCategory?: string;
   validFormat?: boolean;
+  // TH07 DEFECT 03 — createTradeResearchBatchAction observability.
+  requestCount?: number;
+  jobCount?: number;
+  reason?: string;
 };
 
 export type TradeResearchLogger = (diagnostic: TradeResearchDiagnostic) => void;
