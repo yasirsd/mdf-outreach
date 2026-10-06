@@ -15,6 +15,7 @@ export type TradeResearchDiagnostic = {
     // silent 200 with no DB row.
     "batch_action_entered" | "batch_action_forbidden" | "batch_action_invalid_input" |
     "batch_action_candidate_not_found" | "batch_action_already_active" |
+    "batch_action_terminal_rerun" |
     "batch_action_duplicate_23505" | "batch_action_zero_jobs_invariant" |
     "batch_action_created";
   elapsedMs?: number;

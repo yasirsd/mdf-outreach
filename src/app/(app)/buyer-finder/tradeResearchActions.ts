@@ -207,6 +207,30 @@ export async function createTradeResearchBatchAction(
       });
       return { outcome: "already_active", message: `${candidate.companyName} already has active trade research.` };
     }
+    // TH07 DEFECT 05A-R1 — terminal rerun contract.
+    //
+    // When the predecessor exists but is in a terminal status
+    // (completed / partial / needs_review / failed / cancelled per
+    // `isTerminalTradeResearchStatus`), the new job proceeds. The DB
+    // partial unique index `buyer_trade_research_jobs_one_active_context_idx`
+    // (migration 0029) only applies to active statuses, so a new
+    // 'queued' row with the SAME context_fingerprint is accepted; the
+    // old terminal row remains immutable (migration 0029
+    // __trade_research_job_guard rejects any UPDATE to terminal
+    // rows, so history is preserved).
+    //
+    // Diagnostic marks the decision so production logs show the exact
+    // predecessor + the supersedes_job_id wired into the new row.
+    // This diagnostic is READ-ONLY — it does not change behavior.
+    if (latest) {
+      logTradeResearchDiagnostic({
+        event: "batch_action_terminal_rerun",
+        candidateId: context.candidateId,
+        jobId: latest.id,
+        status: latest.status,
+        reason: "terminal_predecessor_supersede",
+      });
+    }
     // Phase 2B — evaluate BOTH FDA FSVP and Canada CID descriptors
     // for every candidate. `planTradeResearch` refuses the wrong-
     // country provider (`wrong_country` reason), so US candidates get
