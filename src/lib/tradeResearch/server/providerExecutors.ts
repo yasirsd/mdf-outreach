@@ -773,50 +773,160 @@ const PUBLIC_WEBSITE_MAX_BODY_BYTES = 256 * 1024;
 const PUBLIC_WEBSITE_USER_AGENT = DEFAULT_PUBLIC_WEBSITE_USER_AGENT;
 const PUBLIC_WEBSITE_MAX_CONTENT_PAGES = 3;
 
+/**
+ * TH07 DEFECT 05B HARDENING — single, shared private-host predicate.
+ *
+ * Protection level is PATTERN-ONLY on the hostname literal:
+ *   - rejects `localhost` / `*.localhost`
+ *   - rejects literal RFC1918 + 127/8 + 169.254/16 + 172.16/12 addresses
+ *     when the hostname IS the literal IP
+ * We do NOT perform DNS resolution here, so a hostile authoritative DNS
+ * that resolves `attacker.example` → 10.0.0.5 is NOT caught at this
+ * layer. Full DNS-level private-IP protection lives in
+ * `src/lib/buyerFinder/ssrf.ts` and is exercised by Buyer Finder's
+ * pinned fetch; the trade-research public-website executor
+ * historically runs without that pinned stack and keeps the same
+ * pattern-level guard it had before this hardening.
+ */
+function isPrivateOrLoopbackHost(host: string | null | undefined): boolean {
+  if (!host) return true;
+  // `URL.hostname` for bracketed IPv6 literals is returned bracketed
+  // on recent Node versions (`[::1]`). Normalize before matching.
+  const h = host.toLowerCase().replace(/^\[|\]$/g, "");
+  if (h === "localhost" || h.endsWith(".localhost")) return true;
+  if (/^(127\.|10\.|192\.168\.|169\.254\.)/.test(h)) return true;
+  if (/^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(h)) return true;
+  // IPv6 loopback (::1) / unspecified (::) / link-local (fe80::/10) /
+  // unique-local (fc00::/7) literals.
+  if (h === "::1" || h === "0:0:0:0:0:0:0:1" || h === "::") return true;
+  if (h.startsWith("fe80:") || h.startsWith("fc") || h.startsWith("fd")) return true;
+  return false;
+}
+
 function toHomepageUrl(raw: string | undefined | null): URL | null {
   if (!raw) return null;
   try {
     const url = new URL(raw.startsWith("http") ? raw : `https://${raw}`);
     if (url.protocol !== "http:" && url.protocol !== "https:") return null;
     const host = url.hostname.toLowerCase();
-    // Minimal SSRF guard — refuse localhost / RFC1918 / loopback-ish patterns.
-    if (!host || host === "localhost" || host.endsWith(".localhost")) return null;
-    if (/^(127\.|10\.|192\.168\.|169\.254\.)/.test(host)) return null;
-    if (/^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(host)) return null;
+    if (isPrivateOrLoopbackHost(host)) return null;
     // Strip query/fragment; use origin + /.
     return new URL("/", url);
   } catch { return null; }
 }
 
-async function bounded_fetch_html(url: URL, fetchImpl: typeof fetch, now: () => Date): Promise<{ ok: true; html: string; finalUrl: string } | { ok: false; code: string; retryable: boolean }> {
+/**
+ * Bounded redirect budget for public-website fetches. Three hops is
+ * enough for www./non-www./https/http canonicalization chains observed
+ * in production catalog data; more than that is a trap or a loop.
+ */
+const PUBLIC_WEBSITE_MAX_REDIRECTS = 3;
+
+/**
+ * TH07 DEFECT 05B HARDENING — controlled redirect fetch.
+ *
+ * The pre-hardening implementation used `redirect: "follow"` and then
+ * inspected `response.url`. That is NOT sufficient SSRF protection:
+ * Node's undici will already have opened a TCP connection to the
+ * redirect target (e.g. 169.254.169.254 cloud metadata, 10.x RFC1918,
+ * 127.0.0.1) BEFORE `response.url` is observable to us.
+ *
+ * The hardened loop:
+ *   1. receives each response with `redirect: "manual"` so the
+ *      transport never follows automatically,
+ *   2. reads `Location`, resolves it against the current URL,
+ *   3. validates the resolved hostname against the shared SSRF
+ *      predicate BEFORE issuing the next fetch, and
+ *   4. caps the redirect chain at PUBLIC_WEBSITE_MAX_REDIRECTS.
+ *
+ * No initial-host weakening: the first URL came from `toHomepageUrl`
+ * which already applied the same predicate.
+ *
+ * Same-origin crawl policy: the caller resolves the FINAL (post-
+ * redirect) host and uses it as the subpage origin, so a legitimate
+ * `example.com` → `www.example.com` canonical redirect still allows
+ * the two bounded subpages on `www.example.com`.
+ */
+async function bounded_fetch_html(
+  url: URL,
+  fetchImpl: typeof fetch,
+  now: () => Date,
+): Promise<{ ok: true; html: string; finalUrl: string } | { ok: false; code: string; retryable: boolean }> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), PUBLIC_WEBSITE_FETCH_TIMEOUT_MS);
+  let currentUrl = new URL(url.toString());
   try {
-    const response = await fetchImpl(url.toString(), {
-      method: "GET",
-      headers: { "user-agent": PUBLIC_WEBSITE_USER_AGENT, accept: "text/html" },
-      redirect: "follow",
-      signal: controller.signal,
-    });
-    if (!response.ok) {
-      const retryable = response.status >= 500 || response.status === 429 || response.status === 408;
-      return { ok: false, code: `WEBSITE_HTTP_${response.status}`, retryable };
+    for (let hop = 0; hop <= PUBLIC_WEBSITE_MAX_REDIRECTS; hop += 1) {
+      let response: Response;
+      try {
+        response = await fetchImpl(currentUrl.toString(), {
+          method: "GET",
+          headers: { "user-agent": PUBLIC_WEBSITE_USER_AGENT, accept: "text/html" },
+          redirect: "manual",
+          signal: controller.signal,
+        });
+      } catch (error) {
+        // TH07 DEFECT 05B — classify DNS vs connect-refused vs TLS vs
+        // timeout into bounded `WEBSITE_*` safe codes (mirrors Defect
+        // 05A's catalog / resource classification). Replaces the
+        // opaque two-bucket {WEBSITE_TIMEOUT, WEBSITE_FETCH_FAILED}
+        // with the full suite so production logs distinguish the
+        // failure modes.
+        const classified = classifyFetchFailure("WEBSITE", error, controller.signal);
+        return { ok: false, code: classified.code, retryable: classified.retryable };
+      }
+
+      // Manual redirect — validate the Location target BEFORE issuing
+      // the next request.
+      const isRedirect =
+        response.status === 301
+        || response.status === 302
+        || response.status === 303
+        || response.status === 307
+        || response.status === 308;
+      if (isRedirect) {
+        if (hop >= PUBLIC_WEBSITE_MAX_REDIRECTS) {
+          return { ok: false, code: "WEBSITE_REDIRECT_LIMIT", retryable: false };
+        }
+        const location = response.headers.get("location");
+        if (!location) {
+          return { ok: false, code: "WEBSITE_REDIRECT_BLOCKED", retryable: false };
+        }
+        let nextUrl: URL;
+        try {
+          nextUrl = new URL(location, currentUrl);
+        } catch {
+          // Malformed Location header is treated as a blocked redirect,
+          // not a crash; no second fetch is issued.
+          return { ok: false, code: "WEBSITE_REDIRECT_BLOCKED", retryable: false };
+        }
+        if (nextUrl.protocol !== "http:" && nextUrl.protocol !== "https:") {
+          return { ok: false, code: "WEBSITE_REDIRECT_BLOCKED", retryable: false };
+        }
+        if (isPrivateOrLoopbackHost(nextUrl.hostname)) {
+          return { ok: false, code: "WEBSITE_REDIRECT_BLOCKED", retryable: false };
+        }
+        currentUrl = nextUrl;
+        continue;
+      }
+
+      if (!response.ok) {
+        const retryable = response.status >= 500 || response.status === 429 || response.status === 408;
+        return { ok: false, code: `WEBSITE_HTTP_${response.status}`, retryable };
+      }
+      const contentType = (response.headers.get("content-type") ?? "").toLowerCase();
+      if (!contentType.includes("text/html") && !contentType.includes("application/xhtml")) {
+        return { ok: false, code: "WEBSITE_NOT_HTML", retryable: false };
+      }
+      const buf = await response.arrayBuffer();
+      if (buf.byteLength > PUBLIC_WEBSITE_MAX_BODY_BYTES) {
+        return { ok: false, code: "WEBSITE_TOO_LARGE", retryable: false };
+      }
+      const html = new TextDecoder("utf-8", { fatal: false }).decode(buf);
+      void now;
+      return { ok: true, html, finalUrl: currentUrl.toString() };
     }
-    const contentType = (response.headers.get("content-type") ?? "").toLowerCase();
-    if (!contentType.includes("text/html") && !contentType.includes("application/xhtml")) {
-      return { ok: false, code: "WEBSITE_NOT_HTML", retryable: false };
-    }
-    const buf = await response.arrayBuffer();
-    if (buf.byteLength > PUBLIC_WEBSITE_MAX_BODY_BYTES) {
-      return { ok: false, code: "WEBSITE_TOO_LARGE", retryable: false };
-    }
-    const html = new TextDecoder("utf-8", { fatal: false }).decode(buf);
-    void now;
-    return { ok: true, html, finalUrl: response.url || url.toString() };
-  } catch (error) {
-    const name = error instanceof Error ? error.name : "UnknownError";
-    const retryable = name === "AbortError" || name === "TypeError";
-    return { ok: false, code: name === "AbortError" ? "WEBSITE_TIMEOUT" : "WEBSITE_FETCH_FAILED", retryable };
+    return { ok: false, code: "WEBSITE_REDIRECT_LIMIT", retryable: false };
   } finally {
     clearTimeout(timer);
   }
@@ -922,8 +1032,25 @@ export const PUBLIC_WEBSITE_EXECUTOR: TradeResearchProviderExecutor = {
       homepageHtml: homepage.html,
       homepageUrl: homepage.finalUrl,
     });
-    const perPage: Array<{ category: "homepage" | "contact" | "product"; signals: PublicWebsiteSignals }> = [
-      { category: "homepage", signals: homepageSignals },
+    // TH07 DEFECT 05B HARDENING — Preserve same-origin crawl policy
+    // AFTER canonical redirect resolution: a legitimate
+    // `example.com` → `www.example.com` 301 keeps subpages scoped to
+    // the canonical host rather than being wrongly rejected because
+    // they differ from the pre-redirect hostname.
+    const canonicalHost = ((): string => {
+      try { return new URL(homepage.finalUrl).hostname.toLowerCase(); } catch { return host; }
+    })();
+    // TH07 DEFECT 05B HARDENING — the dataset version must be
+    // content-sensitive. We carry a SHA-256 of each fetched page's
+    // body (bounded, already in memory) alongside the extracted
+    // signals. The raw HTML is NEVER persisted or logged — only its
+    // hash crosses the function boundary.
+    const perPage: Array<{
+      category: "homepage" | "contact" | "product";
+      signals: PublicWebsiteSignals;
+      contentSha256: string;
+    }> = [
+      { category: "homepage", signals: homepageSignals, contentSha256: createHash("sha256").update(homepage.html, "utf8").digest("hex") },
     ];
     const subpageCategories: Array<"contact" | "product"> = ["contact", "product"];
     for (const cat of subpageCategories) {
@@ -932,7 +1059,7 @@ export const PUBLIC_WEBSITE_EXECUTOR: TradeResearchProviderExecutor = {
       if (!target) continue;
       let parsed: URL;
       try { parsed = new URL(target); } catch { continue; }
-      if (parsed.hostname.toLowerCase() !== host) continue;
+      if (parsed.hostname.toLowerCase() !== canonicalHost) continue;
       if (!robotsAllows(parsed.pathname || "/")) continue;
       const fetched = await bounded_fetch_html(parsed, fetchImpl, input.now);
       if (!fetched.ok) continue; // optional subpage: 404 / failure skipped, do NOT fail the provider.
@@ -945,6 +1072,7 @@ export const PUBLIC_WEBSITE_EXECUTOR: TradeResearchProviderExecutor = {
           candidateDomain: candidate.domain ?? null,
           candidateJuristicRegistrationNumber: null,
         }),
+        contentSha256: createHash("sha256").update(fetched.html, "utf8").digest("hex"),
       });
     }
 
@@ -972,6 +1100,58 @@ export const PUBLIC_WEBSITE_EXECUTOR: TradeResearchProviderExecutor = {
     };
     const projection = evidenceLevel(signals);
     const now = input.now();
+    // TH07 DEFECT 05B — the T10 checkpoint reader
+    // (`readProviderResultCheckpoint` in checkpoints.ts) requires
+    // `providerResult.datasetVersion` to be a NON-NULL string, else
+    // `assertProviderResultCheckpoint` throws
+    // `INVALID_PROVIDER_RESULT_CHECKPOINT` from
+    // `finishAttemptWithCheckpoint`. That throw escaped past the
+    // per-provider try/catch and became `WORKER_INTERNAL_ERROR` on
+    // every successful public-website fetch.
+    //
+    // TH07 DEFECT 05B HARDENING — the dataset version must be
+    // CONTENT-sensitive. The pre-hardening draft hashed only
+    // `(category, pageUrl, rawTextLengthChars)`; two different
+    // snapshots of the same URL with the same text length collided.
+    //
+    // Hardened canonicalization:
+    //   - sort pages by their fixed category ordering (homepage,
+    //     contact, product) so the order of discovery doesn't affect
+    //     the version,
+    //   - for each page, hash `category | canonicalPageUrl |
+    //     perPageContentSha256` separated by NUL bytes,
+    //   - record-separate each page with 0x01.
+    //
+    // Whitespace / canonicalization behavior (DOCUMENTED &
+    // TESTED): per-page content hashes are SHA-256 of the fetched
+    // body bytes verbatim, UTF-8-encoded. Any byte-level change in
+    // the fetched HTML — including whitespace — produces a
+    // different dataset version. We do NOT normalize whitespace
+    // before hashing because the provider's contract is "the
+    // snapshot we observed", not "a canonicalized text summary";
+    // normalization would hide real supplier template churn.
+    //
+    // Raw HTML is NEVER included in the datasetVersion string
+    // itself; only its 64-char hex digest is. No cookies, tokens,
+    // bodies, or PII appear anywhere in diagnostics.
+    const CATEGORY_ORDER: Record<"homepage" | "contact" | "product", number> = {
+      homepage: 0,
+      contact: 1,
+      product: 2,
+    };
+    const sortedPages = [...perPage].sort(
+      (a, b) => CATEGORY_ORDER[a.category] - CATEGORY_ORDER[b.category],
+    );
+    const contentDigest = createHash("sha256");
+    for (const page of sortedPages) {
+      contentDigest.update(page.category, "utf8");
+      contentDigest.update("\u0000", "utf8");
+      contentDigest.update(page.signals.pageUrl, "utf8");
+      contentDigest.update("\u0000", "utf8");
+      contentDigest.update(page.contentSha256, "utf8");
+      contentDigest.update("\u0001", "utf8");
+    }
+    const websiteDatasetVersion = `sha256:${contentDigest.digest("hex")}`;
     const anyEvidenceObserved =
       signals.productSignals.length > 0
       || signals.observedPublicEmails.length > 0
@@ -1007,7 +1187,7 @@ export const PUBLIC_WEBSITE_EXECUTOR: TradeResearchProviderExecutor = {
     const providerResult: TradeResearchProviderResult = {
       providerId: PUBLIC_WEBSITE_DESCRIPTOR.id,
       datasetId: "public-website-homepage",
-      datasetVersion: null,
+      datasetVersion: websiteDatasetVersion,
       parserVersion: PUBLIC_WEBSITE_PARSER_VERSION,
       sourceRecordIds: [`website:${host}`],
       sourcePeriod: now.toISOString().slice(0, 7),

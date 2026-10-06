@@ -58,7 +58,7 @@ export class ThaiCustomsStatsCatalogError extends Error {
  * `RESOURCE_*` suite is used for the CSV fetch).
  */
 export function classifyFetchFailure(
-  prefix: "CATALOG" | "RESOURCE",
+  prefix: "CATALOG" | "RESOURCE" | "WEBSITE",
   error: unknown,
   signal?: AbortSignal,
 ): { code: string; retryable: boolean; errorClass: string; timeoutCategory?: "abort" | "timeout" | "network" } {
