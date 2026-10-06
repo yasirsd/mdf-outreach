@@ -33,10 +33,74 @@ export const THAI_CUSTOMS_STATS_CATALOG_URL =
 export const THAI_CUSTOMS_STATS_DATASET_ID = "ctm_06_11" as const;
 
 export class ThaiCustomsStatsCatalogError extends Error {
-  constructor(readonly code: string, readonly retryable: boolean, message: string) {
+  constructor(
+    readonly code: string,
+    readonly retryable: boolean,
+    message: string,
+    readonly safeMeta?: { errorClass?: string; timeoutCategory?: string },
+  ) {
     super(message);
     this.name = "ThaiCustomsStatsCatalogError";
   }
+}
+
+/**
+ * TH07 DEFECT 05A — classify a thrown Node fetch failure into a bounded
+ * safe code. Node's undici attaches a `cause` with a `code` field
+ * (`ENOTFOUND` / `ECONNREFUSED` / `ECONNRESET` / `UND_ERR_CONNECT_TIMEOUT`
+ * / `CERT_HAS_EXPIRED` / etc.) OR surfaces an `AbortError` when the
+ * caller aborts the signal. We expose ONE safe class per distinguishable
+ * failure mode so production logs tell us DNS from refused-connection
+ * from TLS from timeout. No cookies, bodies, or URLs are logged.
+ *
+ * Returned `code` is used as the safeErrorCode so it must be bounded,
+ * uppercase, and prefix-scoped (`CATALOG_*` here; a parallel
+ * `RESOURCE_*` suite is used for the CSV fetch).
+ */
+export function classifyFetchFailure(
+  prefix: "CATALOG" | "RESOURCE",
+  error: unknown,
+  signal?: AbortSignal,
+): { code: string; retryable: boolean; errorClass: string; timeoutCategory?: "abort" | "timeout" | "network" } {
+  const errorClass = error instanceof Error ? error.name : typeof error === "object" && error !== null ? "Object" : "Unknown";
+  // Caller aborted the signal — this is OUR deadline running out, not
+  // the remote peer. Retryable because the drain can try again later.
+  if (signal?.aborted || errorClass === "AbortError" || errorClass === "TimeoutError") {
+    return { code: `${prefix}_ABORT_TIMEOUT`, retryable: true, errorClass, timeoutCategory: "abort" };
+  }
+  // undici's error `cause` carries the OS-level cause code for TCP /
+  // DNS / TLS failures. Pull it defensively.
+  const cause = (error as { cause?: { code?: unknown; name?: unknown } } | undefined)?.cause;
+  const causeCode = typeof cause?.code === "string" ? cause.code : "";
+  const causeName = typeof cause?.name === "string" ? cause.name : "";
+  if (causeCode === "ENOTFOUND" || causeCode === "EAI_AGAIN" || causeCode === "EAI_NODATA") {
+    return { code: `${prefix}_DNS_UNRESOLVED`, retryable: true, errorClass, timeoutCategory: "network" };
+  }
+  if (causeCode === "ECONNREFUSED") {
+    return { code: `${prefix}_CONNECT_REFUSED`, retryable: true, errorClass, timeoutCategory: "network" };
+  }
+  if (causeCode === "UND_ERR_CONNECT_TIMEOUT" || causeCode === "ETIMEDOUT") {
+    return { code: `${prefix}_CONNECT_TIMEOUT`, retryable: true, errorClass, timeoutCategory: "timeout" };
+  }
+  if (causeCode === "ECONNRESET" || causeCode === "EPIPE") {
+    return { code: `${prefix}_SOCKET_RESET`, retryable: true, errorClass, timeoutCategory: "network" };
+  }
+  if (
+    causeCode === "CERT_HAS_EXPIRED"
+    || causeCode === "DEPTH_ZERO_SELF_SIGNED_CERT"
+    || causeCode === "UNABLE_TO_VERIFY_LEAF_SIGNATURE"
+    || causeCode === "ERR_TLS_CERT_ALTNAME_INVALID"
+    || causeName.startsWith("TLS")
+  ) {
+    return { code: `${prefix}_TLS_HANDSHAKE`, retryable: false, errorClass, timeoutCategory: "network" };
+  }
+  if (causeCode === "UND_ERR_SOCKET" || causeCode === "UND_ERR_HEADERS_TIMEOUT" || causeCode === "UND_ERR_BODY_TIMEOUT") {
+    return { code: `${prefix}_SOCKET_TIMEOUT`, retryable: true, errorClass, timeoutCategory: "timeout" };
+  }
+  // Fallback — truly unclassified. Retryable=true so the drain tries
+  // again under the normal retry policy; the operator sees the
+  // generic bucket and knows to look.
+  return { code: `${prefix}_FETCH_FAILED`, retryable: true, errorClass, timeoutCategory: "network" };
 }
 
 export interface ThaiCustomsStatsResource {
@@ -182,18 +246,28 @@ export async function fetchThaiCustomsStatsCatalog(opts: {
       signal: opts.signal,
     });
   } catch (error) {
+    // TH07 DEFECT 05A — produce a specific safe code so production
+    // logs show DNS vs connect-refused vs timeout vs TLS instead of
+    // one opaque CATALOG_FETCH_FAILED bucket. Safe meta exposes
+    // errorClass + timeoutCategory ONLY — no URL, body, headers, PII.
+    const classified = classifyFetchFailure("CATALOG", error, opts.signal);
     throw new ThaiCustomsStatsCatalogError(
-      "CATALOG_FETCH_FAILED",
-      true,
-      `Catalog fetch failed: ${error instanceof Error ? error.name : "UnknownError"}`,
+      classified.code,
+      classified.retryable,
+      `Catalog fetch failed: ${classified.errorClass}`,
+      { errorClass: classified.errorClass, timeoutCategory: classified.timeoutCategory },
     );
   }
   if (!response.ok) {
+    // 403 (geo/UA block) and 404 (dataset missing/renamed) are NOT
+    // retryable — they will not resolve by waiting. 429 / 5xx / 408
+    // are classic transient and remain retryable.
     const retryable = response.status >= 500 || response.status === 429 || response.status === 408;
     throw new ThaiCustomsStatsCatalogError(
       `CATALOG_HTTP_${response.status}`,
       retryable,
       `Catalog returned HTTP ${response.status}.`,
+      { errorClass: `HTTP_${response.status}`, timeoutCategory: "network" },
     );
   }
   let envelope: CkanPackageShowResponse;

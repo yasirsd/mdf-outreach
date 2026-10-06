@@ -45,6 +45,17 @@ export type TradeResearchDiagnostic = {
   requestCount?: number;
   jobCount?: number;
   reason?: string;
+  // TH07 DEFECT 05A — provider fetch failure classification. All
+  // fields are safe-by-construction: `providerId` is an allowlisted
+  // string; `hostname` is a URL host; `httpStatus` is a numeric code;
+  // `errorClass` is a safe class/name (e.g. "AbortError");
+  // `timeoutCategory` is a bounded enum. Never log cookies, tokens,
+  // raw HTML, full response bodies, PII, or secrets.
+  providerId?: string;
+  hostname?: string;
+  httpStatus?: number;
+  errorClass?: string;
+  timeoutCategory?: "abort" | "timeout" | "network" | "parse" | "unknown";
 };
 
 export type TradeResearchLogger = (diagnostic: TradeResearchDiagnostic) => void;

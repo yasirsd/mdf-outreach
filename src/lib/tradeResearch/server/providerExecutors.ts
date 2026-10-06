@@ -60,6 +60,7 @@ import {
   THAI_CUSTOMS_STATS_SOURCE_URL,
 } from "../thaiCustomsStats";
 import {
+  classifyFetchFailure,
   fetchThaiCustomsStatsCatalog,
   filterThaiCustomsStatsRows,
   parseThaiCustomsStatsCsv,
@@ -556,6 +557,9 @@ export const THAI_CUSTOMS_STATS_EXECUTOR: TradeResearchProviderExecutor = {
         } finally { clearTimeout(catalogTimeout); }
       } catch (error) {
         if (error instanceof ThaiCustomsStatsCatalogError) {
+          // TH07 DEFECT 05A — specific safe code; retryable comes from
+          // the classifier (DNS / connect-refused / timeout retryable;
+          // TLS / HTTP 403/404 terminal).
           return { status: error.retryable ? "failed_retryable" : "failed_terminal", safeErrorCode: error.code, retryable: error.retryable };
         }
         return { status: "failed_retryable", safeErrorCode: "CATALOG_FETCH_UNKNOWN", retryable: true };
@@ -568,9 +572,11 @@ export const THAI_CUSTOMS_STATS_EXECUTOR: TradeResearchProviderExecutor = {
       // Download CSV once.
       let csvBytes: Uint8Array;
       let contentType = "text/csv";
+      // TH07 DEFECT 05A — keep the fetch controller/signal in scope so
+      // the catch can distinguish our-abort from remote-close.
+      const csvController = new AbortController();
+      const csvTimeout = setTimeout(() => csvController.abort(), Math.min(FETCH_TIMEOUT_MS, Math.max(5_000, input.deadline.remainingMs())));
       try {
-        const csvController = new AbortController();
-        const csvTimeout = setTimeout(() => csvController.abort(), Math.min(FETCH_TIMEOUT_MS, Math.max(5_000, input.deadline.remainingMs())));
         try {
           const r = await fetchImpl(resource.url, { signal: csvController.signal });
           if (!r.ok) {
@@ -581,8 +587,13 @@ export const THAI_CUSTOMS_STATS_EXECUTOR: TradeResearchProviderExecutor = {
           const buf = await r.arrayBuffer();
           csvBytes = new Uint8Array(buf);
         } finally { clearTimeout(csvTimeout); }
-      } catch {
-        return { status: "failed_retryable", safeErrorCode: "RESOURCE_FETCH_FAILED", retryable: true };
+      } catch (error) {
+        // TH07 DEFECT 05A — produce distinct safe codes for DNS vs
+        // connect-refused vs timeout vs TLS vs generic. Keeps the
+        // CATALOG_ / RESOURCE_ prefix split so metadata-vs-resource
+        // failures are visibly separate in production logs.
+        const classified = classifyFetchFailure("RESOURCE", error, csvController.signal);
+        return { status: classified.retryable ? "failed_retryable" : "failed_terminal", safeErrorCode: classified.code, retryable: classified.retryable };
       }
 
       // Dataset version = sha256(raw CSV bytes).

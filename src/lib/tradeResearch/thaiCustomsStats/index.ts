@@ -28,6 +28,7 @@ export {
 export {
   THAI_CUSTOMS_STATS_CATALOG_URL,
   ThaiCustomsStatsCatalogError,
+  classifyFetchFailure,
   parseCkanResources,
   selectLatestReleasedResource,
   fetchThaiCustomsStatsCatalog,
