@@ -385,6 +385,32 @@ async function certifyFinalizedJob(
   }
 }
 
+/**
+ * TH07 DEFECT 05C — safe counts over resolved provider results.
+ *
+ * `retryExhaustedCount` is derived from the already-persisted
+ * provider_result + attempt policy: a failed_retryable result whose
+ * attempt budget is spent (`retryDelayMs(3) === null`). This is the
+ * single piece of counter-evidence we need to see for mixed-outcome
+ * finalization in production logs — provider bodies, URLs, and PII
+ * never cross this boundary.
+ */
+function finalizedCounts(providerResults: readonly TradeResearchProviderResult[]): {
+  sourcesEvaluated: number;
+  sourcesFailed: number;
+  retryExhaustedCount: number;
+} {
+  const aggregate = aggregateTradeResearchEvidence(providerResults);
+  const retryExhaustedCount = providerResults.filter((r) =>
+    r.execution.status === "failed_retryable" || r.execution.status === "failed_terminal",
+  ).length;
+  return {
+    sourcesEvaluated: aggregate.coverageCounts.evaluated,
+    sourcesFailed: aggregate.coverageCounts.failed,
+    retryExhaustedCount,
+  };
+}
+
 async function finalizeResolvedProviderResults(
   writer: TradeResearchWriter,
   initialJob: InternalJobRow,
@@ -396,28 +422,30 @@ async function finalizeResolvedProviderResults(
   let processingOutcome: "completed" | "failed" = "completed";
   const result = resultFromProviderResults(providerResults);
   const aggregate = aggregateTradeResearchEvidence(providerResults);
+  let finalStatus: Parameters<TradeResearchWriter["finalize"]>[2];
+  let finalOutcome: Parameters<TradeResearchWriter["finalize"]>[3];
   if (aggregate.identitySummary.state === "conflicting" || aggregate.identitySummary.state === "needs_review") {
-    job = await writer.finalize(job, workerId, "needs_review", "needs_review", result);
+    finalStatus = "needs_review"; finalOutcome = "needs_review";
   } else if (aggregate.programSummary.state === "verified") {
     const incomplete = aggregate.coverageCounts.failed > 0 || aggregate.coverageCounts.blocked > 0
       || aggregate.coverageCounts.notStarted > 0;
-    job = await writer.finalize(
-      job, workerId,
-      incomplete ? "partial" : "completed",
-      incomplete ? "partial" : "official_importer_program_corroboration",
-      result,
-    );
+    finalStatus = incomplete ? "partial" : "completed";
+    finalOutcome = incomplete ? "partial" : "official_importer_program_corroboration";
   } else if (aggregate.programSummary.state === "supporting" || aggregate.programSummary.state === "needs_review") {
-    job = await writer.finalize(job, workerId, "needs_review", "needs_review", result);
+    finalStatus = "needs_review"; finalOutcome = "needs_review";
   } else if (aggregate.coverageCounts.evaluated === 0 && aggregate.coverageCounts.failed > 0) {
-    job = await writer.finalize(job, workerId, "failed", "failed", result);
+    finalStatus = "failed"; finalOutcome = "failed";
     processingOutcome = "failed";
   } else if (aggregate.coverageCounts.evaluated === 0) {
-    job = await writer.finalize(job, workerId, "completed", "unsupported_coverage", result);
+    finalStatus = "completed"; finalOutcome = "unsupported_coverage";
   } else {
-    job = await writer.finalize(job, workerId, "completed", "no_verified_evidence", result);
+    finalStatus = "completed"; finalOutcome = "no_verified_evidence";
   }
+  job = await writer.finalize(job, workerId, finalStatus, finalOutcome, result);
   await certifyFinalizedJob(writer, job, result, log);
+  // TH07 DEFECT 05C — final-settlement observability. One event per
+  // terminal transition, safe-by-construction fields only.
+  log?.(jobDiagnostic("job_finalized", job, { outcome: finalOutcome, ...finalizedCounts(providerResults) }));
   log?.(jobDiagnostic("stage_completed", job));
   return processingOutcome;
 }
@@ -629,25 +657,31 @@ async function finalizeGenericResults(
   const result = resultFromProviderResults(providerResults, sources, eligibleCount > 1);
   const aggregate = aggregateTradeResearchEvidence(providerResults);
   let processingOutcome: "completed" | "failed" = "completed";
+  let finalStatus: Parameters<TradeResearchWriter["finalize"]>[2];
+  let finalOutcome: Parameters<TradeResearchWriter["finalize"]>[3];
   if (aggregate.identitySummary.state === "conflicting" || aggregate.identitySummary.state === "needs_review") {
-    job = await writer.finalize(job, workerId, "needs_review", "needs_review", result);
+    finalStatus = "needs_review"; finalOutcome = "needs_review";
   } else if (aggregate.programSummary.state === "verified"
       || (aggregate.identitySummary.state === "verified" && aggregate.productSummary.state === "verified")) {
     const incomplete = aggregate.coverageCounts.failed > 0 || aggregate.coverageCounts.blocked > 0
       || aggregate.coverageCounts.notStarted > 0;
-    job = await writer.finalize(job, workerId, incomplete ? "partial" : "completed", incomplete ? "partial" : "official_importer_program_corroboration", result);
+    finalStatus = incomplete ? "partial" : "completed";
+    finalOutcome = incomplete ? "partial" : "official_importer_program_corroboration";
   } else if (aggregate.programSummary.state === "supporting" || aggregate.programSummary.state === "needs_review"
       || (aggregate.identitySummary.state === "verified" && aggregate.productSummary.state === "supporting")) {
-    job = await writer.finalize(job, workerId, "needs_review", "needs_review", result);
+    finalStatus = "needs_review"; finalOutcome = "needs_review";
   } else if (aggregate.coverageCounts.evaluated === 0 && aggregate.coverageCounts.failed > 0) {
-    job = await writer.finalize(job, workerId, "failed", "failed", result);
+    finalStatus = "failed"; finalOutcome = "failed";
     processingOutcome = "failed";
   } else if (aggregate.coverageCounts.evaluated === 0) {
-    job = await writer.finalize(job, workerId, "completed", "unsupported_coverage", result);
+    finalStatus = "completed"; finalOutcome = "unsupported_coverage";
   } else {
-    job = await writer.finalize(job, workerId, "completed", "no_verified_evidence", result);
+    finalStatus = "completed"; finalOutcome = "no_verified_evidence";
   }
+  job = await writer.finalize(job, workerId, finalStatus, finalOutcome, result);
   await certifyFinalizedJob(writer, job, result, log);
+  // TH07 DEFECT 05C — final-settlement observability.
+  log?.(jobDiagnostic("job_finalized", job, { outcome: finalOutcome, ...finalizedCounts(providerResults) }));
   log?.(jobDiagnostic("stage_completed", job));
   return processingOutcome;
 }
@@ -985,6 +1019,13 @@ export async function drainTradeResearch(deps: WorkerDependencies): Promise<Trad
         if (recovery === "requeued") {
           result.requeued += 1;
           leaseState = "released";
+          // TH07 DEFECT 05C — any requeue originating from stage=finalizing
+          // is almost always a terminal-settlement failure (snapshot
+          // invariant, projection throw, revision CAS loss). Emit a
+          // dedicated diagnostic so a reclaim-spin is loud, not silent.
+          if (job.stage === "finalizing") {
+            deps.log?.(jobDiagnostic("job_finalize_blocked", job, { leaseState, safeErrorCode, ...safeMetadata }));
+          }
           deps.log?.(jobDiagnostic("job_requeued", job, { leaseState, safeErrorCode, ...safeMetadata }));
         } else if (recovery === "cancelled") {
           result.processed += 1;

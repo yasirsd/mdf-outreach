@@ -17,7 +17,15 @@ export type TradeResearchDiagnostic = {
     "batch_action_candidate_not_found" | "batch_action_already_active" |
     "batch_action_terminal_rerun" |
     "batch_action_duplicate_23505" | "batch_action_zero_jobs_invariant" |
-    "batch_action_created";
+    "batch_action_created" |
+    // TH07 DEFECT 05C — final-settlement observability. Emitted
+    // once per terminal transition from the worker so operators
+    // can see the mixed-outcome aggregate without digging through
+    // provider events. `job_finalize_blocked` fires if the finalize
+    // path threw and the drain recovery released the lease — the
+    // signal we were missing when the stuck-production job
+    // reclaim-spun invisibly.
+    "job_finalized" | "job_finalize_blocked";
   elapsedMs?: number;
   remainingBudgetMs?: number;
   remainingMs?: number;
@@ -57,6 +65,15 @@ export type TradeResearchDiagnostic = {
   httpStatus?: number;
   errorClass?: string;
   timeoutCategory?: "abort" | "timeout" | "network" | "parse" | "unknown";
+  // TH07 DEFECT 05C — final-settlement counts. Safe-by-construction:
+  // these are derived from `aggregate.coverageCounts` (plain
+  // integers over the provider_result[].execution.status set) and
+  // from the attempt-history retry policy; they never carry
+  // provider bodies, URLs, HTML, cookies, tokens, or PII.
+  outcome?: string;
+  sourcesEvaluated?: number;
+  sourcesFailed?: number;
+  retryExhaustedCount?: number;
 };
 
 export type TradeResearchLogger = (diagnostic: TradeResearchDiagnostic) => void;

@@ -13,6 +13,8 @@ export type ThaiManualEvidenceLookupBasis =
   | "other";
 import { aggregateTradeResearchEvidence } from "./aggregation";
 import { assertProviderResultCheckpoint } from "./checkpoints";
+import { PUBLIC_WEBSITE_DESCRIPTOR } from "./providers";
+import { PUBLIC_WEBSITE_PARSER_VERSION } from "./publicWebsite";
 import {
   projectProviderOutcomes,
   validateProviderResultSnapshots,
@@ -66,6 +68,43 @@ const TRADE_RESEARCH_EVENT_TYPES = new Set([
 const TRADE_RESEARCH_GOALS = new Set(["screen_trade_activity", "find_target_product", "check_india_origin"]);
 const PLAN_ELIGIBILITY = new Set(["eligible", "ineligible"]);
 const PLAN_COST_CLASSES = new Set(["free", "free_quota", "manual_free", "paid", "unsupported"]);
+
+/**
+ * TH07 DEFECT 05C — narrow allow-list for finalize-time snapshot
+ * self-heal. Only the exact pre-05C `PUBLIC_WEBSITE_EXECUTOR` defect
+ * shape qualifies; every other evaluated provider missing a snapshot
+ * still throws `EVALUATED_PROVIDER_SNAPSHOT_REQUIRED`.
+ */
+const PUBLIC_WEBSITE_SELF_HEAL_DATASET_ID = "public-website-homepage" as const;
+const PUBLIC_WEBSITE_SELF_HEAL_DATASET_VERSION_RE = /^sha256:[0-9a-f]{64}$/;
+const PUBLIC_WEBSITE_SELF_HEAL_EVALUATED_STATES = new Set<string>([
+  "completed", "no_match", "cached",
+]);
+
+function isPublicWebsiteSelfHealable(result: TradeResearchProviderResult): boolean {
+  // Provider identity — must be the public-website provider as
+  // defined by the single source-of-truth descriptor. We never
+  // self-heal FDA FSVP, FDA VQIP, Canada CID, Thai Customs, or any
+  // future provider.
+  if (result.providerId !== PUBLIC_WEBSITE_DESCRIPTOR.id) return false;
+  if (result.datasetId !== PUBLIC_WEBSITE_SELF_HEAL_DATASET_ID) return false;
+
+  // Checkpoint integrity — datasetVersion must be the exact
+  // sha256:hex64 shape the fixed executor writes; parserVersion
+  // must match the current public-website parser contract.
+  if (!result.datasetVersion || !PUBLIC_WEBSITE_SELF_HEAL_DATASET_VERSION_RE.test(result.datasetVersion)) return false;
+  if (result.parserVersion !== PUBLIC_WEBSITE_PARSER_VERSION) return false;
+
+  // Execution shape — only evaluated success states qualify. Failed /
+  // retryable / cancelled results are never backfillable.
+  if (!PUBLIC_WEBSITE_SELF_HEAL_EVALUATED_STATES.has(result.execution.status)) return false;
+
+  // Structural fields the backfill needs — if these are missing the
+  // checkpoint itself was malformed; let the invariant throw.
+  if (!result.sourcePeriod || !result.retrievedAt) return false;
+
+  return true;
+}
 
 type SqlContractType = "uuid" | "bigint" | "integer" | "timestamptz" | "jsonb" | "constrained_text";
 
@@ -691,13 +730,96 @@ export class TradeResearchWriter {
     if (evaluated.length > 0) {
       const versions = evaluated.map((provider) => provider.datasetVersion).filter((value): value is string => Boolean(value));
       if (versions.length !== evaluated.length) validateProviderResultSnapshots(evaluated, []);
-      const { data: snapshots, error: snapshotsError } = await this.client
+      const { data: snapshotsRaw, error: snapshotsError } = await this.client
         .from("buyer_trade_source_snapshots")
         .select("provider_id,dataset_id,material_hash,published_period,retrieved_at,parse_version")
         .in("provider_id", [...new Set(evaluated.map((provider) => provider.providerId))])
         .in("material_hash", [...new Set(versions)]);
       if (snapshotsError) throw snapshotsError;
-      validateProviderResultSnapshots(evaluated, (snapshots ?? []) as ProviderOutcomeSnapshot[]);
+      const snapshots: ProviderOutcomeSnapshot[] = (snapshotsRaw ?? []) as ProviderOutcomeSnapshot[];
+      // TH07 DEFECT 05C — narrow self-heal for the historical
+      // public-website snapshot bug.
+      //
+      // The pre-05C `PUBLIC_WEBSITE_EXECUTOR` returned a checkpointable
+      // `providerResult` (durable via `finishAttemptWithCheckpoint`)
+      // but DID NOT ingest the matching `buyer_trade_source_snapshots`
+      // row. On every subsequent drain the finalize path threw
+      // `EVALUATED_PROVIDER_SNAPSHOT_REQUIRED`, the lease recovery
+      // path requeued, and the job reclaim-spun indefinitely. The
+      // executor is now fixed to insert the snapshot proactively
+      // (forward fix in `PUBLIC_WEBSITE_EXECUTOR` →
+      // `writer.saveSnapshot(...)`), but any job already stuck mid-
+      // reclaim will never re-run the executor (its attempt is already
+      // `completed` and resolved via the checkpoint reader). This
+      // self-heal reconstructs the missing snapshot from the already-
+      // persisted provider_result fields so pre-existing stuck jobs
+      // can finalize on the next drain tick without any production
+      // job mutation.
+      //
+      // IMPORTANT — SCOPE GUARD:
+      //
+      // This self-heal is deliberately NARROW. It fires ONLY for the
+      // exact historical defect shape:
+      //
+      //   • providerId    === PUBLIC_WEBSITE_DESCRIPTOR.id
+      //   • datasetId     === "public-website-homepage"
+      //   • datasetVersion matches /^sha256:[0-9a-f]{64}$/
+      //   • parserVersion === PUBLIC_WEBSITE_PARSER_VERSION
+      //   • execution.status ∈ { "completed", "no_match", "cached" }
+      //   • sourcePeriod + retrievedAt present on the checkpoint
+      //
+      // ALL other evaluated providers (fda-fsvp, fda-vqip, canada-cid,
+      // thai-customs-stats, and any future provider) that are missing
+      // a snapshot MUST still throw `EVALUATED_PROVIDER_SNAPSHOT_REQUIRED`
+      // via `validateProviderResultSnapshots`. We never want this
+      // self-heal to mask a snapshot-persistence defect in another
+      // provider.
+      //
+      // The reconstructed row carries only safe, derived metadata.
+      // No raw body, HTML, PII, tokens, or secrets are ever stored.
+      // The upsert is idempotent on `(provider_id, dataset_id,
+      // material_hash)`; if a real snapshot already exists it is
+      // left untouched.
+      for (const result of evaluated) {
+        if (!result.datasetVersion) continue;
+        const hasSnapshot = snapshots.some((snapshot) =>
+          snapshot.provider_id === result.providerId
+          && snapshot.dataset_id === result.datasetId
+          && snapshot.material_hash === result.datasetVersion,
+        );
+        if (hasSnapshot) continue;
+        if (!isPublicWebsiteSelfHealable(result)) continue;
+        const backfillRetrievedAt = result.retrievedAt!;
+        const backfillSourceUrl = result.sourceRecordIds[0]
+          ? `trade-research:${result.providerId}:${result.sourceRecordIds[0]}`
+          : `trade-research:${result.providerId}:${result.datasetId}`;
+        const backfilled = await this.saveSnapshot({
+          provider_id: result.providerId,
+          dataset_id: result.datasetId,
+          published_period: result.sourcePeriod!,
+          source_url: backfillSourceUrl,
+          material_hash: result.datasetVersion,
+          fetched_at: backfillRetrievedAt,
+          retrieved_at: backfillRetrievedAt,
+          expires_at: backfillRetrievedAt,
+          row_count: 0,
+          coverage: { backfilled: true, reason: "defect_05c_finalize_self_heal" },
+          parse_version: result.parserVersion!,
+          terms_version: "defect-05c-backfill-v1",
+          status: "ready",
+          safe_metadata: { backfilled: true, reason: "defect_05c_finalize_self_heal" },
+          normalized_rows: [],
+        });
+        snapshots.push({
+          provider_id: backfilled.provider_id,
+          dataset_id: backfilled.dataset_id,
+          material_hash: backfilled.material_hash,
+          published_period: backfilled.published_period as unknown as string,
+          retrieved_at: backfilled.retrieved_at,
+          parse_version: result.parserVersion!,
+        } as unknown as ProviderOutcomeSnapshot);
+      }
+      validateProviderResultSnapshots(evaluated, snapshots);
     }
     const projection = projectProviderOutcomes({
       plans: (plansResponse.data ?? []) as ProviderOutcomePlan[],

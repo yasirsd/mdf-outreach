@@ -46,6 +46,7 @@ const CONTEXT: ResearchContext = {
 };
 
 function mockWriter(candidate: { companyName?: string; website?: string; domain?: string } = {}): TradeResearchWriter {
+  const savedSnapshots: Array<Record<string, unknown>> = [];
   return {
     getCandidate: async () => ({
       id: JOB.candidate_id,
@@ -56,6 +57,16 @@ function mockWriter(candidate: { companyName?: string; website?: string; domain?
       discoveryStatus: "ready",
       reviewStatus: "pending",
     }),
+    // TH07 DEFECT 05C — the executor now persists a
+    // `buyer_trade_source_snapshots` row for the website evaluation
+    // so the repository-level finalize invariant
+    // (`validateProviderResultSnapshots`) is satisfied. In the unit
+    // suite we only need the call to resolve; nothing cross-reads
+    // the saved rows.
+    saveSnapshot: async (input: Record<string, unknown>) => {
+      savedSnapshots.push(input);
+      return { id: "unit-test-snapshot", ...input } as unknown as never;
+    },
     // The executor does not call any other writer method on success.
   } as unknown as TradeResearchWriter;
 }

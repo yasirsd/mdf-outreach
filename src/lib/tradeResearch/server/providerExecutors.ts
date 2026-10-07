@@ -1152,6 +1152,72 @@ export const PUBLIC_WEBSITE_EXECUTOR: TradeResearchProviderExecutor = {
       contentDigest.update("\u0001", "utf8");
     }
     const websiteDatasetVersion = `sha256:${contentDigest.digest("hex")}`;
+
+    // TH07 DEFECT 05C — persist a `buyer_trade_source_snapshots` row for
+    // the public-website evaluation. The repository's `finalize`
+    // (via `validateProviderResultSnapshots`) requires that EVERY
+    // evaluated provider_result's `datasetVersion` corresponds to an
+    // existing snapshot row keyed by `(provider_id, dataset_id,
+    // material_hash)`. The pre-05C website executor returned a
+    // checkpointable provider_result WITHOUT ingesting the matching
+    // snapshot, so `finalize` threw `EVALUATED_PROVIDER_SNAPSHOT_REQUIRED`
+    // on every drain tick → outer catch → `recoverClaimedJob` released
+    // the lease → next_attempt_at advanced → infinite reclaim.
+    //
+    // `expires_at = now` keeps the row immediately-expired so the
+    // existing freshness filter (`getFreshSnapshotByProvider` on
+    // `.gte("expires_at", now)`) never promotes website evidence to
+    // a cached-replay path. The executor's `hasFreshSnapshot` remains
+    // hard-coded `false`.
+    //
+    // No raw HTML, cookies, PII, tokens, or page bodies are ever
+    // written to the snapshot. `coverage` and `safe_metadata` contain
+    // only safe counts.
+    const snapshotRetrievedAt = now.toISOString();
+    const perPageCategories = perPage.map((p) => p.category);
+    try {
+      await input.writer.saveSnapshot({
+        provider_id: PUBLIC_WEBSITE_DESCRIPTOR.id,
+        dataset_id: "public-website-homepage",
+        published_period: now.toISOString().slice(0, 7),
+        source_url: homepage.finalUrl,
+        material_hash: websiteDatasetVersion,
+        fetched_at: snapshotRetrievedAt,
+        retrieved_at: snapshotRetrievedAt,
+        expires_at: snapshotRetrievedAt,
+        row_count: perPage.length,
+        coverage: {
+          fields: ["page_url", "page_title", "product_signals", "role_signals", "observed_public_emails", "observed_public_phones"],
+          semantics: "company_site_public_content_only",
+          attribution: PUBLIC_WEBSITE_ATTRIBUTION,
+          shipmentLevel: false,
+          sourceGrain: "company_site",
+          pagesInspected: perPage.length,
+          perPageCategories,
+        },
+        parse_version: PUBLIC_WEBSITE_PARSER_VERSION,
+        terms_version: PUBLIC_WEBSITE_DESCRIPTOR.termsVersion,
+        status: "ready",
+        safe_metadata: {
+          pagesInspected: perPage.length,
+          perPageCategories,
+        },
+        normalized_rows: [],
+      });
+    } catch (snapshotError) {
+      // Classify snapshot-persistence failures as retryable provider
+      // failures rather than letting an opaque DB error escape as
+      // WORKER_INTERNAL_ERROR. The lease recovery path in the drain
+      // will requeue; the fix is in the executor so the retry will
+      // write the snapshot the next time around.
+      void snapshotError;
+      return {
+        status: "failed_retryable",
+        safeErrorCode: "WEBSITE_SNAPSHOT_PERSIST_FAILED",
+        retryable: true,
+      };
+    }
+
     const anyEvidenceObserved =
       signals.productSignals.length > 0
       || signals.observedPublicEmails.length > 0
