@@ -1,6 +1,7 @@
 import "server-only";
 
 import { TradeResearchContractError } from "../repository";
+import { ProviderOutcomeProjectionError } from "../providerOutcomes";
 
 export type TradeResearchDiagnostic = {
   event: "drain_started" | "drain_finished" | "route_failed" | "jobs_requested" | "jobs_claimed" | "claim_no_work" | "claim_rejected" |
@@ -103,6 +104,32 @@ export function safeTradeResearchErrorCode(error: unknown): string {
     if (error.expectedSqlType === "constrained_text") return "CONTRACT_INVALID_STATE";
     if (error.expectedSqlType === "jsonb") return "CONTRACT_INVALID_JSON";
   }
+  // TH07 DEFECT 05D — classify `ProviderOutcomeProjectionError`
+  // subcodes to safe bounded `FINALIZE_*` codes. Prior to this,
+  // every projection/invariant throw collapsed to the opaque
+  // `WORKER_INTERNAL_ERROR` fallback, which hid the real
+  // finalization blocker (`PROVIDER_SNAPSHOT_METADATA_CONFLICT`)
+  // behind an operator-useless label on every production drain.
+  //
+  // All codes below are safe-by-construction — bounded enum values,
+  // no SQL text, no identifiers, no provider body, no PII.
+  if (error instanceof ProviderOutcomeProjectionError) {
+    switch (error.code) {
+      case "EVALUATED_PROVIDER_SNAPSHOT_REQUIRED":
+      case "PROVIDER_SNAPSHOT_METADATA_CONFLICT":
+        return "FINALIZE_SNAPSHOT_INVARIANT";
+      case "EVALUATED_PROVIDER_RESULT_REQUIRED":
+        return "FINALIZE_RESULT_CONTRACT_INVALID";
+      case "DUPLICATE_PROVIDER_PLAN":
+      case "UNPLANNED_PROVIDER_RESULT":
+      case "DUPLICATE_PROVIDER_RESULT":
+      case "ATTEMPT_FOR_UNPLANNED_PROVIDER":
+      case "UNKNOWN_PROVIDER_ATTEMPT_STATE":
+        return "FINALIZE_PROJECTION_FAILED";
+      default:
+        return "FINALIZE_PROJECTION_FAILED";
+    }
+  }
   if (error instanceof Error) {
     if (error.name === "TradeResearchServiceRoleConfigError") return "SERVICE_ROLE_CONFIGURATION_ERROR";
     if (error.message === "JOB_LEASE_LOST") return "JOB_LEASE_LOST";
@@ -111,6 +138,29 @@ export function safeTradeResearchErrorCode(error: unknown): string {
   }
   if (typeof error === "object" && error && "code" in error) {
     const code = String((error as { code?: unknown }).code ?? "");
+    if (code === "P0001") {
+      // TH07 DEFECT 05D — map known finalize_buyer_trade_research_job_v2
+      // raise-exception messages to bounded FINALIZE_* codes. Inspect
+      // only the documented exception text (already lowercased); never
+      // emit SQL, identifiers, or payload contents.
+      const detail = databaseErrorText(error);
+      if (detail.includes("stale_job_revision") || detail.includes("attempt_state_conflict")) {
+        return "FINALIZE_CAS_CONFLICT";
+      }
+      if (detail.includes("result_context_conflict") || detail.includes("legacy_job_context_forbidden")) {
+        return "FINALIZE_RPC_REJECTED";
+      }
+      if (
+        detail.includes("invalid terminal status")
+        || detail.includes("invalid trade research outcome")
+        || detail.includes("result summary must be a json object")
+      ) {
+        return "FINALIZE_RESULT_CONTRACT_INVALID";
+      }
+      if (detail.includes("automatic trade research spend must remain zero")) {
+        return "AUTOMATIC_SPEND_POLICY_VIOLATION";
+      }
+    }
     if (code === "22P02") {
       const detail = databaseErrorText(error);
       if (/\buuid\b/.test(detail)) return "DATABASE_22P02_INVALID_UUID";

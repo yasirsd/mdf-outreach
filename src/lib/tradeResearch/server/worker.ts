@@ -1023,7 +1023,7 @@ export async function drainTradeResearch(deps: WorkerDependencies): Promise<Trad
           // is almost always a terminal-settlement failure (snapshot
           // invariant, projection throw, revision CAS loss). Emit a
           // dedicated diagnostic so a reclaim-spin is loud, not silent.
-          if (job.stage === "finalizing") {
+          if (job.stage === "finalizing" || safeErrorCode.startsWith("FINALIZE_")) {
             deps.log?.(jobDiagnostic("job_finalize_blocked", job, { leaseState, safeErrorCode, ...safeMetadata }));
           }
           deps.log?.(jobDiagnostic("job_requeued", job, { leaseState, safeErrorCode, ...safeMetadata }));

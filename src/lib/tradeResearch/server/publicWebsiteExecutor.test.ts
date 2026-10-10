@@ -874,6 +874,114 @@ describe("TH07 DEFECT 05B HARDENING — datasetVersion is content-sensitive", ()
   });
 });
 
+// ──────────────────────────────────────────────────────────────────
+// TH07 DEFECT 05D — forward fix: provider_result must take its
+// `retrievedAt` / `sourcePeriod` from the DB-authoritative snapshot
+// row returned by `writer.saveSnapshot(...)`. Postgres `timestamptz`
+// round-trips `new Date().toISOString()` as a `+00:00` form that is
+// NOT byte-identical to the `.sssZ` input, and
+// `validateProviderResultSnapshots` keyed finalize off that string.
+// ──────────────────────────────────────────────────────────────────
+describe("TH07 DEFECT 05D — executor pulls retrievedAt/sourcePeriod from the saved snapshot (not now.toISOString())", () => {
+  function writerThatNormalisesTimestamps(normalisedRetrievedAt: string, normalisedPublishedPeriod?: string): TradeResearchWriter {
+    return {
+      getCandidate: async () => ({
+        id: "cand", companyName: "Spunky Food Co.",
+        website: "spunkyfood.com", domain: "spunkyfood.com",
+        country: "Thailand", discoveryStatus: "ready", reviewStatus: "pending",
+      }),
+      saveSnapshot: async (input: Record<string, unknown>) => {
+        // Mirror the live Supabase/Postgres contract: the DB
+        // normalises `timestamptz` on read, and the row that
+        // comes back from `.select("*").single()` carries the
+        // normalised string, NOT the input `.sssZ` form.
+        return {
+          ...input,
+          retrieved_at: normalisedRetrievedAt,
+          published_period: normalisedPublishedPeriod ?? input.published_period,
+          id: "snap-05d",
+        } as unknown as never;
+      },
+    } as unknown as TradeResearchWriter;
+  }
+
+  it("retrievedAt on the provider_result equals the DB-normalised snapshot.retrieved_at (NOT now.toISOString())", async () => {
+    const pgNormalised = "2026-10-06T08:00:00.000+00:00"; // `+00:00`, not `Z`
+    const writer = writerThatNormalisesTimestamps(pgNormalised);
+    const r = await runExecutor(okHtmlFetch(SPUNKY_HTML), writer);
+    if (r.status !== "completed" && r.status !== "no_match") throw new Error("expected success");
+    // The critical 05D assertion:
+    expect(r.providerResult.retrievedAt).toBe(pgNormalised);
+    expect(r.providerResult.retrievedAt).not.toContain("Z");
+  });
+
+  it("sourcePeriod on the provider_result equals the DB-returned snapshot.published_period", async () => {
+    const pgNormalised = "2026-10-06T08:00:00.000+00:00";
+    const writer = writerThatNormalisesTimestamps(pgNormalised, "2026-10");
+    const r = await runExecutor(okHtmlFetch(SPUNKY_HTML), writer);
+    if (r.status !== "completed" && r.status !== "no_match") throw new Error("expected success");
+    expect(r.providerResult.sourcePeriod).toBe("2026-10");
+  });
+
+  it("datasetVersion on the provider_result equals the pre-save computed value (sha256 is NOT touched by the snapshot persist)", async () => {
+    const writer = writerThatNormalisesTimestamps("2026-10-06T08:00:00.000+00:00", "2026-10");
+    const r = await runExecutor(okHtmlFetch(SPUNKY_HTML), writer);
+    if (r.status !== "completed" && r.status !== "no_match") throw new Error("expected success");
+    expect(r.providerResult.datasetVersion).toMatch(/^sha256:[0-9a-f]{64}$/);
+  });
+
+  it("snapshot persist failure → WEBSITE_SNAPSHOT_PERSIST_FAILED (retryable); provider_result is NOT returned with mismatched metadata", async () => {
+    const writer = {
+      getCandidate: async () => ({
+        id: "cand", companyName: "Spunky Food Co.",
+        website: "spunkyfood.com", domain: "spunkyfood.com",
+        country: "Thailand", discoveryStatus: "ready", reviewStatus: "pending",
+      }),
+      saveSnapshot: async () => { throw new Error("DB_UNAVAILABLE"); },
+    } as unknown as TradeResearchWriter;
+    const r = await runExecutor(okHtmlFetch(SPUNKY_HTML), writer);
+    expect(r.status).toBe("failed_retryable");
+    if (r.status === "failed_retryable") {
+      expect(r.safeErrorCode).toBe("WEBSITE_SNAPSHOT_PERSIST_FAILED");
+    }
+  });
+
+  it("regression: validateProviderResultSnapshots PASSES when fed (provider_result, saved snapshot) from the executor directly — end-to-end E2E of the forward fix", async () => {
+    const pgNormalised = "2026-10-06T08:00:00.000+00:00";
+    const savedSnapshotCapture: Array<Record<string, unknown>> = [];
+    const writer = {
+      getCandidate: async () => ({
+        id: "cand", companyName: "Spunky Food Co.",
+        website: "spunkyfood.com", domain: "spunkyfood.com",
+        country: "Thailand", discoveryStatus: "ready", reviewStatus: "pending",
+      }),
+      saveSnapshot: async (input: Record<string, unknown>) => {
+        const row = { ...input, retrieved_at: pgNormalised, published_period: "2026-10", id: "snap-e2e" };
+        savedSnapshotCapture.push(row);
+        return row as unknown as never;
+      },
+    } as unknown as TradeResearchWriter;
+    const r = await runExecutor(okHtmlFetch(SPUNKY_HTML), writer);
+    if (r.status !== "completed" && r.status !== "no_match") throw new Error("expected success");
+    // Feed the exact (provider_result, snapshot) tuple into the
+    // real validator. Previously, this threw
+    // PROVIDER_SNAPSHOT_METADATA_CONFLICT; after 05D it passes.
+    const saved = savedSnapshotCapture[0]!;
+    const { validateProviderResultSnapshots } = await import("../providerOutcomes");
+    expect(() => validateProviderResultSnapshots(
+      [r.providerResult],
+      [{
+        provider_id: saved.provider_id as string,
+        dataset_id: saved.dataset_id as string,
+        material_hash: saved.material_hash as string,
+        published_period: saved.published_period as string,
+        retrieved_at: saved.retrieved_at as string,
+        parse_version: saved.parse_version as string,
+      }],
+    )).not.toThrow();
+  });
+});
+
 // Keep the vi import live in case we extend the suite with spy-based
 // assertions later; TypeScript strict unused checks pass otherwise.
 void vi;

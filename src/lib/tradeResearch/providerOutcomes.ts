@@ -188,6 +188,34 @@ export function withProviderOutcomeProjection(
   return { ...result, ...projection.counts, providerResults: projection.providerResults };
 }
 
+/**
+ * TH07 DEFECT 05D — semantic timestamp equality for `retrieved_at`.
+ *
+ * `buyer_trade_source_snapshots.retrieved_at` is a Postgres
+ * `timestamptz`. PostgREST serialises it as
+ * `YYYY-MM-DDTHH:mm:ss(.sss)+00:00`, which is NOT byte-identical to
+ * the `new Date().toISOString()` form (`.sssZ`) that executors
+ * typically produce.
+ *
+ * A strict string compare therefore fires `PROVIDER_SNAPSHOT_METADATA_CONFLICT`
+ * on every finalize of any job whose provider_result captured
+ * `retrievedAt` as an ISO-`Z` string (as the pre-05D website executor
+ * did). The compare is meant to assert "the snapshot persisted in DB
+ * corresponds to the provider_result we're finalizing with" — a
+ * semantic-time check, not a bytewise one.
+ *
+ * We compare `retrieved_at` as parsed epoch-millis. Non-parseable
+ * values on either side fall back to strict string compare so we
+ * never silently accept a mismatch.
+ */
+function timestampsEqual(a: string, b: string): boolean {
+  if (a === b) return true;
+  const parsedA = Date.parse(a);
+  const parsedB = Date.parse(b);
+  if (Number.isNaN(parsedA) || Number.isNaN(parsedB)) return false;
+  return parsedA === parsedB;
+}
+
 /** Validate evaluated metadata against a snapshot that already exists in DB. */
 export function validateProviderResultSnapshots(
   results: readonly TradeResearchProviderResult[],
@@ -206,8 +234,11 @@ export function validateProviderResultSnapshots(
       && item.material_hash === result.datasetVersion,
     );
     if (!snapshot) throw new ProviderOutcomeProjectionError("EVALUATED_PROVIDER_SNAPSHOT_REQUIRED");
+    const retrievedAtMatches = typeof result.retrievedAt === "string"
+      && typeof snapshot.retrieved_at === "string"
+      && timestampsEqual(snapshot.retrieved_at, result.retrievedAt);
     if (snapshot.published_period !== result.sourcePeriod
-        || snapshot.retrieved_at !== result.retrievedAt
+        || !retrievedAtMatches
         || snapshot.parse_version !== result.parserVersion) {
       throw new ProviderOutcomeProjectionError("PROVIDER_SNAPSHOT_METADATA_CONFLICT");
     }

@@ -1174,12 +1174,31 @@ export const PUBLIC_WEBSITE_EXECUTOR: TradeResearchProviderExecutor = {
     // written to the snapshot. `coverage` and `safe_metadata` contain
     // only safe counts.
     const snapshotRetrievedAt = now.toISOString();
+    const snapshotPublishedPeriod = now.toISOString().slice(0, 7);
     const perPageCategories = perPage.map((p) => p.category);
+    // TH07 DEFECT 05D — capture the DB-authoritative snapshot row.
+    //
+    // Postgres `timestamptz` round-trips `now.toISOString()` as
+    // `YYYY-MM-DDTHH:mm:ss.sss+00:00` (not the `Z` form), so the
+    // `buyer_trade_source_snapshots.retrieved_at` value returned by
+    // PostgREST is NOT byte-identical to `now.toISOString()`.
+    //
+    // `validateProviderResultSnapshots` enforces strict metadata
+    // equality between `snapshot.{published_period, retrieved_at,
+    // parse_version}` and the matching fields on the evaluated
+    // `provider_result`. We must therefore use the DB-returned
+    // values on the provider_result; otherwise finalize throws
+    // `PROVIDER_SNAPSHOT_METADATA_CONFLICT` and the drain loop
+    // collapses to `WORKER_INTERNAL_ERROR`.
+    //
+    // This mirrors the FDA / Canada CID executors which have always
+    // taken `retrievedAt` from `snapshot.retrieved_at`.
+    let savedSnapshot: Awaited<ReturnType<typeof input.writer.saveSnapshot>>;
     try {
-      await input.writer.saveSnapshot({
+      savedSnapshot = await input.writer.saveSnapshot({
         provider_id: PUBLIC_WEBSITE_DESCRIPTOR.id,
         dataset_id: "public-website-homepage",
-        published_period: now.toISOString().slice(0, 7),
+        published_period: snapshotPublishedPeriod,
         source_url: homepage.finalUrl,
         material_hash: websiteDatasetVersion,
         fetched_at: snapshotRetrievedAt,
@@ -1226,12 +1245,24 @@ export const PUBLIC_WEBSITE_EXECUTOR: TradeResearchProviderExecutor = {
     const status: Extract<TradeResearchProviderExecutionState, "completed" | "no_match"> =
       anyEvidenceObserved ? "completed" : "no_match";
 
+    // TH07 DEFECT 05D — use the DB-authoritative snapshot fields on
+    // the evidence rows and the provider_result. See the comment at
+    // the `savedSnapshot = await input.writer.saveSnapshot(...)` call
+    // above for the full rationale (timestamptz round-trip).
+    const authoritativePublishedPeriod =
+      typeof (savedSnapshot as unknown as { published_period?: unknown }).published_period === "string"
+        ? ((savedSnapshot as unknown as { published_period: string }).published_period)
+        : snapshotPublishedPeriod;
+    const authoritativeRetrievedAt =
+      typeof (savedSnapshot as unknown as { retrieved_at?: unknown }).retrieved_at === "string"
+        ? ((savedSnapshot as unknown as { retrieved_at: string }).retrieved_at)
+        : snapshotRetrievedAt;
     const source: TradeResearchSourceEvidence = {
       providerId: "public-website" as never,
       source: "Candidate Public Website",
       outcome: status === "no_match" ? "no_match" : "completed",
-      datasetPeriod: now.toISOString().slice(0, 7),
-      retrievedAt: now.toISOString(),
+      datasetPeriod: authoritativePublishedPeriod,
+      retrievedAt: authoritativeRetrievedAt,
       matchedSourceName: signals.pageTitle ?? undefined,
       candidateName: candidate.companyName ?? undefined,
       identityDecision: signals.identityComparison?.matchLevel === "exact"
@@ -1256,8 +1287,8 @@ export const PUBLIC_WEBSITE_EXECUTOR: TradeResearchProviderExecutor = {
       datasetVersion: websiteDatasetVersion,
       parserVersion: PUBLIC_WEBSITE_PARSER_VERSION,
       sourceRecordIds: [`website:${host}`],
-      sourcePeriod: now.toISOString().slice(0, 7),
-      retrievedAt: now.toISOString(),
+      sourcePeriod: authoritativePublishedPeriod,
+      retrievedAt: authoritativeRetrievedAt,
       execution: { status, safeErrorCode: null },
       evidence: {
         matchDecision: signals.identityComparison?.matchLevel === "exact"
