@@ -1,6 +1,6 @@
 import "server-only";
 
-import { isRetryableProviderFailure, retryDelayMs } from "../stateMachine";
+import { deriveEligibleProviderRetryState, isRetryableProviderFailure, retryDelayMs } from "../stateMachine";
 import { aggregateTradeResearchEvidence } from "../aggregation";
 import { readProviderResultCheckpoint } from "../checkpoints";
 import { reconcilePendingResearchCertifications } from "../certification";
@@ -286,10 +286,16 @@ async function loadDurableProviderProgress(
     // written as failed_terminal below when retryDelayMs(3) is null.
     const isRuntimeBudgetCheckpoint = attempt?.safe_error_code === "CID_RUNTIME_BUDGET_CHECKPOINT"
       || attempt?.safe_error_code === "RUNTIME_BUDGET_CHECKPOINT";
-    if (!isRuntimeBudgetCheckpoint
-        && status === "failed_retryable"
-        && Number(attempt?.attempt_number ?? 0) >= 3
-        && retryDelayMs(Number(attempt?.attempt_number)) === null) {
+    const retryState = deriveEligibleProviderRetryState({
+      eligibility: plan.eligibility,
+      latestAttemptNumber: attempt ? Number(attempt.attempt_number) : null,
+      latestAttemptState: typeof attempt?.state === "string" ? attempt.state : null,
+    });
+    // CASE B (05C/05D): retry budget exhausted → treat as resolved so
+    // mixed-outcome finalization can proceed. CASE A: retryDelayMs(n)
+    // is still a number → fall through, allResolved=false, do not
+    // finalize.
+    if (!isRuntimeBudgetCheckpoint && retryState.state === "retry_exhausted") {
       resolvedResults.push(unevaluatedProviderOutcome(
         plan,
         "failed_retryable",
@@ -687,6 +693,44 @@ async function finalizeGenericResults(
 }
 
 /**
+ * TH07 DEFECT 05E — park the job until the earliest pending provider
+ * retry is due. Completed provider checkpoints stay on disk; the
+ * claim RPC will not pick the row up before `next_attempt_at`.
+ */
+async function releaseForPendingRetries(
+  writer: TradeResearchWriter,
+  job: InternalJobRow,
+  workerId: string,
+  now: () => Date,
+  pending: readonly { providerId: string; attemptNumber: number; retryAfterMs: number; safeErrorCode?: string }[],
+  log?: TradeResearchLogger,
+): Promise<InternalJobRow> {
+  const retryAfterMs = Math.min(...pending.map((item) => item.retryAfterMs));
+  const nextAttemptAt = new Date(now().getTime() + retryAfterMs).toISOString();
+  const released = await writer.release(job, workerId, nextAttemptAt);
+  for (const item of pending) {
+    log?.(jobDiagnostic("provider_retry_scheduled", released, {
+      providerId: item.providerId,
+      attemptNumber: item.attemptNumber,
+      retryAfterMs: item.retryAfterMs,
+      nextAttemptAt,
+      leaseState: "released",
+      safeErrorCode: item.safeErrorCode,
+    }));
+  }
+  log?.(jobDiagnostic("job_retry_pending", released, {
+    retryAfterMs,
+    nextAttemptAt,
+    leaseState: "released",
+  }));
+  log?.(jobDiagnostic("job_requeued", released, {
+    leaseState: "released",
+    safeErrorCode: pending[0]?.safeErrorCode,
+  }));
+  return released;
+}
+
+/**
  * T11 provider-count-independent orchestration. Provider IDs are data here:
  * the registry supplies all source-specific behavior.
  */
@@ -708,6 +752,7 @@ async function processProviderPlans(
   const results = new Map(initialProgress.resolvedResults.map((result) => [result.providerId, result]));
   const sources: TradeResearchSourceEvidence[] = [];
   const deadline = providerDeadline(deadlineAt);
+  const pendingRetries: Array<{ providerId: string; attemptNumber: number; retryAfterMs: number; safeErrorCode?: string }> = [];
 
   for (const rawPlan of eligiblePlans) {
     const plan: TradeResearchProviderPlan = {
@@ -865,11 +910,25 @@ async function processProviderPlans(
     const failureResult = unevaluatedProviderOutcome(normalizeProviderPlan(rawPlan, 0), execution.status, execution.safeErrorCode);
     results.set(providerId, failureResult);
     log?.(jobDiagnostic("job_failed", job, { safeErrorCode: execution.safeErrorCode }));
-    if (retryDelay !== null && eligiblePlans.length === 1) {
-      job = await writer.release(job, workerId, new Date(now().getTime() + retryDelay).toISOString());
-      log?.(jobDiagnostic("job_requeued", job, { leaseState: "released", safeErrorCode: execution.safeErrorCode }));
-      return "retry";
+    // TH07 DEFECT 05E — a retryable failure with remaining budget must
+    // never be treated as job-terminal, even when other eligible
+    // providers have already succeeded. Previously this release/return
+    // only fired when `eligiblePlans.length === 1`, so a Thailand job
+    // (website + customs) recorded customs `failed_retryable` attempt 1
+    // and then fell through to finalizeGenericResults.
+    if (retryDelay !== null) {
+      pendingRetries.push({
+        providerId,
+        attemptNumber,
+        retryAfterMs: retryDelay,
+        safeErrorCode: execution.safeErrorCode,
+      });
     }
+  }
+
+  if (pendingRetries.length > 0) {
+    await releaseForPendingRetries(writer, job, workerId, now, pendingRetries, log);
+    return "retry";
   }
 
   const providerResults = completeProvisionalProviderResults(allPlans, [...results.values()]);

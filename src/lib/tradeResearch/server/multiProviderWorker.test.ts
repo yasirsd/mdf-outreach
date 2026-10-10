@@ -175,18 +175,23 @@ describe("BI4F 2C — multi-provider execution (US: FSVP + VQIP)", () => {
     expect(state.finalized[0]).toMatchObject({ status: "partial", outcome: "partial" });
   });
 
-  it("keeps a retryable FSVP failure beside completed VQIP evidence", async () => {
+  it("keeps a retryable FSVP failure beside completed VQIP evidence without finalizing (retry budget remains)", async () => {
     const { writer, state } = makeFixture({
       plans: [{ provider_id: "fda-fsvp", id: "plan-fsvp" }, { provider_id: "fda-vqip", id: "plan-vqip" }],
       fdaFresh: undefined, vqipFresh: vqipSnapshot(),
     });
     const fetchImpl = vi.fn(async () => new Response("unavailable", { status: 503 })) as unknown as typeof fetch;
-    await processTradeResearchJob(writer, job(), "worker-a", () => NOW, fetchImpl);
-    const result = state.finalized[0]!.result as Record<string, unknown>;
-    const typed = result.providerResults as Array<{ providerId: string; execution: { status: string; safeErrorCode: string | null } }>;
-    expect(typed).toHaveLength(2);
-    expect(typed[0]).toMatchObject({ providerId: "fda-fsvp", execution: { status: "failed_retryable", safeErrorCode: "TRANSIENT_HTTP" } });
-    expect(typed[1]).toMatchObject({ providerId: "fda-vqip", execution: { status: "cached" } });
+    const outcome = await processTradeResearchJob(writer, job(), "worker-a", () => NOW, fetchImpl);
+    // TH07 DEFECT 05E — a retryable sibling must park the job. VQIP
+    // evidence is still persisted on its attempt; FSVP is failed_retryable
+    // with remaining budget. Finalization waits for exhaustion or success.
+    expect(outcome).toBe("retry");
+    expect(state.finalized).toHaveLength(0);
+    expect(writer.release).toHaveBeenCalledOnce();
+    const fsvpAttempt = state.attempts.find((item) => item.patch.safe_error_code === "TRANSIENT_HTTP");
+    expect(fsvpAttempt?.patch.state).toBe("failed_retryable");
+    const vqipAttempt = state.attempts.find((item) => item.patch.state === "skipped_cached" || item.patch.state === "completed");
+    expect(vqipAttempt).toBeDefined();
   });
 
   it("US candidate: both providers no-match → no_evidence aggregate, sourcesChecked=2, outcome=no_verified_evidence", async () => {

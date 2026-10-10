@@ -26,7 +26,11 @@ export type TradeResearchDiagnostic = {
     // path threw and the drain recovery released the lease — the
     // signal we were missing when the stuck-production job
     // reclaim-spun invisibly.
-    "job_finalized" | "job_finalize_blocked";
+    "job_finalized" | "job_finalize_blocked" |
+    // TH07 DEFECT 05E — a job parked because an eligible provider still
+    // has retry budget. `provider_retry_scheduled` is per-provider;
+    // `job_retry_pending` is the job-level park. Safe fields only.
+    "job_retry_pending" | "provider_retry_scheduled";
   elapsedMs?: number;
   remainingBudgetMs?: number;
   remainingMs?: number;
@@ -75,6 +79,13 @@ export type TradeResearchDiagnostic = {
   sourcesEvaluated?: number;
   sourcesFailed?: number;
   retryExhaustedCount?: number;
+  // TH07 DEFECT 05E — retry-park fields. `providerId` is an allowlisted
+  // provider id; `attemptNumber` is 1..3; `retryAfterMs` is the
+  // retryDelayMs value; `nextAttemptAt` is an ISO timestamp. Never log
+  // provider bodies, tokens, secrets, or PII.
+  attemptNumber?: number;
+  retryAfterMs?: number;
+  nextAttemptAt?: string;
 };
 
 export type TradeResearchLogger = (diagnostic: TradeResearchDiagnostic) => void;

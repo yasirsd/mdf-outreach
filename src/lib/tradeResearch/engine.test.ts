@@ -7,7 +7,7 @@ import {
   type TradeResearchProviderDescriptor,
 } from "./providers";
 import type { ResearchContext, TradeResearchGoal } from "./types";
-import { assertTradeResearchTransition, isJobLeaseStale, isRetryableProviderFailure, retryDelayMs } from "./stateMachine";
+import { assertTradeResearchTransition, deriveEligibleProviderRetryState, isJobLeaseStale, isRetryableProviderFailure, retryDelayMs } from "./stateMachine";
 
 function candidate(over: Partial<BuyerCandidate> = {}): BuyerCandidate {
   return { id: "c", companyName: "BC Foods", country: "United States", industry: "Food ingredients", isImporter: true, discoveryStatus: "ready", reviewStatus: "pending", ...over };
@@ -234,6 +234,27 @@ describe("trade research engine policy", () => {
     expect(isRetryableProviderFailure({ status: 400 })).toBe(false);
     expect(isRetryableProviderFailure({ code: "PARSER_INCOMPATIBLE" })).toBe(false);
     expect([retryDelayMs(1), retryDelayMs(2), retryDelayMs(3)]).toEqual([30_000, 120_000, null]);
+  });
+
+  it("TH07 DEFECT 05E — retry pending vs exhausted is derived from attempt number + retryDelayMs, not attempt.state alone", () => {
+    expect(deriveEligibleProviderRetryState({
+      eligibility: "eligible", latestAttemptNumber: 1, latestAttemptState: "failed_retryable",
+    })).toEqual({ state: "retry_pending", attemptNumber: 1, retryAfterMs: 30_000 });
+    expect(deriveEligibleProviderRetryState({
+      eligibility: "eligible", latestAttemptNumber: 2, latestAttemptState: "failed_retryable",
+    })).toEqual({ state: "retry_pending", attemptNumber: 2, retryAfterMs: 120_000 });
+    expect(deriveEligibleProviderRetryState({
+      eligibility: "eligible", latestAttemptNumber: 3, latestAttemptState: "failed_retryable",
+    })).toEqual({ state: "retry_exhausted", attemptNumber: 3, retryAfterMs: null });
+    expect(deriveEligibleProviderRetryState({
+      eligibility: "eligible", latestAttemptNumber: 3, latestAttemptState: "retry_wait",
+    })).toEqual({ state: "retry_exhausted", attemptNumber: 3, retryAfterMs: null });
+    expect(deriveEligibleProviderRetryState({
+      eligibility: "eligible", latestAttemptNumber: 1, latestAttemptState: "completed",
+    })).toEqual({ state: "evaluated_terminal", attemptNumber: 1, retryAfterMs: null });
+    expect(deriveEligibleProviderRetryState({
+      eligibility: "ineligible", latestAttemptNumber: 1, latestAttemptState: "failed_retryable",
+    })).toEqual({ state: "blocked_or_unsupported", attemptNumber: 0, retryAfterMs: null });
   });
 
   it.each([20, 100, 500])("matches a %i-candidate fixture from one parsed/indexable dataset", (size) => {

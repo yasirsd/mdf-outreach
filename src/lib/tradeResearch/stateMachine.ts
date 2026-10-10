@@ -47,6 +47,62 @@ export function retryDelayMs(attemptNumber: number): number | null {
   return null;
 }
 
+/**
+ * TH07 DEFECT 05E — per-eligible-provider retry classification.
+ *
+ * A historical attempt row can remain `state = failed_retryable` even
+ * after attempt 3 has exhausted the budget (`retryDelayMs(3) === null`).
+ * Exhaustion is therefore (latest attempt number + retryDelayMs), never
+ * the attempt state alone.
+ *
+ *   retry_pending    — failed_retryable/retry_wait AND retryDelayMs(n) !== null
+ *   retry_exhausted  — failed_retryable/retry_wait AND retryDelayMs(n) === null
+ *                      (authoritatively attempt 3)
+ */
+export type EligibleProviderRetryState =
+  | "not_started"
+  | "evaluated_terminal"
+  | "retry_pending"
+  | "retry_exhausted"
+  | "blocked_or_unsupported";
+
+export function deriveEligibleProviderRetryState(input: {
+  eligibility: "eligible" | "ineligible";
+  latestAttemptNumber?: number | null;
+  latestAttemptState?: string | null;
+}): { state: EligibleProviderRetryState; attemptNumber: number; retryAfterMs: number | null } {
+  if (input.eligibility === "ineligible") {
+    return { state: "blocked_or_unsupported", attemptNumber: 0, retryAfterMs: null };
+  }
+  const attemptNumber = Number(input.latestAttemptNumber ?? 0);
+  const attemptState = input.latestAttemptState ?? null;
+  if (!attemptState || attemptNumber < 1) {
+    return { state: "not_started", attemptNumber, retryAfterMs: null };
+  }
+  if (attemptState === "completed" || attemptState === "completed_no_match" || attemptState === "skipped_cached") {
+    return { state: "evaluated_terminal", attemptNumber, retryAfterMs: null };
+  }
+  if (
+    attemptState === "failed_terminal"
+    || attemptState === "cancelled"
+    || attemptState === "skipped_quota"
+    || attemptState === "skipped_cost"
+    || attemptState === "skipped_terms"
+  ) {
+    return attemptState === "failed_terminal" || attemptState === "cancelled"
+      ? { state: "evaluated_terminal", attemptNumber, retryAfterMs: null }
+      : { state: "blocked_or_unsupported", attemptNumber, retryAfterMs: null };
+  }
+  if (attemptState === "failed_retryable" || attemptState === "retry_wait") {
+    const retryAfterMs = retryDelayMs(attemptNumber);
+    if (retryAfterMs !== null) {
+      return { state: "retry_pending", attemptNumber, retryAfterMs };
+    }
+    return { state: "retry_exhausted", attemptNumber, retryAfterMs: null };
+  }
+  return { state: "not_started", attemptNumber, retryAfterMs: null };
+}
+
 export function isRetryableProviderFailure(input: { status?: number; code?: string }): boolean {
   if (input.status === 429 || (input.status !== undefined && input.status >= 500)) return true;
   return ["NETWORK_TIMEOUT", "CONNECTION_RESET"].includes(input.code ?? "");
