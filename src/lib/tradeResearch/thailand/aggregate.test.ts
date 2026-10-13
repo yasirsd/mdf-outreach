@@ -193,6 +193,50 @@ describe("TH05 — aggregator", () => {
     expect(agg.productRelevance.companyLevel.value).toBe("unknown");
   });
 
+  it("FDA inconclusive without a licence number keeps food_import_license unavailable (never licensed)", () => {
+    const agg = aggregateThailandResearch(withManual({
+      manual: resolveActiveThailandManualEvidence({
+        workspaceId: WS,
+        candidateId: CAND,
+        rows: [{
+          ...row({
+            id: "fda",
+            provider_id: "thai-fda-importer",
+            evidence_status: "inconclusive",
+            evidence_payload: { kind: "thai-fda-importer" },
+            lookup_basis: "name_search",
+          }),
+        }],
+      }),
+      candidateIdentity: strongIdentity,
+    }));
+    expect(agg.foodImportLicense.value).toBe("unavailable");
+  });
+
+  it("FDA inconclusive with an observed number still does not become licensed", () => {
+    const agg = aggregateThailandResearch(withManual({
+      manual: resolveActiveThailandManualEvidence({
+        workspaceId: WS,
+        candidateId: CAND,
+        rows: [{
+          ...row({
+            id: "fda",
+            provider_id: "thai-fda-importer",
+            evidence_status: "inconclusive",
+            evidence_payload: {
+              kind: "thai-fda-importer",
+              licenseNumberSnapshot: "MFG-AUTH-99",
+              licenseTypeSnapshot: "Manufacturing authorization",
+            },
+            lookup_basis: "name_search",
+          }),
+        }],
+      }),
+      candidateIdentity: strongIdentity,
+    }));
+    expect(agg.foodImportLicense.value).toBe("unavailable");
+  });
+
   it("16/17. Thai Customs HS + India rows → market observed + India observed", () => {
     const agg = aggregateThailandResearch(withManual({
       thaiCustomsStats: {

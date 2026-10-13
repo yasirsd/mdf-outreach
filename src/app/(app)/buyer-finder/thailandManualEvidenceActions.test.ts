@@ -189,6 +189,105 @@ describe("TH06 FINAL — Issue 2: Customs operator type must match contract", ()
   });
 });
 
+function fdaInput(overrides: Partial<RecordThailandManualEvidenceInput> = {}): RecordThailandManualEvidenceInput {
+  return {
+    candidateId: CANDIDATE,
+    providerId: "thai-fda-importer",
+    sourceUrl: "https://www.fda.moph.go.th/x",
+    sourceLabel: "Thai FDA Food Import Licence lookup",
+    evidencePayload: { kind: "thai-fda-importer" },
+    evidenceStatus: "inconclusive",
+    ...overrides,
+  };
+}
+
+describe("Thai FDA Food Import Licence — licence number required only when verified", () => {
+  it("verified FDA evidence without licenseNumberSnapshot is rejected (never fabricated)", async () => {
+    const result = await recordThailandManualEvidenceAction(fdaInput({
+      evidenceStatus: "verified",
+      evidencePayload: { kind: "thai-fda-importer" },
+    }));
+    expect(result.outcome).toBe("invalid_input");
+    expect(harness.insertCalls).toHaveLength(0);
+    if (result.outcome === "invalid_input") {
+      expect(result.message.toLowerCase()).toContain("licensenumbersnapshot");
+      expect(result.message.toLowerCase()).toContain("never fabricates");
+    }
+  });
+
+  it("verified FDA evidence with a blank licenseNumberSnapshot is rejected", async () => {
+    const result = await recordThailandManualEvidenceAction(fdaInput({
+      evidenceStatus: "verified",
+      evidencePayload: { kind: "thai-fda-importer", licenseNumberSnapshot: "   " },
+    }));
+    expect(result.outcome).toBe("invalid_input");
+    expect(harness.insertCalls).toHaveLength(0);
+  });
+
+  it("verified FDA evidence with a licence number is accepted; type and dates stay optional", async () => {
+    const result = await recordThailandManualEvidenceAction(fdaInput({
+      evidenceStatus: "verified",
+      evidencePayload: { kind: "thai-fda-importer", licenseNumberSnapshot: "FDA-1" },
+    }));
+    expect(result.outcome).toBe("recorded");
+    expect(harness.insertCalls).toHaveLength(1);
+    expect((harness.insertCalls[0]!.evidencePayload as Record<string, unknown>).licenseNumberSnapshot).toBe("FDA-1");
+    expect((harness.insertCalls[0]!.evidencePayload as Record<string, unknown>).licenseTypeSnapshot).toBeUndefined();
+  });
+
+  it("inconclusive FDA evidence with blank licence number/type/dates is recorded without fabricating a licence", async () => {
+    const result = await recordThailandManualEvidenceAction(fdaInput({
+      evidenceStatus: "inconclusive",
+      evidencePayload: { kind: "thai-fda-importer", lookupBasis: "name_search" },
+    }));
+    expect(result.outcome).toBe("recorded");
+    expect(harness.insertCalls).toHaveLength(1);
+    const payload = harness.insertCalls[0]!.evidencePayload as Record<string, unknown>;
+    expect(payload.kind).toBe("thai-fda-importer");
+    expect(payload.lookupBasis).toBe("name_search");
+    expect(payload).not.toHaveProperty("licenseNumberSnapshot");
+    expect(payload).not.toHaveProperty("licenseTypeSnapshot");
+    expect(payload).not.toHaveProperty("validFromSnapshot");
+    expect(payload).not.toHaveProperty("validUntilSnapshot");
+    expect(harness.insertCalls[0]!.evidenceStatus).toBe("inconclusive");
+  });
+
+  it("not_found FDA evidence with blank licence number/type/dates is recorded without fabricating a licence", async () => {
+    const result = await recordThailandManualEvidenceAction(fdaInput({
+      evidenceStatus: "not_found",
+      evidencePayload: { kind: "thai-fda-importer" },
+    }));
+    expect(result.outcome).toBe("recorded");
+    expect(harness.insertCalls).toHaveLength(1);
+    const payload = harness.insertCalls[0]!.evidencePayload as Record<string, unknown>;
+    expect(payload).not.toHaveProperty("licenseNumberSnapshot");
+    expect(payload).not.toHaveProperty("licenseTypeSnapshot");
+    expect(payload).not.toHaveProperty("validFromSnapshot");
+    expect(payload).not.toHaveProperty("validUntilSnapshot");
+    expect(harness.insertCalls[0]!.evidenceStatus).toBe("not_found");
+  });
+
+  it("supersedeThailandManualEvidenceAction rejects verified FDA evidence without a licence number", async () => {
+    const previousId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const result = await supersedeThailandManualEvidenceAction(previousId, fdaInput({
+      evidenceStatus: "verified",
+      evidencePayload: { kind: "thai-fda-importer" },
+    }));
+    expect(result.outcome).toBe("invalid_input");
+    expect(harness.supersedeCalls).toHaveLength(0);
+  });
+
+  it("supersedeThailandManualEvidenceAction accepts inconclusive FDA evidence without a licence number", async () => {
+    const previousId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const result = await supersedeThailandManualEvidenceAction(previousId, fdaInput({
+      evidenceStatus: "inconclusive",
+      evidencePayload: { kind: "thai-fda-importer" },
+    }));
+    expect(result.outcome).toBe("recorded");
+    expect(harness.supersedeCalls).toHaveLength(1);
+  });
+});
+
 function row(partial: Record<string, unknown>) {
   return {
     id: partial.id,

@@ -307,8 +307,15 @@ function BaseCard({ providerId, candidateId, active, history }: CardCommonProps 
             {providerId === "thai-fda-importer" ? (
               <>
                 <label className="flex flex-col gap-1">
-                  <span className="text-[color:var(--text-secondary)]">Licence number</span>
-                  <input name="licenseNumberSnapshot" required
+                  <span className="text-[color:var(--text-secondary)]">
+                    Licence number
+                    {evidenceStatusLocal === "verified"
+                      ? <span className="text-[color:#F08B7E]"> *required when verified</span>
+                      : <span className="text-[color:var(--text-secondary)]"> (optional for not found / inconclusive)</span>}
+                  </span>
+                  <input
+                    name="licenseNumberSnapshot"
+                    required={evidenceStatusLocal === "verified"}
                     className="h-8 rounded-md bg-black/20 border border-[color:var(--app-border)] px-2 text-[color:var(--text-primary)]" />
                 </label>
                 <label className="flex flex-col gap-1">

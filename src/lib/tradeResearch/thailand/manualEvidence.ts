@@ -56,7 +56,7 @@ export interface ThaiCustomsOperatorPayload {
 
 export interface ThaiFdaImporterPayload {
   readonly kind: "thai-fda-importer";
-  readonly licenseNumberSnapshot: string;
+  readonly licenseNumberSnapshot: string | null;
   readonly licenseTypeSnapshot: string | null;
   readonly validFromSnapshot: string | null; // ISO date
   readonly validUntilSnapshot: string | null; // ISO date

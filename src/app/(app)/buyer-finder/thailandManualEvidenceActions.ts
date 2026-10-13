@@ -69,6 +69,12 @@ async function assertCandidateInWorkspace(workspaceId: string, candidateId: stri
 
 const VALID_OPERATOR_TYPES = new Set(["importer", "exporter", "broker", "aeo", "other"]);
 
+function readOptionalTrimmedString(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
+}
+
 function assertCustomsOperatorPayload(
   input: RecordThailandManualEvidenceInput,
 ): { ok: true } | { ok: false; message: string } {
@@ -93,6 +99,26 @@ function assertCustomsOperatorPayload(
   return { ok: true };
 }
 
+function assertFdaImporterPayload(
+  input: RecordThailandManualEvidenceInput,
+): { ok: true } | { ok: false; message: string } {
+  if (input.providerId !== "thai-fda-importer") return { ok: true };
+  const payload = (input.evidencePayload ?? {}) as Record<string, unknown>;
+  const licenseNumber = readOptionalTrimmedString(payload.licenseNumberSnapshot);
+  if (input.evidenceStatus === "verified") {
+    if (!licenseNumber) {
+      return {
+        ok: false,
+        message: "FDA food-import licence verified evidence requires licenseNumberSnapshot. The system never fabricates an import licence.",
+      };
+    }
+    return { ok: true };
+  }
+  // not_found / inconclusive: licence number, type, and dates may be blank.
+  // Do not invent or default any licence field.
+  return { ok: true };
+}
+
 export async function recordThailandManualEvidenceAction(
   input: RecordThailandManualEvidenceInput,
 ): Promise<RecordThailandManualEvidenceResult> {
@@ -111,6 +137,8 @@ export async function recordThailandManualEvidenceAction(
   }
   const operatorCheck = assertCustomsOperatorPayload(input);
   if (!operatorCheck.ok) return { outcome: "invalid_input", message: operatorCheck.message };
+  const fdaCheck = assertFdaImporterPayload(input);
+  if (!fdaCheck.ok) return { outcome: "invalid_input", message: fdaCheck.message };
   try { requireAllowedManualEvidenceSourceUrl(input.providerId, input.sourceUrl); }
   catch (error) {
     if (error instanceof ThailandManualEvidenceSourceUrlError) {
@@ -163,6 +191,8 @@ export async function supersedeThailandManualEvidenceAction(
   }
   const operatorCheck = assertCustomsOperatorPayload(input);
   if (!operatorCheck.ok) return { outcome: "invalid_input", message: operatorCheck.message };
+  const fdaCheck = assertFdaImporterPayload(input);
+  if (!fdaCheck.ok) return { outcome: "invalid_input", message: fdaCheck.message };
   try { requireAllowedManualEvidenceSourceUrl(input.providerId, input.sourceUrl); }
   catch (error) {
     if (error instanceof ThailandManualEvidenceSourceUrlError) {
