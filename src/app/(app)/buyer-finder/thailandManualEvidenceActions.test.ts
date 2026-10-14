@@ -245,6 +245,7 @@ describe("Thai FDA Food Import Licence — licence number required only when ver
     const payload = harness.insertCalls[0]!.evidencePayload as Record<string, unknown>;
     expect(payload.kind).toBe("thai-fda-importer");
     expect(payload.lookupBasis).toBe("name_search");
+    expect(harness.insertCalls[0]!.lookupBasis).toBe("name_search");
     expect(payload).not.toHaveProperty("licenseNumberSnapshot");
     expect(payload).not.toHaveProperty("licenseTypeSnapshot");
     expect(payload).not.toHaveProperty("validFromSnapshot");
@@ -285,6 +286,92 @@ describe("Thai FDA Food Import Licence — licence number required only when ver
     }));
     expect(result.outcome).toBe("recorded");
     expect(harness.supersedeCalls).toHaveLength(1);
+  });
+});
+
+describe("Thailand manual evidence — lookup_basis persists to the writer/RPC column", () => {
+  it("record FDA with lookupBasis=juristic_number passes the column and keeps payload.lookupBasis", async () => {
+    const result = await recordThailandManualEvidenceAction(fdaInput({
+      lookupBasis: "juristic_number",
+      evidencePayload: { kind: "thai-fda-importer", lookupBasis: "juristic_number" },
+    }));
+    expect(result.outcome).toBe("recorded");
+    expect(harness.insertCalls).toHaveLength(1);
+    expect(harness.insertCalls[0]!.lookupBasis).toBe("juristic_number");
+    expect(harness.insertCalls[0]!.lookupBasisDetail).toBeUndefined();
+    expect((harness.insertCalls[0]!.evidencePayload as Record<string, unknown>).lookupBasis).toBe("juristic_number");
+  });
+
+  it("record FDA still extracts lookupBasis from evidencePayload when the top-level field is omitted", async () => {
+    const result = await recordThailandManualEvidenceAction(fdaInput({
+      evidencePayload: { kind: "thai-fda-importer", lookupBasis: "juristic_number" },
+    }));
+    expect(result.outcome).toBe("recorded");
+    expect(harness.insertCalls[0]!.lookupBasis).toBe("juristic_number");
+  });
+
+  it("supersede FDA with lookupBasis=juristic_number passes the column", async () => {
+    const previousId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const result = await supersedeThailandManualEvidenceAction(previousId, fdaInput({
+      lookupBasis: "juristic_number",
+      evidencePayload: { kind: "thai-fda-importer", lookupBasis: "juristic_number" },
+    }));
+    expect(result.outcome).toBe("recorded");
+    expect(harness.supersedeCalls).toHaveLength(1);
+    expect(harness.supersedeCalls[0]![1]!.lookupBasis).toBe("juristic_number");
+    expect((harness.supersedeCalls[0]![1]!.evidencePayload as Record<string, unknown>).lookupBasis).toBe("juristic_number");
+  });
+
+  it("DBD exact_legal_name and juristic_number persist", async () => {
+    for (const basis of ["exact_legal_name", "juristic_number"] as const) {
+      harness.insertCalls = [];
+      const result = await recordThailandManualEvidenceAction(baseInput({
+        providerId: "thai-dbd",
+        sourceUrl: "https://datawarehouse.dbd.go.th/x",
+        evidenceStatus: "verified",
+        lookupBasis: basis,
+        evidencePayload: { juristicRegistrationNumber: "1234567890123", lookupBasis: basis },
+      }));
+      expect(result.outcome).toBe("recorded");
+      expect(harness.insertCalls[0]!.lookupBasis).toBe(basis);
+    }
+  });
+
+  it("Customs supported lookup-basis values persist", async () => {
+    for (const basis of ["juristic_number", "exact_legal_name", "name_search", "other"] as const) {
+      harness.insertCalls = [];
+      const result = await recordThailandManualEvidenceAction(baseInput({
+        evidenceStatus: "verified",
+        lookupBasis: basis,
+        evidencePayload: { operatorTypeSnapshot: "importer", lookupBasis: basis },
+      }));
+      expect(result.outcome).toBe("recorded");
+      expect(harness.insertCalls[0]!.lookupBasis).toBe(basis);
+    }
+  });
+
+  it("unspecified / empty / missing lookupBasis persist as null (DB column contract)", async () => {
+    const unspecifiedCases: Array<Partial<RecordThailandManualEvidenceInput>> = [
+      { lookupBasis: null, evidencePayload: { kind: "thai-fda-importer" } },
+      { lookupBasis: "", evidencePayload: { kind: "thai-fda-importer" } },
+      { lookupBasis: "unspecified", evidencePayload: { kind: "thai-fda-importer" } },
+      { evidencePayload: { kind: "thai-fda-importer" } },
+    ];
+    for (const overrides of unspecifiedCases) {
+      harness.insertCalls = [];
+      const result = await recordThailandManualEvidenceAction(fdaInput(overrides));
+      expect(result.outcome).toBe("recorded");
+      expect(harness.insertCalls[0]!.lookupBasis).toBeNull();
+    }
+  });
+
+  it("rejects a lookupBasis outside the canonical set", async () => {
+    const result = await recordThailandManualEvidenceAction(fdaInput({
+      lookupBasis: "manufacturing_authorization",
+      evidencePayload: { kind: "thai-fda-importer", lookupBasis: "manufacturing_authorization" },
+    }));
+    expect(result.outcome).toBe("invalid_input");
+    expect(harness.insertCalls).toHaveLength(0);
   });
 });
 

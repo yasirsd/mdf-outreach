@@ -140,11 +140,11 @@ function BaseCard({ providerId, candidateId, active, history }: CardCommonProps 
       const result = active
         ? await supersedeThailandManualEvidenceAction(active.id, {
             candidateId, providerId, sourceUrl: sourceUrlInput, sourceLabel,
-            evidencePayload: payload, evidenceStatus,
+            evidencePayload: payload, evidenceStatus, lookupBasis,
           })
         : await recordThailandManualEvidenceAction({
             candidateId, providerId, sourceUrl: sourceUrlInput, sourceLabel,
-            evidencePayload: payload, evidenceStatus,
+            evidencePayload: payload, evidenceStatus, lookupBasis,
           });
       if (result.outcome !== "recorded") setError(result.message ?? result.outcome);
       else setShowForm(false);

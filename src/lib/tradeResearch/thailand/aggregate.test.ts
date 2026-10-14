@@ -193,6 +193,26 @@ describe("TH05 — aggregator", () => {
     expect(agg.productRelevance.companyLevel.value).toBe("unknown");
   });
 
+  it("FDA inconclusive + juristic_number still keeps food_import_license unavailable", () => {
+    const agg = aggregateThailandResearch(withManual({
+      manual: resolveActiveThailandManualEvidence({
+        workspaceId: WS,
+        candidateId: CAND,
+        rows: [{
+          ...row({
+            id: "fda",
+            provider_id: "thai-fda-importer",
+            evidence_status: "inconclusive",
+            evidence_payload: { kind: "thai-fda-importer", lookupBasis: "juristic_number" },
+            lookup_basis: "juristic_number",
+          }),
+        }],
+      }),
+      candidateIdentity: strongIdentity,
+    }));
+    expect(agg.foodImportLicense.value).toBe("unavailable");
+  });
+
   it("FDA inconclusive without a licence number keeps food_import_license unavailable (never licensed)", () => {
     const agg = aggregateThailandResearch(withManual({
       manual: resolveActiveThailandManualEvidence({

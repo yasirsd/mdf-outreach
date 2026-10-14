@@ -25,7 +25,7 @@
  */
 
 import { requireMdfSession } from "@/lib/auth/require";
-import { TradeResearchWriter, createTradeResearchReadRepository } from "@/lib/tradeResearch/repository";
+import { TradeResearchWriter, createTradeResearchReadRepository, type ThaiManualEvidenceLookupBasis } from "@/lib/tradeResearch/repository";
 import { getTradeResearchServiceRoleClient } from "@/lib/tradeResearch/server/serviceRoleClient";
 import {
   ThailandManualEvidenceSourceUrlError,
@@ -49,6 +49,8 @@ export type RecordThailandManualEvidenceInput = {
   sourceLabel: string;
   evidencePayload: unknown;
   evidenceStatus: "verified" | "not_found" | "inconclusive";
+  /** Canonical lookup basis for the dedicated DB column. UI "unspecified" is null. */
+  lookupBasis?: ThaiManualEvidenceLookupBasis | "unspecified" | string | null;
 };
 
 export type RecordThailandManualEvidenceResult =
@@ -68,6 +70,30 @@ async function assertCandidateInWorkspace(workspaceId: string, candidateId: stri
 }
 
 const VALID_OPERATOR_TYPES = new Set(["importer", "exporter", "broker", "aeo", "other"]);
+const VALID_LOOKUP_BASES = new Set<ThaiManualEvidenceLookupBasis>([
+  "juristic_number",
+  "license_number",
+  "exact_legal_name",
+  "name_search",
+  "other",
+]);
+
+function resolveLookupBasis(
+  input: RecordThailandManualEvidenceInput,
+): { ok: true; lookupBasis: ThaiManualEvidenceLookupBasis | null } | { ok: false; message: string } {
+  const payload = (input.evidencePayload ?? {}) as Record<string, unknown>;
+  const raw = input.lookupBasis !== undefined ? input.lookupBasis : payload.lookupBasis;
+  if (raw == null) return { ok: true, lookupBasis: null };
+  if (typeof raw !== "string") {
+    return { ok: false, message: "lookupBasis must be one of juristic_number/license_number/exact_legal_name/name_search/other." };
+  }
+  const trimmed = raw.trim();
+  if (!trimmed || trimmed === "unspecified") return { ok: true, lookupBasis: null };
+  if (!VALID_LOOKUP_BASES.has(trimmed as ThaiManualEvidenceLookupBasis)) {
+    return { ok: false, message: `lookupBasis must be one of juristic_number/license_number/exact_legal_name/name_search/other; got ${trimmed}.` };
+  }
+  return { ok: true, lookupBasis: trimmed as ThaiManualEvidenceLookupBasis };
+}
 
 function readOptionalTrimmedString(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -139,6 +165,8 @@ export async function recordThailandManualEvidenceAction(
   if (!operatorCheck.ok) return { outcome: "invalid_input", message: operatorCheck.message };
   const fdaCheck = assertFdaImporterPayload(input);
   if (!fdaCheck.ok) return { outcome: "invalid_input", message: fdaCheck.message };
+  const lookupBasisCheck = resolveLookupBasis(input);
+  if (!lookupBasisCheck.ok) return { outcome: "invalid_input", message: lookupBasisCheck.message };
   try { requireAllowedManualEvidenceSourceUrl(input.providerId, input.sourceUrl); }
   catch (error) {
     if (error instanceof ThailandManualEvidenceSourceUrlError) {
@@ -163,6 +191,7 @@ export async function recordThailandManualEvidenceAction(
       sourceLabel: input.sourceLabel,
       evidencePayload: input.evidencePayload,
       evidenceStatus: input.evidenceStatus,
+      lookupBasis: lookupBasisCheck.lookupBasis,
     });
     revalidatePath("/buyer-finder");
     return { outcome: "recorded", id: String(row.id) };
@@ -193,6 +222,8 @@ export async function supersedeThailandManualEvidenceAction(
   if (!operatorCheck.ok) return { outcome: "invalid_input", message: operatorCheck.message };
   const fdaCheck = assertFdaImporterPayload(input);
   if (!fdaCheck.ok) return { outcome: "invalid_input", message: fdaCheck.message };
+  const lookupBasisCheck = resolveLookupBasis(input);
+  if (!lookupBasisCheck.ok) return { outcome: "invalid_input", message: lookupBasisCheck.message };
   try { requireAllowedManualEvidenceSourceUrl(input.providerId, input.sourceUrl); }
   catch (error) {
     if (error instanceof ThailandManualEvidenceSourceUrlError) {
@@ -220,6 +251,7 @@ export async function supersedeThailandManualEvidenceAction(
       sourceLabel: input.sourceLabel,
       evidencePayload: input.evidencePayload,
       evidenceStatus: input.evidenceStatus,
+      lookupBasis: lookupBasisCheck.lookupBasis,
     });
     revalidatePath("/buyer-finder");
     return { outcome: "recorded", id: String(row.id) };
