@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import {
   THAILAND_AGGREGATE_CONTRACT_VERSION,
+  THAILAND_AUTOMATIC_SPEND_RUPEES,
   aggregateThailandResearch,
   resolveActiveThailandManualEvidence,
+  ThailandEvidenceInvariants,
   THAILAND_PROVIDER_PLAN_V1,
   type ThailandAggregateInput,
 } from "./";
@@ -145,9 +147,9 @@ describe("TH05 — aggregator", () => {
     expect(agg.companyIdentity.provenance[0]?.manualEvidenceId).toBe("dbd");
   });
 
-  it("10. verified DBD + weak identity → needs_review", () => {
+  it("10. verified DBD + weak identity without juristic-number lookup → needs_review", () => {
     const agg = aggregateThailandResearch(withManual({
-      manual: manual({ evidence_status: "verified" }),
+      manual: manual({ evidence_status: "verified", lookup_basis: "name_search" }),
       candidateIdentity: weakIdentity,
     }));
     expect(agg.companyIdentity.value).toBe("needs_review");
@@ -476,5 +478,226 @@ describe("TH05 — aggregator", () => {
     // conflicts; everything evaluated. State is evidence_complete.
     expect(full.overallState).toBe("evidence_complete");
     expect(full.companyIdentity.value).toBe("verified");
+  });
+});
+
+describe("verified DBD juristic-number lookup promotes company identity", () => {
+  function withManual(input: Partial<ThailandAggregateInput> = {}): ThailandAggregateInput {
+    return {
+      manual: input.manual ?? { conflicts: [] },
+      ...input,
+    };
+  }
+
+  const productionJuristic = "0105555177061";
+  const productionLegalName = "SPUNKY FOOD COMPANY LIMITED";
+  const mismatchedThaiCandidate = { thaiLegalName: "บริษัท อื่น จำกัด" };
+
+  function verifiedJuristicDbd(over: Record<string, unknown> = {}) {
+    return manual({
+      id: "dbd",
+      evidence_status: "verified",
+      lookup_basis: "juristic_number",
+      evidence_payload: dbdPayload({
+        juristicRegistrationNumber: productionJuristic,
+        legalNameSnapshot: productionLegalName,
+      }),
+      ...over,
+    });
+  }
+
+  it("1. verified juristic lookup + mismatched/Thai candidate (no juristic) → company_identity verified", () => {
+    const agg = aggregateThailandResearch(withManual({
+      manual: verifiedJuristicDbd(),
+      candidateIdentity: mismatchedThaiCandidate,
+    }));
+    expect(agg.companyIdentity.value).toBe("verified");
+    expect(agg.companyIdentity.provenance[0]?.manualEvidenceId).toBe("dbd");
+  });
+
+  it("2. name_search lookup does not gain juristic-lookup promotion; existing comparison applies", () => {
+    const agg = aggregateThailandResearch(withManual({
+      manual: verifiedJuristicDbd({ lookup_basis: "name_search" }),
+      candidateIdentity: mismatchedThaiCandidate,
+    }));
+    expect(agg.companyIdentity.value).toBe("needs_review");
+  });
+
+  it("3. missing / malformed juristic number does not gain promotion", () => {
+    const missing = aggregateThailandResearch(withManual({
+      manual: verifiedJuristicDbd({
+        evidence_payload: dbdPayload({
+          juristicRegistrationNumber: undefined,
+          legalNameSnapshot: productionLegalName,
+        }),
+      }),
+      candidateIdentity: mismatchedThaiCandidate,
+    }));
+    expect(missing.companyIdentity.value).toBe("needs_review");
+
+    const malformed = aggregateThailandResearch(withManual({
+      manual: verifiedJuristicDbd({
+        evidence_payload: dbdPayload({
+          juristicRegistrationNumber: "01055551770",
+          legalNameSnapshot: productionLegalName,
+        }),
+      }),
+      candidateIdentity: mismatchedThaiCandidate,
+    }));
+    expect(malformed.companyIdentity.value).toBe("needs_review");
+  });
+
+  it("4. blank legalNameSnapshot does not gain promotion", () => {
+    const agg = aggregateThailandResearch(withManual({
+      manual: verifiedJuristicDbd({
+        evidence_payload: dbdPayload({
+          juristicRegistrationNumber: productionJuristic,
+          legalNameSnapshot: "   ",
+        }),
+      }),
+      candidateIdentity: mismatchedThaiCandidate,
+    }));
+    expect(agg.companyIdentity.value).toBe("needs_review");
+  });
+
+  it("5. website-only identity never promotes company_identity to verified", () => {
+    const agg = aggregateThailandResearch(withManual({
+      publicWebsite: {
+        status: "completed", productSignalsObserved: false, identityMatchLevel: "exact",
+        observedPublicEmails: [], observedPublicPhones: [],
+        parserVersion: "public-website-html-v2", interpretationVersion: "public-website-html-v2:t08-v1",
+      },
+    }));
+    expect(agg.companyIdentity.value).not.toBe("verified");
+    expect(agg.companyIdentity.value).toBe("needs_review");
+  });
+
+  it("6. Customs inconclusive stays unavailable even when DBD identity is verified", () => {
+    const agg = aggregateThailandResearch(withManual({
+      manual: resolveActiveThailandManualEvidence({
+        workspaceId: WS,
+        candidateId: CAND,
+        rows: [
+          {
+            ...row({
+              id: "dbd",
+              evidence_status: "verified",
+              lookup_basis: "juristic_number",
+              evidence_payload: dbdPayload({
+                juristicRegistrationNumber: productionJuristic,
+                legalNameSnapshot: productionLegalName,
+              }),
+            }),
+          },
+          {
+            ...row({
+              id: "op",
+              provider_id: "thai-customs-operator",
+              evidence_status: "inconclusive",
+              lookup_basis: "juristic_number",
+              evidence_payload: {
+                kind: "thai-customs-operator",
+                juristicRegistrationNumber: productionJuristic,
+              },
+            }),
+          },
+        ],
+      }),
+      candidateIdentity: mismatchedThaiCandidate,
+    }));
+    expect(agg.companyIdentity.value).toBe("verified");
+    expect(agg.importExportRegistration.value).toBe("unavailable");
+  });
+
+  it("7. FDA inconclusive stays unavailable even when DBD identity is verified", () => {
+    const agg = aggregateThailandResearch(withManual({
+      manual: resolveActiveThailandManualEvidence({
+        workspaceId: WS,
+        candidateId: CAND,
+        rows: [
+          {
+            ...row({
+              id: "dbd",
+              evidence_status: "verified",
+              lookup_basis: "juristic_number",
+              evidence_payload: dbdPayload({
+                juristicRegistrationNumber: productionJuristic,
+                legalNameSnapshot: productionLegalName,
+              }),
+            }),
+          },
+          {
+            ...row({
+              id: "fda",
+              provider_id: "thai-fda-importer",
+              evidence_status: "inconclusive",
+              lookup_basis: "juristic_number",
+              evidence_payload: {
+                kind: "thai-fda-importer",
+                juristicRegistrationNumber: productionJuristic,
+              },
+            }),
+          },
+        ],
+      }),
+      candidateIdentity: mismatchedThaiCandidate,
+    }));
+    expect(agg.companyIdentity.value).toBe("verified");
+    expect(agg.foodImportLicense.value).toBe("unavailable");
+  });
+
+  it("8. company_shipment_activity remains UNKNOWN after juristic-lookup identity verification", () => {
+    const agg = aggregateThailandResearch(withManual({
+      manual: verifiedJuristicDbd(),
+      candidateIdentity: mismatchedThaiCandidate,
+    }));
+    expect(agg.companyIdentity.value).toBe("verified");
+    expect(agg.companyShipmentActivity.value).toBe("UNKNOWN");
+    expect(ThailandEvidenceInvariants.companyShipmentIsUnknown({
+      company_identity: agg.companyIdentity.value,
+      import_export_registration: agg.importExportRegistration.value,
+      food_import_license: agg.foodImportLicense.value,
+      product_relevance: agg.productRelevance.companyLevel.value,
+      market_import_activity: agg.marketImportActivity.value,
+      india_origin_market_activity: agg.indiaOriginMarketActivity.value,
+      company_shipment_activity: agg.companyShipmentActivity.value,
+      contact_availability: agg.contactAvailability.value,
+      coverage: { planned: [], evaluated: [], unavailable: [], failed: [] },
+    })).toBe(true);
+  });
+
+  it("9. India-origin remains unknown / not a candidate-level claim", () => {
+    const agg = aggregateThailandResearch(withManual({
+      manual: verifiedJuristicDbd(),
+      candidateIdentity: mismatchedThaiCandidate,
+    }));
+    expect(agg.indiaOriginMarketActivity.value).toBe("unknown");
+    expect(agg.productRelevance.companyLevel.value).toBe("unknown");
+  });
+
+  it("10. DBD registration does not imply importer", () => {
+    const agg = aggregateThailandResearch(withManual({
+      manual: verifiedJuristicDbd(),
+      candidateIdentity: mismatchedThaiCandidate,
+    }));
+    expect(agg.companyIdentity.value).toBe("verified");
+    expect(agg.importExportRegistration.value).toBe("unavailable");
+    expect(
+      ThailandEvidenceInvariants.dbdRegistrationDoesNotImplyImporter(
+        agg.companyIdentity.value,
+        agg.importExportRegistration.value,
+      ),
+    ).toBe(true);
+  });
+
+  it("11. automatic spend remains 0", () => {
+    expect(THAILAND_AUTOMATIC_SPEND_RUPEES).toBe(0);
+    expect(THAILAND_PROVIDER_PLAN_V1.automaticSpendRupees).toBe(0);
+    const agg = aggregateThailandResearch(withManual({
+      manual: verifiedJuristicDbd(),
+      candidateIdentity: mismatchedThaiCandidate,
+    }));
+    expect(agg.companyIdentity.value).toBe("verified");
+    expect("automaticSpendRupees" in agg).toBe(false);
   });
 });

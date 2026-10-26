@@ -45,6 +45,7 @@ import { ThailandEvidenceInvariants } from "./evidence";
 import type { ThailandManualEvidenceReadResult, ThailandManualEvidenceActiveRow } from "./manualEvidenceResolver";
 import type { ThaiCompanyMatchLevel } from "@/lib/buyerFinder/thailand/companyIdentity";
 import { compareThaiCompanyIdentity } from "@/lib/buyerFinder/thailand/companyIdentity";
+import { normalizeThaiJuristicNumber } from "@/lib/buyerFinder/thailand/juristicNumber";
 import type { ThailandManualEvidencePayload } from "./manualEvidence";
 import type { ThaiManualEvidenceLookupBasis } from "../repository";
 
@@ -229,6 +230,33 @@ function isAuthoritativeIdentifierLookup(providerId: string, basis: ThaiManualEv
   return false;
 }
 
+/**
+ * Authoritative DBD juristic-number lookup. `buyer_candidates` has no
+ * juristic column, so payload-vs-candidate `compareThaiCompanyIdentity`
+ * can never produce `juristic_number_match` from a DBD leaf alone.
+ * When the operator recorded a verified DBD lookup by juristic number
+ * with a well-formed 13-digit snapshot and a non-empty legal name,
+ * that leaf is identity-strong for `company_identity` only.
+ *
+ * Does NOT promote importer registration, FDA licence, product,
+ * India origin, shipment activity, contact, or Buyer conversion.
+ */
+function verifiedByAuthoritativeJuristicLookup(
+  row: ThailandManualEvidenceActiveRow | undefined,
+  basis: ThaiManualEvidenceLookupBasis | null,
+): boolean {
+  if (!row || row.provider_id !== "thai-dbd") return false;
+  if (row.evidence_status !== "verified") return false;
+  if (basis !== "juristic_number") return false;
+  const payload = (row.evidence_payload ?? {}) as Record<string, unknown>;
+  const juristic = typeof payload.juristicRegistrationNumber === "string"
+    ? normalizeThaiJuristicNumber(payload.juristicRegistrationNumber)
+    : null;
+  if (juristic === null) return false;
+  const legalName = typeof payload.legalNameSnapshot === "string" ? payload.legalNameSnapshot.trim() : "";
+  return legalName.length > 0;
+}
+
 const DIMENSION_KEYS = [
   "company_identity",
   "import_export_registration",
@@ -292,14 +320,18 @@ export function aggregateThailandResearch(input: ThailandAggregateInput): Thaila
   const dbdStrong = dbdMatch === "exact" || dbdMatch === "strong";
   const operatorStrong = operatorMatch === "exact" || operatorMatch === "strong";
   const fdaStrong = fdaMatch === "exact" || fdaMatch === "strong";
+  const dbdVerifiedByAuthoritativeJuristicLookup = verifiedByAuthoritativeJuristicLookup(dbd, dbdBasis);
 
   // ---------- Dimension 1: company_identity ----------
   let companyIdentity: ThailandAggregateDimension<ThailandEvidence["company_identity"]> = UNAVAILABLE_IDENTITY;
   if (dbd) {
-    if (dbd.evidence_status === "verified" && dbdStrong) {
+    if (dbd.evidence_status === "verified" && (dbdStrong || dbdVerifiedByAuthoritativeJuristicLookup)) {
+      const explanation = dbdVerifiedByAuthoritativeJuristicLookup && !dbdStrong
+        ? `DBD verified by authoritative juristic-number lookup (${dbdBasis}) with a recorded legal-name snapshot.`
+        : `DBD verified; identity correlation ${dbdMatch} via ${dbdBasis ?? "payload fields"}.`;
       companyIdentity = {
         value: "verified",
-        provenance: [fromManual(dbd, "company_record", `DBD verified; identity correlation ${dbdMatch} via ${dbdBasis ?? "payload fields"}.`)],
+        provenance: [fromManual(dbd, "company_record", explanation)],
       };
     } else if (dbd.evidence_status === "verified") {
       companyIdentity = {
