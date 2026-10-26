@@ -51,7 +51,7 @@ export interface ThaiCustomsOperatorPayload {
   readonly kind: "thai-customs-operator";
   readonly operatorIdSnapshot: string | null;
   readonly operatorTypeSnapshot: "importer" | "exporter" | "broker" | "aeo" | "other" | null;
-  readonly registrationStatusSnapshot: "active" | "inactive" | "unknown";
+  readonly registrationStatusSnapshot: "active" | "inactive" | "unknown" | null;
 }
 
 export interface ThaiFdaImporterPayload {

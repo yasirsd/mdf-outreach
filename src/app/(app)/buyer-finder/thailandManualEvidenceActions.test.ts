@@ -138,6 +138,59 @@ describe("TH06 FINAL — Issue 2: Customs operator type must match contract", ()
     expect((harness.insertCalls[0]!.evidencePayload as Record<string, unknown>).operatorTypeSnapshot).toBeUndefined();
   });
 
+  it("verified Customs with observed active status + operator type is allowed", async () => {
+    const result = await recordThailandManualEvidenceAction(baseInput({
+      evidencePayload: { operatorTypeSnapshot: "importer", registrationStatusSnapshot: "active" },
+    }));
+    expect(result.outcome).toBe("recorded");
+    const payload = harness.insertCalls[0]!.evidencePayload as Record<string, unknown>;
+    expect(payload.operatorTypeSnapshot).toBe("importer");
+    expect(payload.registrationStatusSnapshot).toBe("active");
+  });
+
+  it("inconclusive Customs with no observed status is stored without active", async () => {
+    const result = await recordThailandManualEvidenceAction(baseInput({
+      evidenceStatus: "inconclusive",
+      evidencePayload: { kind: "thai-customs-operator", lookupBasis: "name_search" },
+    }));
+    expect(result.outcome).toBe("recorded");
+    const payload = harness.insertCalls[0]!.evidencePayload as Record<string, unknown>;
+    expect(payload.registrationStatusSnapshot).toBeUndefined();
+    expect(payload.operatorTypeSnapshot).toBeUndefined();
+  });
+
+  it("inconclusive Customs does not persist a defaulted active status without an observed operator type", async () => {
+    const result = await recordThailandManualEvidenceAction(baseInput({
+      evidenceStatus: "inconclusive",
+      evidencePayload: { kind: "thai-customs-operator", registrationStatusSnapshot: "active" },
+    }));
+    expect(result.outcome).toBe("recorded");
+    const payload = harness.insertCalls[0]!.evidencePayload as Record<string, unknown>;
+    expect(payload.registrationStatusSnapshot).toBeUndefined();
+    expect(payload.operatorTypeSnapshot).toBeUndefined();
+  });
+
+  it("not_found Customs with no observed status is stored without active", async () => {
+    const result = await recordThailandManualEvidenceAction(baseInput({
+      evidenceStatus: "not_found",
+      evidencePayload: { kind: "thai-customs-operator", lookupBasis: "juristic_number" },
+    }));
+    expect(result.outcome).toBe("recorded");
+    const payload = harness.insertCalls[0]!.evidencePayload as Record<string, unknown>;
+    expect(payload.registrationStatusSnapshot).toBeUndefined();
+    expect(payload.operatorTypeSnapshot).toBeUndefined();
+  });
+
+  it("not_found Customs does not persist a defaulted active status", async () => {
+    const result = await recordThailandManualEvidenceAction(baseInput({
+      evidenceStatus: "not_found",
+      evidencePayload: { kind: "thai-customs-operator", registrationStatusSnapshot: "active" },
+    }));
+    expect(result.outcome).toBe("recorded");
+    const payload = harness.insertCalls[0]!.evidencePayload as Record<string, unknown>;
+    expect(payload.registrationStatusSnapshot).toBeUndefined();
+  });
+
   it("inconclusive Customs operator result accepts an observed operator type", async () => {
     const result = await recordThailandManualEvidenceAction(baseInput({
       evidenceStatus: "inconclusive",

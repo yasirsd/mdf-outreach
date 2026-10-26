@@ -14,7 +14,7 @@ function readMigration(name: string): string {
 
 function statements(sql: string): string {
   return sql
-    .split("\n")
+    .split(/\r?\n/)
     .map((line) => line.replace(/--.*$/, ""))
     .join("\n");
 }

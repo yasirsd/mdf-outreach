@@ -70,6 +70,7 @@ async function assertCandidateInWorkspace(workspaceId: string, candidateId: stri
 }
 
 const VALID_OPERATOR_TYPES = new Set(["importer", "exporter", "broker", "aeo", "other"]);
+const VALID_REGISTRATION_STATUSES = new Set(["active", "inactive", "unknown"]);
 const VALID_LOOKUP_BASES = new Set<ThaiManualEvidenceLookupBasis>([
   "juristic_number",
   "license_number",
@@ -101,12 +102,20 @@ function readOptionalTrimmedString(value: unknown): string | null {
   return trimmed ? trimmed : null;
 }
 
-function assertCustomsOperatorPayload(
+function prepareCustomsOperatorPayload(
   input: RecordThailandManualEvidenceInput,
-): { ok: true } | { ok: false; message: string } {
-  if (input.providerId !== "thai-customs-operator") return { ok: true };
-  const payload = (input.evidencePayload ?? {}) as Record<string, unknown>;
+): { ok: true; evidencePayload: unknown } | { ok: false; message: string } {
+  if (input.providerId !== "thai-customs-operator") {
+    return { ok: true, evidencePayload: input.evidencePayload };
+  }
+  const payload: Record<string, unknown> = {
+    ...((input.evidencePayload ?? {}) as Record<string, unknown>),
+  };
   const observedType = typeof payload.operatorTypeSnapshot === "string" ? payload.operatorTypeSnapshot : null;
+  const registrationStatus = readOptionalTrimmedString(payload.registrationStatusSnapshot);
+  if (registrationStatus && !VALID_REGISTRATION_STATUSES.has(registrationStatus)) {
+    return { ok: false, message: `registrationStatusSnapshot must be one of active/inactive/unknown; got ${registrationStatus}.` };
+  }
   if (input.evidenceStatus === "verified") {
     if (!observedType) {
       return { ok: false, message: "Customs operator verified evidence requires operatorTypeSnapshot (importer/exporter/broker/aeo/other). The system never defaults to importer." };
@@ -114,7 +123,7 @@ function assertCustomsOperatorPayload(
     if (!VALID_OPERATOR_TYPES.has(observedType)) {
       return { ok: false, message: `operatorTypeSnapshot must be one of importer/exporter/broker/aeo/other; got ${observedType}.` };
     }
-    return { ok: true };
+    return { ok: true, evidencePayload: payload };
   }
   // For not_found / inconclusive the operator type is optional — the
   // registry may not have displayed one. Reject only if a value was
@@ -122,7 +131,12 @@ function assertCustomsOperatorPayload(
   if (observedType && !VALID_OPERATOR_TYPES.has(observedType)) {
     return { ok: false, message: `operatorTypeSnapshot must be one of importer/exporter/broker/aeo/other; got ${observedType}.` };
   }
-  return { ok: true };
+  // "active" is the historical UI default. Without an observed operator
+  // type there is no explicit registry signal, so do not persist it.
+  if (registrationStatus === "active" && !observedType) {
+    delete payload.registrationStatusSnapshot;
+  }
+  return { ok: true, evidencePayload: payload };
 }
 
 function assertFdaImporterPayload(
@@ -161,7 +175,7 @@ export async function recordThailandManualEvidenceAction(
   if (!["verified", "not_found", "inconclusive"].includes(input.evidenceStatus)) {
     return { outcome: "invalid_input", message: "evidenceStatus must be one of verified/not_found/inconclusive." };
   }
-  const operatorCheck = assertCustomsOperatorPayload(input);
+  const operatorCheck = prepareCustomsOperatorPayload(input);
   if (!operatorCheck.ok) return { outcome: "invalid_input", message: operatorCheck.message };
   const fdaCheck = assertFdaImporterPayload(input);
   if (!fdaCheck.ok) return { outcome: "invalid_input", message: fdaCheck.message };
@@ -189,7 +203,7 @@ export async function recordThailandManualEvidenceAction(
       capturedByUserId: session.userId,
       sourceUrl: input.sourceUrl,
       sourceLabel: input.sourceLabel,
-      evidencePayload: input.evidencePayload,
+      evidencePayload: operatorCheck.evidencePayload,
       evidenceStatus: input.evidenceStatus,
       lookupBasis: lookupBasisCheck.lookupBasis,
     });
@@ -218,7 +232,7 @@ export async function supersedeThailandManualEvidenceAction(
   if (!["verified", "not_found", "inconclusive"].includes(input.evidenceStatus)) {
     return { outcome: "invalid_input", message: "evidenceStatus must be one of verified/not_found/inconclusive." };
   }
-  const operatorCheck = assertCustomsOperatorPayload(input);
+  const operatorCheck = prepareCustomsOperatorPayload(input);
   if (!operatorCheck.ok) return { outcome: "invalid_input", message: operatorCheck.message };
   const fdaCheck = assertFdaImporterPayload(input);
   if (!fdaCheck.ok) return { outcome: "invalid_input", message: fdaCheck.message };
@@ -249,7 +263,7 @@ export async function supersedeThailandManualEvidenceAction(
       capturedByUserId: session.userId,
       sourceUrl: input.sourceUrl,
       sourceLabel: input.sourceLabel,
-      evidencePayload: input.evidencePayload,
+      evidencePayload: operatorCheck.evidencePayload,
       evidenceStatus: input.evidenceStatus,
       lookupBasis: lookupBasisCheck.lookupBasis,
     });

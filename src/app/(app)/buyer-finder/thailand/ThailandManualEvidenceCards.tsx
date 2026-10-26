@@ -276,8 +276,18 @@ function BaseCard({ providerId, candidateId, active, history }: CardCommonProps 
                     className="h-8 rounded-md bg-black/20 border border-[color:var(--app-border)] px-2 text-[color:var(--text-primary)]" />
                 </label>
                 <label className="flex flex-col gap-1">
-                  <span className="text-[color:var(--text-secondary)]">Registration status</span>
-                  <select name="registrationStatusSnapshot" className="h-8 rounded-md bg-black/20 border border-[color:var(--app-border)] px-2 text-[color:var(--text-primary)]">
+                  <span className="text-[color:var(--text-secondary)]">
+                    Registration status
+                    {evidenceStatusLocal === "verified"
+                      ? <span className="text-[color:var(--text-secondary)]"> (record what the registry displayed)</span>
+                      : <span className="text-[color:var(--text-secondary)]"> (optional unless observed)</span>}
+                  </span>
+                  <select
+                    name="registrationStatusSnapshot"
+                    defaultValue=""
+                    className="h-8 rounded-md bg-black/20 border border-[color:var(--app-border)] px-2 text-[color:var(--text-primary)]"
+                  >
+                    <option value="">— unobserved —</option>
                     <option value="active">Active</option>
                     <option value="inactive">Inactive</option>
                     <option value="unknown">Unknown</option>

@@ -9,7 +9,7 @@ vi.mock("../thailandManualEvidenceActions", () => ({
   withdrawThailandManualEvidenceAction: vi.fn(),
 }));
 
-import { ThailandFdaCard } from "./ThailandManualEvidenceCards";
+import { ThailandCustomsOperatorCard, ThailandFdaCard } from "./ThailandManualEvidenceCards";
 
 const CANDIDATE = "22222222-2222-4222-8222-222222222222";
 
@@ -61,5 +61,38 @@ describe("Thai FDA Food Import Licence form — licence number required only whe
     fireEvent.change(resultSelect(form), { target: { value: "not_found" } });
     expect(resultSelect(form).value).toBe("not_found");
     expect(licenseNumberInput(form).required).toBe(false);
+  });
+});
+
+function openCustomsForm() {
+  const view = render(<ThailandCustomsOperatorCard candidateId={CANDIDATE} />);
+  const record = [...view.container.querySelectorAll("button")].find((b) => b.textContent === "Record result");
+  expect(record).toBeTruthy();
+  fireEvent.click(record!);
+  const form = view.container.querySelector("form");
+  expect(form).not.toBeNull();
+  return { ...view, form: form as HTMLFormElement };
+}
+
+describe("Thai Customs Operator Registry form — registration status has no active default", () => {
+  it("starts unselected; active is not the default", () => {
+    const { form } = openCustomsForm();
+    const status = form.querySelector('select[name="registrationStatusSnapshot"]') as HTMLSelectElement;
+    expect(status).toBeInstanceOf(HTMLSelectElement);
+    expect(status.value).toBe("");
+    expect(status.required).toBe(false);
+    expect([...status.options].some((o) => o.value === "")).toBe(true);
+  });
+
+  it("inconclusive / not_found keep registration status optional and unselected", () => {
+    const { form } = openCustomsForm();
+    const status = form.querySelector('select[name="registrationStatusSnapshot"]') as HTMLSelectElement;
+    const result = form.querySelector('select[name="evidenceStatus"]') as HTMLSelectElement;
+    fireEvent.change(result, { target: { value: "inconclusive" } });
+    expect(status.value).toBe("");
+    expect(status.required).toBe(false);
+    fireEvent.change(result, { target: { value: "not_found" } });
+    expect(status.value).toBe("");
+    expect(status.required).toBe(false);
   });
 });
